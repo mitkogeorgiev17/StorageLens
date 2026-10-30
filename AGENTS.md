@@ -23,8 +23,23 @@ not for hypothetical other users.
 
 ### Current state
 
-Planning only. `PLAN.md` exists; the Cargo workspace has not been scaffolded yet.
-See `PLAN.md` §16 for the milestone order. Start at M0.
+Planning complete, backlog filed. The Cargo workspace has not been scaffolded yet.
+
+**Work is tracked as GitHub issues, not as tasks in this file.** 40 issues across 8
+milestones. Start at M0 (`#1`), and follow the dependency links in each issue.
+
+| Milestone | Issues | Purpose |
+|---|---|---|
+| M0 — Foundation | #1–#6 | Workspace, domain model, schema, fixtures, `scanbench` |
+| M1 — macOS scanner | #7–#11 | `getattrlistbulk`, dedupe, FDA, 2% accuracy gate |
+| M2 — Windows scanner | #12–#16 | `FindFirstFileExW`, sizes, registry, accuracy gate |
+| M3 — Catalog & treemap | #17–#24 | Arena, IPC, React shell, canvas treemap |
+| M3b — Categorization & grouping | #25–#28 | Six groupings, filters, sunburst, collections |
+| M4 — Cleanup & safety | #29–#35 | Guards, trash + undo, rules, catalogs, UI |
+| M5 — App inventory | #36–#38 | Installed apps, usage, footprint, removal |
+| M6 — Duplicates | #39–#40 | Hash pipeline, keep-one UI |
+
+See §9 for the branch and PR workflow.
 
 ---
 
@@ -194,7 +209,60 @@ adding complexity — and say so rather than quietly regressing.
 
 ---
 
-## 9. Commits
+## 9. Git workflow
+
+`main` is always releasable. Work happens on branches, one issue at a time, merged by PR.
+
+### Branches
+
+- **Never commit directly to `main`.** Every change arrives via a pull request.
+- **One issue → one branch → one PR.** No bundling unrelated work.
+- Branch name: `<type>/<issue-number>-<slug>`
+
+  ```
+  feat/12-findfirstfileex-walker
+  fix/9-hardlink-dedupe
+  perf/8-batch-writer
+  test/35-safety-coverage
+  docs/1-update-build-commands
+  ```
+
+- Branch from an up-to-date `main`:
+
+  ```bash
+  git switch main && git pull --ff-only
+  git switch -c feat/12-findfirstfileex-walker
+  ```
+
+### Pull requests
+
+- Title mirrors the eventual squash commit: `<type>(<scope>): <what changed>`
+- Body must contain `Closes #<issue>` so the issue closes on merge.
+- CI must be green (`fmt`, `clippy -D warnings`, `test`, `ui typecheck`).
+- **Squash merge** into `main`, then delete the branch. No merge commits.
+- If `main` moved ahead, rebase — do not merge `main` into your branch.
+
+### Parallel work
+
+The backlog is designed so several agents can work at once. To avoid collisions:
+
+1. **Each issue lists `Touches`** — the files and directories it owns. Read it before
+   starting.
+2. **Two issues whose `Touches` overlap must not run concurrently.** Serialize them, or
+   coordinate by rebasing and resolving in the PR.
+3. **Do not edit files outside your issue's `Touches`.** If you genuinely must, say so
+   explicitly in the PR description and note the dependency.
+4. **Known contention points** — expect rebases when touching these:
+   - root `Cargo.toml`
+   - `src-tauri/src/commands.rs`
+   - `ui/src/lib/api.ts`
+   - `ui/src/routes/Map.tsx`
+   - `crates/core/src/lib.rs`
+
+A safe batch of five is one issue per area (`core`, `scan-macos`, `scan-windows`, `ui`,
+`safety`), since areas rarely overlap.
+
+### Commits
 
 Conventional commits, scoped by crate or area:
 
@@ -207,6 +275,17 @@ docs(plan): record APFS clone overcounting as accepted
 ```
 
 One logical change per commit. No `--no-verify`, no force-push to `main`.
+
+### Working an issue
+
+1. Read the issue, then the `PLAN.md` section it references.
+2. Claim it (assign yourself) so a parallel agent doesn't duplicate work.
+3. Branch from `main` using the naming convention above.
+4. Implement, with tests.
+5. `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+6. Open a PR with `Closes #N` and a short summary of decisions made.
+7. Squash merge once CI is green.
+8. If the work changed a design decision, update `PLAN.md` in the same PR.
 
 ---
 
