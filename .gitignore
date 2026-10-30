@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Rust
+/target
+**/target
+Cargo.lock.orig
+*.rs.bk
+
+# Node / UI
+node_modules/
+ui/dist/
+ui/.vite/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+**/tauri-build
+
+# Local databases & scan artifacts
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+fixtures/generated/
+bench-results/
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp

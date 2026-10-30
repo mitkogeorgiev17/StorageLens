@@ -1,0 +1,1165 @@
+# StorageLens
+
+**A personal storage mapper for macOS and Windows.**
+
+Index every file on the machine, visualize it as a zoomable treemap, find safely
+deletable junk, spot unused apps, and see exactly how much space can be reclaimed —
+with a working undo.
+
+| | |
+|---|---|
+| **Audience** | Me. Only me. |
+| **Platforms** | macOS 14+ and Windows 10/11 (x64 + arm64) |
+| **Distribution** | None. Build locally, run locally. |
+| **Cost** | $0. No accounts, no services, no subscriptions. |
+| **Network** | Never used. Fully offline. |
+| **Status** | Plan — pre-implementation |
+
+---
+
+## Table of contents
+
+1. [Scope](#1-scope)
+2. [Stack decision](#2-stack-decision)
+3. [Repository layout](#3-repository-layout)
+4. [Architecture](#4-architecture)
+5. [Data model](#5-data-model)
+6. [Scanner — macOS](#6-scanner--macos)
+7. [Scanner — Windows](#7-scanner--windows)
+8. [Cross-platform size accounting](#8-cross-platform-size-accounting)
+9. [File categorization & grouping](#9-file-categorization--grouping)
+10. [Cleanup rules engine](#10-cleanup-rules-engine)
+11. [App inventory & unused apps](#11-app-inventory--unused-apps)
+12. [Duplicate detection](#12-duplicate-detection)
+13. [UI & visualization](#13-ui--visualization)
+14. [Tauri command surface](#14-tauri-command-surface)
+15. [Safety model](#15-safety-model)
+16. [Build schedule](#16-build-schedule)
+17. [Testing & accuracy gates](#17-testing--accuracy-gates)
+18. [Risks](#18-risks)
+19. [The MVP cut](#19-the-mvp-cut)
+
+---
+
+## 1. Scope
+
+### Does
+
+| Capability | Detail |
+|---|---|
+| **Map** | Full-disk index of every file and folder, with real on-disk sizes |
+| **Group** | The same index re-grouped by type, app, age, size, or cleanliness — not just folders |
+| **Visualize** | Zoomable squarified treemap + sunburst, colored by file category |
+| **Explain** | Top consumers by folder, by type, by app; "why is my disk full?" |
+| **Clean** | Ranked, explained cleanup suggestions with risk levels and one-click Trash |
+| **Apps** | Every installed app: size, last used, associated data, leftovers |
+| **Duplicates** | Byte-identical files via size + BLAKE3, with keep-one recommendations |
+| **Undo** | Every deletion is a Trash move with a manifest, fully reversible |
+
+### Does not
+
+- Not a backup tool, antivirus, or system monitor.
+- **No automatic or scheduled deletion.** Every action is an explicit click.
+- No touching system-protected paths, keychains, Photos/Music libraries, or Mail stores.
+- No network access at all. No telemetry, no update checks, no crash uploads.
+- No scanning of network shares or cloud mounts (removable drives: read-only, optional).
+
+### The one-line pitch
+
+> DaisyDisk's map, plus a receipt for every byte I delete.
+
+---
+
+## 2. Stack decision
+
+### Tauri 2 — Rust core + React/TypeScript UI
+
+```
+Shell          Tauri 2
+Core           Rust 2021 edition (one language for both scanners)
+UI             React 19 + TypeScript + Vite
+Treemap        d3-hierarchy (squarified) → <canvas>
+Storage        SQLite via rusqlite (bundled — no external install)
+Hashing        blake3
+Parallelism    rayon
+Watching       notify (FSEvents / ReadDirectoryChangesW)
+Trash          trash crate (native Trash / Recycle Bin)
+macOS APIs     libc + hand-written getattrlistbulk bindings
+Windows APIs   windows crate (Win32)
+```
+
+### Why
+
+The UI is the replaceable part. The valuable part is the two scanners, and they are
+100% OS-specific. So the stack must let me write the scanners **once, in one language**,
+with a thin shared UI on top.
+
+| Option | Verdict |
+|---|---|
+| **Swift + SwiftUI** | Best Mac experience, but cannot ship on Windows. Two apps, two UIs. Disqualified. |
+| **Tauri (Rust)** ✅ | One codebase, native window, ~12 MB, real syscalls in both backends. |
+| **Electron** | 150 MB+ and ~300 MB RAM for a tool about saving disk. No benefit over Tauri. |
+| **Go + local web UI** | Excellent fallback. Trivial cross-compile, single binary, zero toolchain pain — but opens in a browser tab, not an app. |
+| **.NET + Avalonia** | Solid. C# is easier than Rust; P/Invoke does macOS fine. Weaker Windows-syscall ecosystem. |
+| **Python + PySide** | Too slow for 1M-file scans, and two-platform packaging is misery. |
+
+**Escape hatch:** the scanner sits behind a `StorageScanner` trait. If Rust becomes a
+slog, the core can be ported to Go without touching the schema, the rules, or the UI.
+
+### Dependencies (pin exact versions at setup)
+
+| Crate / package | Purpose |
+|---|---|
+| `tauri` 2.x | App shell, IPC, bundler |
+| `rusqlite` (feature `bundled`) | SQLite, no system dependency |
+| `rayon` | Parallel directory walking |
+| `blake3` | Fast content hashing |
+| `trash` | Cross-platform Trash / Recycle Bin |
+| `notify` | Filesystem watching |
+| `serde` / `serde_json` | IPC + rule catalog |
+| `thiserror` | Error types |
+| `tracing` / `tracing-subscriber` | Local logs |
+| `windows` 0.5x | Win32 bindings |
+| `libc` | POSIX + `getattrlistbulk` FFI |
+| `d3-hierarchy` | Treemap layout |
+| `zustand` | UI state |
+| `react-window` | Virtualized tables |
+
+---
+
+## 3. Repository layout
+
+```
+~/Desktop/StorageLens/
+├─ PLAN.md                     ← this file
+├─ Cargo.toml                  ← workspace root
+├─ crates/
+│  ├─ core/                    Entry, Volume, ScanOptions, StorageScanner trait, errors
+│  │                           categories.rs (shared extension table), tags.rs, grouping.rs
+│  ├─ catalog/                 SQLite schema, migrations, queries, tree arena
+│  ├─ scan-macos/              getattrlistbulk FFI, FSEvents
+│  ├─ scan-windows/            FindFirstFileExW walk, USN journal, registry
+│  ├─ analysis/                Rollups, duplicates, app inventory, rules engine
+│  ├─ safety/                  Path guards, trash service, manifests, undo
+│  └─ scanbench/               CLI binary (no UI) — built first
+├─ src-tauri/
+│  ├─ Cargo.toml
+│  ├─ tauri.conf.json
+│  └─ src/
+│     ├─ main.rs
+│     ├─ commands.rs           #[tauri::command] surface
+│     └─ events.rs             scan://progress etc.
+└─ ui/
+   ├─ package.json
+   ├─ vite.config.ts
+   ├─ index.html
+   └─ src/
+      ├─ main.tsx
+      ├─ routes/               Overview, Map, LargeFiles, Apps, Cleanup, Duplicates, History
+      ├─ components/           Treemap, Sunburst, Gauge, FileTable, RuleCard, RiskBadge
+      └─ lib/                  api.ts, format.ts, colors.ts, treemap.ts
+```
+
+`scanbench` is a separate binary in the same workspace, so it shares every crate the app
+uses. Same code path, no drift.
+
+---
+
+## 4. Architecture
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  React UI (identical on both OSes)                            │
+│  Overview │ Map │ Large Files │ Apps │ Cleanup │ Duplicates   │
+└──────────────────────────┬────────────────────────────────────┘
+                           │ Tauri IPC (JSON) + events
+┌──────────────────────────▼────────────────────────────────────┐
+│  Core (shared Rust)                                           │
+│  Catalog (rusqlite) · RulesEngine · Rollups · Duplicates      │
+│  Safety (trash + manifest + undo) · Progress events           │
+└──────────────────────────┬────────────────────────────────────┘
+                           │  trait StorageScanner
+        ┌──────────────────┴──────────────────┐
+┌───────▼─────────┐                  ┌────────▼────────┐
+│  macOS backend  │                  │ Windows backend │
+│  getattrlistbulk│                  │ FindFirstFileEx │
+│  FSEvents       │                  │ USN journal     │
+│  NSWorkspace    │                  │ Registry/Win32  │
+└─────────────────┘                  └─────────────────┘
+```
+
+### The trait
+
+```rust
+pub struct Entry {
+    pub parent: u32,          // index into the node arena; 0 = root
+    pub name: String,
+    pub kind: EntryKind,      // File | Dir | Symlink | Other
+    pub size_alloc: u64,      // bytes actually on disk   ← what we display
+    pub size_logical: u64,    // apparent file size
+    pub dev: u32,             // volume identity
+    pub file_id: u64,         // inode / file index
+    pub nlink: u32,
+    pub attrs: u32,
+    pub created: i64,
+    pub modified: i64,
+    pub accessed: i64,
+}
+
+pub trait StorageScanner: Send + Sync {
+    fn volumes(&self) -> Vec<Volume>;
+    fn scan(
+        &self,
+        roots: &[PathBuf],
+        cancel: CancelToken,
+        progress: &(dyn Fn(Progress) + Send + Sync),
+    ) -> Result<ScanResult>;
+    fn platform_cleanup_targets(&self) -> Vec<PlatformTarget>;
+    fn installed_apps(&self) -> Vec<AppInfo>;
+}
+```
+
+Everything above this trait — schema, rules, rollups, dedupe, safety, UI — is written once.
+
+---
+
+## 5. Data model
+
+SQLite in the OS app-data directory. One database, one schema, both platforms.
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous  = NORMAL;
+PRAGMA cache_size   = -131072;   -- 128 MB
+
+CREATE TABLE scan_session (
+  id           INTEGER PRIMARY KEY,
+  platform     TEXT    NOT NULL,      -- 'macos' | 'windows'
+  started_at   INTEGER NOT NULL,
+  finished_at  INTEGER,
+  status       TEXT    NOT NULL,      -- running|complete|cancelled|partial
+  files_seen   INTEGER NOT NULL DEFAULT 0,
+  bytes_seen   INTEGER NOT NULL DEFAULT 0,
+  dirs_skipped INTEGER NOT NULL DEFAULT 0,
+  elevated     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE entries (
+  id           INTEGER PRIMARY KEY,
+  scan_id      INTEGER NOT NULL REFERENCES scan_session(id),
+  parent_id    INTEGER NOT NULL,      -- 0 = volume root
+  name         TEXT    NOT NULL,
+  ext          TEXT,                  -- lowercased, last segment only ("gz" for .tar.gz)
+  kind         INTEGER NOT NULL,      -- 1 file, 2 dir, 3 link, 4 other
+  size_alloc   INTEGER NOT NULL,
+  size_logical INTEGER NOT NULL,
+  dev          INTEGER NOT NULL,
+  file_id      INTEGER NOT NULL,
+  nlink        INTEGER NOT NULL,
+  attrs        INTEGER NOT NULL,
+  created      INTEGER,
+  modified     INTEGER,
+  accessed     INTEGER,
+  category     TEXT,                  -- app|photo|video|audio|doc|code|cache|log|vm|system|other
+  tags         INTEGER NOT NULL DEFAULT 0,   -- u64 bitmask, see §9.2
+  hardlink_dup INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_entries_parent ON entries(scan_id, parent_id);
+CREATE INDEX idx_entries_size   ON entries(scan_id, size_alloc DESC);
+CREATE INDEX idx_entries_cat    ON entries(scan_id, category, size_alloc DESC);
+CREATE INDEX idx_entries_ext    ON entries(scan_id, ext);
+
+-- Materialized post-order subtree totals. Built once after a scan.
+CREATE TABLE dir_rollup (
+  scan_id       INTEGER NOT NULL,
+  dir_id        INTEGER NOT NULL,
+  total_alloc   INTEGER NOT NULL,
+  total_logical INTEGER NOT NULL,
+  file_count    INTEGER NOT NULL,
+  PRIMARY KEY (scan_id, dir_id)
+);
+
+CREATE TABLE rule_hit (
+  id         INTEGER PRIMARY KEY,
+  scan_id    INTEGER NOT NULL,
+  rule_id    TEXT    NOT NULL,
+  path       TEXT    NOT NULL,
+  entry_id   INTEGER,
+  bytes      INTEGER NOT NULL,
+  risk       TEXT    NOT NULL,        -- safe | review | never
+  confidence REAL    NOT NULL,
+  selected   INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(scan_id, rule_id, path)
+);
+
+CREATE TABLE trash_log (
+  id            INTEGER PRIMARY KEY,
+  performed_at  INTEGER NOT NULL,
+  original_path TEXT    NOT NULL,
+  trashed_name  TEXT,
+  bytes         INTEGER NOT NULL,
+  rule_id       TEXT,
+  manifest_path TEXT,
+  restored_at   INTEGER
+);
+```
+
+### In-memory tree for rendering
+
+```rust
+#[repr(C)]
+struct Node {          // 40 bytes
+    parent: i32,
+    first_child: i32,
+    next_sibling: i32,
+    size_alloc: i64,
+    name_offset: i32,  // into a shared string blob
+    flags: u16,        // kind | category | risk bits
+}
+```
+
+1M nodes ≈ 40 MB + ~30 MB string blob. The treemap lays out against this arena, never
+against SQLite, so zooming is instant.
+
+### Rollups
+
+Post-order DFS after the scan completes, writing `dir_rollup` in one transaction.
+1M rows in ~2–4 seconds. Recompute only for dirty subtrees on incremental refresh.
+
+---
+
+## 6. Scanner — macOS
+
+### 6.1 Enumeration
+
+`getattrlistbulk(2)` — one syscall returns attributes for **many** directory entries.
+This is the single biggest performance decision on macOS; `FileManager.enumerator` or
+`readdir + stat` are 5–10× slower.
+
+```rust
+#[repr(C)]
+struct AttrList {
+    bitmapcount: u16,
+    reserved:    u16,
+    commonattr:  u32,
+    volattr:     u32,
+    dirattr:     u32,
+    fileattr:    u32,
+    forkattr:    u32,
+}
+
+extern "C" {
+    fn getattrlistbulk(
+        dirfd: libc::c_int,
+        alist: *mut AttrList,
+        attr_buf: *mut libc::c_void,
+        buf_size: libc::size_t,
+        options: u64,
+    ) -> libc::c_int;
+}
+```
+
+Requested attributes:
+
+```c
+commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_DEVID
+           | ATTR_CMN_FILEID | ATTR_CMN_OBJTYPE | ATTR_CMN_FLAGS
+           | ATTR_CMN_CRTIME | ATTR_CMN_MODTIME | ATTR_CMN_ACCTIME;
+
+fileattr   = ATTR_FILE_TOTALSIZE | ATTR_FILE_ALLOCSIZE
+           | ATTR_FILE_LINKCOUNT | ATTR_FILE_IOBLOCKSIZE;
+
+dirattr    = ATTR_DIR_ENTRYCOUNT;
+
+options    = FSOPT_PACK_INVAL_ATTRS | FSOPT_NOFOLLOW;
+```
+
+- `FSOPT_NOFOLLOW` → symlink loops are impossible; links are recorded, never followed.
+- `FSOPT_PACK_INVAL_ATTRS` → missing attributes come back zero-length, so "0 bytes" and
+  "attribute absent" are distinguishable.
+
+### 6.2 Buffer parsing — the part that bites
+
+Each record is `u32 length` followed by attributes **in bitmap order**: returned_attrs,
+then common, then dir, then file, then fork. Within each group, ascending bit order.
+
+Two things to get right:
+
+1. `ATTR_CMN_RETURNED_ATTRS` is always first and tells you which attributes actually
+   exist for this entry. Parse it before anything else.
+2. **Alignment is under-documented.** Scalars are 4-byte aligned; `struct timespec` is
+   8-byte on arm64. Validate every field offset against `stat(2)` on the fixture tree
+   before trusting the parser. Do not hand-wave this.
+
+Mitigation: write a `parse_bulk_buffer` unit test that compares parsed output against
+`stat(2)` for every entry in a fixture directory. If they diverge, the offsets are wrong.
+
+### 6.3 macOS traps
+
+| Trap | Handling |
+|---|---|
+| **Full Disk Access** | Required for `~/Library/Mail`, other apps' containers, TM data. **No API to request it** — deep-link to `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles` and poll. Probe `~/Library/Mail` for `EPERM` to detect status. |
+| **Firmlinks** | `/Users` → `/System/Volumes/Data/Users`. Walking both double-counts the entire disk. **Skip all `/System/Volumes/*`.** |
+| **Hard links** | Dedupe on `(devid, fileid)` when `nlink > 1`. Count once, attribute to first path seen. |
+| **APFS clones** | Shared extents, both report full size. Not exposed by `getattrlist`. Accept overcount. |
+| **Sparse files** | `Docker.raw` = 100 GB logical, 4 GB allocated. Always show **allocated**. |
+| **Local TM snapshots** | Invisible to `du`, real space. `tmutil listlocalsnapshots /`. |
+| **Purgeable space** | `volumeAvailableCapacityForImportantUsage` vs `volumeAvailableCapacity`. |
+| **TCC user folders** | Without `NSDesktopFolderUsageDescription`, `NSDocumentsFolderUsageDescription`, `NSDownloadsFolderUsageDescription`, those scans silently return nothing. |
+| **Package bundles** | `.app` is a directory. Walk it normally, but mark the bundle root so "delete app" works on the whole thing. |
+
+### 6.4 Default skip list
+
+```
+/System/Volumes/Data
+/System/Volumes/VM
+/System/Volumes/Preboot
+/System/Volumes/Update
+/System/Volumes/xarts
+/System/Volumes/iSCPreboot
+/System/Volumes/Hardware
+/dev
+/Volumes                      (recurse per-volume instead)
+/.Spotlight-V100
+/.fseventsd
+/.DocumentRevisions-V100      (report separately — can be GBs)
+/private/var/vm               (swap — report, never delete)
+```
+
+### 6.5 Speed
+
+8 rayon workers, each with a directory queue and a 4–8 MB batch buffer. One writer thread
+into SQLite, one transaction per ~10k rows. Apply
+`setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE)` on scan threads so
+the machine stays usable while scanning.
+
+| Metric | Target |
+|---|---|
+| 1M files, warm cache | < 20 s |
+| 1M files, cold cache | < 90 s |
+| 3M files | < 4 min |
+| Peak RSS | < 400 MB |
+| UI interactive during scan | Always |
+
+### 6.6 Incremental refresh
+
+`FSEvents` marks dirty subtrees; re-stat only those. Directory `mtime` is the cheap
+invalidation signal. Full rescan is the fallback, not the default.
+
+---
+
+## 7. Scanner — Windows
+
+### 7.1 v1 — `FindFirstFileExW` (no elevation)
+
+The pragmatic choice: returns name + size + timestamps + attributes per entry in one
+call, needs no admin rights.
+
+```rust
+FindFirstFileExW(
+    &path,
+    FindExInfoBasic,            // omit short 8.3 names → noticeably faster
+    &mut data,
+    FindExSearchNameMatch,
+    None,
+    FIND_FIRST_EX_LARGE_FETCH,  // bigger kernel buffer
+)
+```
+
+`WIN32_FIND_DATAW` gives `nFileSizeHigh`/`nFileSizeLow` and the three `FILETIME`s.
+
+### 7.2 v2 — MFT / USN journal (elevated, 10× faster)
+
+`FSCTL_ENUM_USN_DATA` on `\\.\C:` walks the Master File Table and returns **every file on
+the volume in 1–3 seconds** — name, file reference, parent reference.
+
+```
+CreateFileW(L"\\\\.\\C:", GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+            OPEN_EXISTING, 0, NULL)
+
+DeviceIoControl(h, FSCTL_ENUM_USN_DATA,
+                &MFT_ENUM_DATA_V0 { StartFileReferenceNumber, LowUsn, HighUsn },
+                sizeof, buf, bufsize, &bytes, NULL)
+```
+
+USN records carry **no size**, so pair with `FSCTL_GET_NTFS_FILE_RECORD` (parse the `$DATA`
+attribute from the raw MFT record) or fall back to `GetCompressedFileSizeW` per file.
+
+Build this only if v1 feels slow. It's a deep rabbit hole (MFT record parsing, attribute
+lists, `$ATTRIBUTE_LIST` for fragmented records) with real payoff.
+
+### 7.3 Windows traps
+
+| Trap | Handling |
+|---|---|
+| **Allocated size** | `GetCompressedFileSizeW` — accounts for NTFS compression and sparse files. Or `GetFileInformationByHandleEx(FileStandardInfo)` → `AllocationSize`. |
+| **Sparse files** | `hiberfil.sys`, `pagefile.sys`, VM disks. Same logical-vs-allocated split as Mac. |
+| **Junctions / reparse points** | Must skip or you loop forever. Check `FILE_ATTRIBUTE_REPARSE_POINT`. |
+| **Long paths** | Use `\\?\` prefixes throughout. |
+| **Permissions** | Unelevated, parts of `C:\` are unreadable. Report "not scanned" — never silently under-report. Offer a "relaunch elevated" button. |
+| **`$Recycle.Bin`, `System Volume Information`** | Skip; report separately. |
+| **Hard links** | Dedupe on `(volume serial, file index)` from `BY_HANDLE_FILE_INFORMATION`. |
+| **Case-insensitive paths** | Normalize comparisons; never dedupe paths by exact string. |
+| **UNC / mapped drives** | Skip by default; scanning `\\server\share` over SMB is pathologically slow. |
+
+### 7.4 Speed
+
+`FindFirstFileExW` with 8 rayon workers: roughly 1M files in 30–90 s (vs 1–3 s for MFT).
+Good enough for v1.
+
+---
+
+## 8. Cross-platform size accounting
+
+The one thing that will make the app look broken if it's wrong.
+
+**Rule: always display `size_alloc` (bytes on disk), never `size_logical` (apparent
+size).** Show both in the detail pane, labeled clearly.
+
+| Concept | macOS | Windows |
+|---|---|---|
+| Bytes on disk | `ATTR_FILE_ALLOCSIZE` | `GetCompressedFileSizeW` |
+| Apparent size | `ATTR_FILE_TOTALSIZE` | `nFileSizeHigh/Low` |
+| Identity | `(ATTR_CMN_DEVID, ATTR_CMN_FILEID)` | `(dwVolumeSerialNumber, nFileIndexHigh/Low)` |
+| Hard link count | `ATTR_FILE_LINKCOUNT` | `nNumberOfLinks` |
+| Compression | automatic in `ALLOCSIZE` | automatic in `GetCompressedFileSizeW` |
+| Dedupe / clones | invisible → overcount | invisible → overcount |
+
+Both platforms overcount clones/reflinks. That is acceptable and documented.
+
+---
+
+## 9. File categorization & grouping
+
+### 9.1 Two axes, not one
+
+A filesystem is a tree. But *"what is this file?"* is orthogonal to *"where does it
+live?"* — and people ask both questions about their disk.
+
+- **Location axis** — the real directory hierarchy. Answers *"where is my space going?"*
+- **Category axis** — what each file actually is. Answers *"what is eating my space?"*
+
+The index is built once and feeds both. Categorization costs one hashmap lookup per file
+during the scan, so there is no second pass and no extra I/O.
+
+### 9.2 Categories are tags, not one field
+
+A file has one *type* but many *properties*. "A 4 GB `.mp4` in `~/Downloads`, untouched
+for two years" is Video + Huge + Stale + Installer-adjacent, all at once.
+
+Model it as a bitmask:
+
+```rust
+pub struct Tags(u64);          // ≤ 64 tags, 8 bytes per file
+
+pub const T_IMAGE:       u64 = 1 << 0;
+pub const T_VIDEO:       u64 = 1 << 1;
+pub const T_AUDIO:       u64 = 1 << 2;
+pub const T_DOCUMENT:    u64 = 1 << 3;
+pub const T_ARCHIVE:     u64 = 1 << 4;
+pub const T_CODE:        u64 = 1 << 5;
+pub const T_APP:         u64 = 1 << 6;
+pub const T_CACHE:       u64 = 1 << 32;   // path-derived, not type-derived
+pub const T_DEV_ARTIFACT:u64 = 1 << 33;
+pub const T_INSTALLER:   u64 = 1 << 34;
+pub const T_BACKUP:      u64 = 1 << 35;
+pub const T_SYSTEM:      u64 = 1 << 36;
+pub const T_ORPHAN:      u64 = 1 << 37;
+pub const T_HUGE:        u64 = 1 << 38;
+pub const T_STALE:       u64 = 1 << 39;
+pub const T_DUPLICATE:   u64 = 1 << 40;
+```
+
+Two storage layers, for two different jobs:
+
+| Where | What | Why |
+|---|---|---|
+| SQL `category TEXT` (indexed) | The single primary type | Lets SQLite answer "total video bytes" without scanning |
+| In-memory `tags: u64` | Everything else | 1M files = 8 MB; bitmask filtering over the arena is instant |
+
+Do not put the bitmask in SQL and expect an index to help — `WHERE tags & ?` cannot use a
+B-tree. Primary type goes in a column; secondary tags stay in the arena.
+
+### 9.3 Type detection — the same table on both OSes
+
+The naive approach is to ask the OS: `UTType` on macOS, `HKEY_CLASSES_ROOT` on Windows.
+Both work, and both are the wrong default:
+
+- `UTType(filenameExtension:)` is a LaunchServices round trip. Calling it per file is a
+  disaster; calling it once per *distinct extension* is fine, but it still means two
+  different answers for the same file on two machines.
+- `SHGetFileInfo` on Windows is a shell call — it can hit the disk and the registry. Per
+  file, unusable at 1M files.
+
+**Recommendation: one curated static table, shared by both platforms.**
+
+```
+core/src/categories.rs
+  ~400 entries: "mp4" => Video, "heic" => Image, "ts" => Code,
+                "psd" => Image, "dmg" => Installer, "epub" => Document, ...
+```
+
+- Deterministic, identical on both OSes, no syscalls, ~50 ns per lookup.
+- Covers ~99% of real-world files.
+- The OS-specific sources become an **optional enrichment layer** — used only to fill gaps
+  in the static table, never as the primary path.
+
+This is the difference between a tool that says "Video 180 GB" on both machines and one
+that says it on one and "Other 180 GB" on the other.
+
+### 9.4 Extension traps
+
+| Trap | Handling |
+|---|---|
+| **Compound extensions** | `.tar.gz`, `.tar.bz2`. Categorize by the last segment; display the full compound. |
+| **No extension** | Magic-byte sniff on the first 4 KB: `%PDF`, `\x89PNG`, `PK\x03\x04`, `ftyp` at offset 4. |
+| **Wrong extension** | Optional sniff pass over files that landed in "Other" above 10 MB. Cheap, catches `.txt` files that are really PDFs. |
+| **Dotfiles** | `.gitignore`, `.env`, `.zshrc` → Code/Config, not Unknown. |
+| **Bundles / packages** | `.app`, `.photoslibrary`, `.fcpbundle`, `.logicx`, `.xcodeproj` are *directories*. Classify the bundle as one unit; do not descend into it for categorization purposes. |
+| **Case** | `.JPG` ≡ `.jpg`. Lowercase the extension before lookup. |
+| **Windows hidden/system** | `desktop.ini`, `Thumbs.db` → System, never suggest deleting system. |
+
+### 9.5 Category taxonomy
+
+Keep it small and stable — 14 top-level buckets, with subcategories for display only:
+
+```
+Images        jpg png heic raw tiff psd svg ...
+Video         mp4 mov mkv avi webm ...
+Audio         mp3 flac wav aac m4a ...
+Documents     pdf docx txt epub md ...
+Spreadsheets  xlsx csv numbers ...
+Presentations pptx key ...
+Archives      zip tar gz 7z rar ...
+Code          swift rs ts py js java c cpp sh ...
+Data          json sqlite db parquet ...
+Fonts         ttf otf woff ...
+3D / CAD      obj fbx blend step ...
+Apps          .app .exe .msi
+Disk images   dmg iso vhd vhdx
+Other         everything unclassified
+```
+
+`Other` must always be visible, with a file count and byte total. Hiding it hides bugs.
+
+### 9.6 Grouping views — the actual payoff
+
+Same treemap component. Different tree handed to it. **The layout code does not change.**
+
+| Grouping | Root level | Question it answers |
+|---|---|---|
+| **Folder** | volume → directories | "Where is my space going?" |
+| **Type** | Images, Video, Documents, … | "How much of my disk is video?" |
+| **App** | app name → its support data | "Which app is the hog?" |
+| **Age** | <1m, 1–6m, 6–12m, 1–2y, 2y+ | "What's abandoned?" |
+| **Cleanliness** | Safe, Review, Keep, Never | "What can I delete?" |
+| **Size** | >10 GB, 1–10 GB, 100 MB–1 GB, … | "What are the whales?" |
+
+Each view is a **synthetic tree** built in memory from the arena:
+
+```rust
+// Type view:  root → category → extension → files
+// Age view:   root → bucket → files
+// App view:   root → app → its satellites → files
+fn build_grouping(arena: &Arena, by: Grouping) -> SyntheticTree;
+```
+
+1M nodes → synthetic tree in well under 100 ms. No SQL, no rescans.
+
+Because the treemap, the breadcrumb, the hover tooltip, and the zoom interaction are all
+generic over "a tree of sized nodes," all six views are nearly free once the first one
+works. **This is the single highest-leverage design decision in the UI.**
+
+### 9.7 Cross-filtering and smart collections
+
+Filters compose into queries rather than trees:
+
+```
+Type = Video
+  AND Size > 500 MB
+  AND Age > 1 year
+  AND Path not under ~/Movies
+```
+
+So the Map screen gets a filter bar with chips, and the result can be shown either as a
+flat virtualized table or re-grouped into a treemap. Saved as **smart collections** — a
+JSON query that re-evaluates on every scan.
+
+That's how "find every video over 500 MB I haven't touched in a year" becomes one click
+instead of a manual hunt.
+
+### 9.8 Performance
+
+| Concern | Answer |
+|---|---|
+| Classification during scan | One hashmap lookup per file, ~50 ns. Immeasurable against the syscall. |
+| Never do | Call `UTType`, `SHGetFileInfo`, or read the registry per file. |
+| Magic-byte sniffing | Separate throttled pass, only for "Other" + extensionless + > 1 MB. |
+| Synthetic grouping trees | Built in memory, < 100 ms for 1M nodes. |
+| Re-grouping on toggle | Instant; no disk I/O, no SQL. |
+
+### 9.9 Accuracy gate
+
+- Target: **≥ 95% of bytes** land in a named category.
+- **Invariant: `Σ category bytes == total scanned bytes`.** Assert this in tests. If it
+  doesn't hold, either a file is unclassified or a size was double-counted — both are bugs.
+- A wrong category is worse than an honest "Other". Never guess silently.
+
+---
+
+## 10. Cleanup rules engine
+
+Rules are **JSON**, tagged by platform, so one catalog serves both OSes and can be edited
+without recompiling.
+
+```json
+{
+  "id": "dev.node_modules",
+  "platform": "any",
+  "title": "node_modules in stale projects",
+  "glob": "**/node_modules",
+  "exclude": ["**/node_modules/**/node_modules"],
+  "kind": "regenerable",
+  "risk": "safe",
+  "confidence": 0.95,
+  "stale_days": 90,
+  "explain": "Dependencies can be reinstalled with npm install.",
+  "action": "trash"
+}
+```
+
+### Rule kinds
+
+| Kind | Meaning | Default selected |
+|---|---|---|
+| `regenerable` | Rebuilt automatically on next use | yes |
+| `stale` | Untouched for N days | yes |
+| `duplicate` | Byte-identical to another file | no (pick keep-one) |
+| `leftover` | Belongs to something that no longer exists | no |
+| `valuable` | Real data (backups, mail) | no, with warning |
+| `system` | Report only, never deletable | never |
+
+### macOS catalog
+
+| Rule | Path | Risk | Typical |
+|---|---|---|---|
+| Xcode Derived Data | `~/Library/Developer/Xcode/DerivedData` | safe | 5–50 GB |
+| Xcode iOS DeviceSupport | `~/Library/Developer/Xcode/iOS DeviceSupport` | safe | 5–40 GB |
+| Xcode Archives | `~/Library/Developer/Xcode/Archives` | review | 1–20 GB |
+| Unavailable Simulators | `~/Library/Developer/CoreSimulator/Devices` | safe | 2–20 GB |
+| User caches | `~/Library/Caches/*` 30d+ | safe | 1–15 GB |
+| App container caches | `~/Library/Containers/*/Data/Library/Caches` | safe | 1–20 GB |
+| Logs | `~/Library/Logs`, `/Library/Logs` | safe | <2 GB |
+| Trash | `~/.Trash` | review | varies |
+| Old installers | `~/Downloads/*.{dmg,pkg,zip}` 90d+ | review | 1–20 GB |
+| Old downloads | `~/Downloads` untouched 1y+ | review | varies |
+| iOS backups | `~/Library/Application Support/MobileSync/Backup` | valuable | 10–100 GB |
+| Mail attachments | `~/Library/Mail/**/Attachments` | valuable | 1–20 GB |
+| Docker disk image | `~/Library/Containers/com.docker.docker/.../Docker.raw` | review | 10–100 GB |
+| Local TM snapshots | `tmutil listlocalsnapshots /` | safe | 5–50 GB |
+| Homebrew cache | `~/Library/Caches/Homebrew` | safe | 1–10 GB |
+| Orphaned app support | `~/Library/Application Support/<bundleid>` | review | 1–10 GB |
+| Orphaned preferences | `~/Library/Preferences/<bundleid>.plist` | review | <1 GB |
+| Document revisions | `/.DocumentRevisions-V100` | system (report) | 1–10 GB |
+| Swap / sleep image | `/private/var/vm` | system (report) | — |
+
+**Docker special case:** `Docker.raw` is sparse, so the file is much smaller on disk than
+its logical size, and deleting it nukes every image and container. Never delete it — show
+a card that says "run `docker system prune`" with the current `docker system df` output.
+
+### Windows catalog
+
+| Rule | Path | Risk |
+|---|---|---|
+| User temp | `%TEMP%`, `%LOCALAPPDATA%\Temp` | safe |
+| Windows temp | `C:\Windows\Temp` | safe |
+| Windows.old | `C:\Windows.old` | review |
+| Update cache | `C:\Windows\SoftwareDistribution\Download` | safe |
+| Delivery Optimization | `C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization` | safe |
+| Recycle Bin | `$Recycle.Bin` | review |
+| Browser caches | Chrome / Edge / Firefox cache dirs | safe |
+| Old installers | `~/Downloads/*.{exe,msi}` 90d+ | review |
+| Crash dumps | `%LOCALAPPDATA%\CrashDumps` | safe |
+| Package manager caches | `%LOCALAPPDATA%\npm-cache`, `pip\Cache`, `~/.cargo\registry`, `~/.nuget\packages` | safe |
+| Thumbnail cache | `%LOCALAPPDATA%\Microsoft\Windows\Explorer\thumbcache_*.db` | safe |
+| Hibernation file | `C:\hiberfil.sys` | report (`powercfg /h off`) |
+| Pagefile | `C:\pagefile.sys` | report only |
+| WinSxS | `C:\Windows\WinSxS` | report (`DISM /Online /Cleanup-Image /StartComponentCleanup`) |
+| Windows Error Reporting | `%LOCALAPPDATA%\Microsoft\Windows\WER` | safe |
+
+### Shared catalog
+
+`node_modules`, `__pycache__`, `.venv`, `target/`, `.next/`, `dist/`, `.gradle/caches`,
+duplicate files, files > 1 GB, orphaned app data.
+
+### The Reclaim score
+
+```
+score = Σ (bytes × confidence × risk_weight)
+risk_weight:  safe = 1.0   review = 0.5   never = 0
+```
+
+Surfaced as one headline on the Overview: **"You can safely free ~X GB"**, split into
+*safe* and *needs review*. That number is the entire product.
+
+---
+
+## 11. App inventory & unused apps
+
+### Signals
+
+| Signal | macOS | Windows |
+|---|---|---|
+| Last used | Spotlight `kMDItemLastUsedDate`, `kMDItemUseCount` | `Amcache.hve`, Prefetch, `LastAccessTime` (often disabled) |
+| Installed | `mdfind` on `kMDItemContentType == 'com.apple.application-bundle'` | `HKLM/HKCU\...\Uninstall` (+ `Wow6432Node`) |
+| Running | `NSWorkspace.runningApplications` | `EnumProcesses` + image path |
+| Autostart | `launchctl list`, `~/Library/LaunchAgents`, `/Library/LaunchDaemons`, `backgrounditems.btm` | `Run` keys, Startup folder, `Task Scheduler` |
+| Default handler | LaunchServices | `HKCU\...\FileExts` |
+| Data footprint | `~/Library/{Application Support,Caches,Containers,Group Containers}`, prefs plists, saved state | `%LOCALAPPDATA%`, `%APPDATA%`, `%PROGRAMDATA%` |
+
+Windows `LastAccessTime` is **disabled by default** on modern NTFS — never use it as the
+sole basis for "unused". Prefer Amcache + Prefetch + Start-menu presence.
+
+### Classification
+
+```
+unused        = last_used > 180d AND not running AND not autostart
+                AND not a default handler AND not system
+likely-unused = last_used 90–180d, no supporting evidence
+in-use        = anything else
+unknown       = no metadata available  →  never flag
+```
+
+### Footprint = app + satellites
+
+Removing an app should show the **total cost**, not just the binary:
+
+```
+/Applications/Foo.app                          ← macOS
+~/Library/Application Support/<bundleid>
+~/Library/Caches/<bundleid>
+~/Library/Containers/<bundleid>
+~/Library/Group Containers/<group>
+~/Library/Preferences/<bundleid>.plist
+~/Library/Saved Application State/<bundleid>.savedState
+
+C:\Program Files\Foo\                          ← Windows
+%LOCALAPPDATA%\Foo
+%APPDATA%\Foo
+%PROGRAMDATA%\Foo
+```
+
+Satellite matching is a **heuristic** (bundle-id / name substring). Label it
+"associated data (estimated)" and always require confirmation.
+
+### Never suggest removing
+
+- Anything in `/System/Applications` or with a `com.apple.` bundle id
+- Apps that are the current default handler for a UTI
+- Apps running right now
+- Anything referenced by an active login item / autostart entry (offer to remove that first)
+
+---
+
+## 12. Duplicate detection
+
+Three stages, each filtering the previous:
+
+1. **Group by exact `size_alloc`.** Files with unique sizes cannot be duplicates. This
+   alone eliminates ~95% of candidates.
+2. **Partial hash** the first 64 KB. Eliminates most remaining false positives.
+3. **Full BLAKE3** only for survivors.
+
+Throttle hashing I/O (`IOPOL_THROTTLE` on macOS, `FILE_FLAG_SEQUENTIAL_SCAN` on Windows)
+so the disk doesn't stall. Show progress per group, cancellable.
+
+### Keep-one policy
+
+Default suggestion: **keep the newest**, prefer the shallowest path, prefer the one inside
+a Documents folder over Downloads over Trash. Never auto-select — show the group and let
+me pick.
+
+Skip entirely: files < 1 MB (not worth the I/O), files in system dirs, and anything under
+`~/Library` (risky to dedupe app data).
+
+---
+
+## 13. UI & visualization
+
+### Overview
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Macintosh HD · 994 GB                                       │
+│  ████████████████████░░░░░░░░░░  712 GB used · 282 free      │
+│  [Apps 210] [Photos 180] [Docs 95] [System 120]              │
+│  [Caches 45] [Other 62]                                      │
+├──────────────────────────────────────────────────────────────┤
+│  ✦ You can safely free 68 GB                                 │
+│    54 GB safe · 14 GB needs review            [ Review → ]   │
+├──────────────────────────────────────────────────────────────┤
+│  Biggest consumers           Top cleanup wins                │
+│  1. ~/Movies      182 GB     Xcode junk        31 GB         │
+│  2. ~/Pictures    141 GB     Old installers    12 GB         │
+│  3. ~/Library      88 GB     Caches             9 GB         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Treemap
+
+**Squarified treemap** (Bruls/Huizing/van Wijk) via `d3-hierarchy`, drawn to `<canvas>`.
+Not SVG — 1,500 rects in the DOM will crawl.
+
+- **Grouping selector** in the toolbar: `Folder · Type · App · Age · Size · Cleanliness`.
+  Swaps the synthetic tree, keeps the same layout engine (§9.6).
+- **Level of detail:** draw only nodes with area > 6 px², cap ~1,500 rects, aggregate the
+  rest into a single "+N more" tile.
+- Labels only when the rect fits the text; otherwise hover tooltip.
+- Color by category (stable palette), with toggles for "by age" and "by cleanliness"
+  (safe / review / keep).
+- Click to zoom with an animated transition; breadcrumb + `Esc` to go up; double-click
+  reveals in Finder/Explorer; spacebar previews.
+- Sunburst as an alternate view for "who owns the disk" at a glance.
+- **Filter chips** above the map: type, size, age, location, cleanliness. Filters compose
+  with the grouping — e.g. group by Type, filtered to `Age > 1y` and `Size > 500 MB`.
+  Saveable as a smart collection.
+
+### Screens
+
+1. **Overview** — gauge, reclaim score, top consumers, quick wins, category breakdown
+2. **Map** — treemap/sunburst, grouping selector, breadcrumb, search, filter chips
+3. **Large Files** — virtualized table, > 100 MB default, sortable
+4. **Apps** — name, size, associated data, last used, remove
+5. **Cleanup** — rule cards grouped by kind, checkboxes, running total, Trash button
+6. **Duplicates** — hash groups, keep-one picker
+7. **History** — past cleanups, undo, exported manifests
+
+### Table performance
+
+1M rows: `react-window` + **keyset pagination**:
+
+```sql
+SELECT * FROM entries
+WHERE scan_id = ? AND size_alloc < ?
+ORDER BY size_alloc DESC
+LIMIT 200;
+```
+
+Never `OFFSET` at scale. Never load a million rows into JS.
+
+### Search
+
+SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
+
+---
+
+## 14. Tauri command surface
+
+```rust
+#[tauri::command] async fn start_scan(roots: Vec<String>) -> Result<u32, String>;
+#[tauri::command] async fn cancel_scan(scan_id: u32) -> Result<(), String>;
+#[tauri::command] async fn scan_status(scan_id: u32) -> Result<ScanStatus, String>;
+
+#[tauri::command] async fn get_overview(scan_id: u32) -> Result<Overview, String>;
+#[tauri::command] async fn get_categories(scan_id: u32) -> Result<Vec<CategoryTotal>, String>;
+#[tauri::command] async fn get_grouping(scan_id: u32, by: Grouping, filter: Filter)
+    -> Result<SyntheticTree, String>;
+#[tauri::command] async fn get_children(scan_id: u32, parent_id: u32) -> Result<Vec<Child>, String>;
+#[tauri::command] async fn get_largest(scan_id: u32, min_size: u64, cursor: Option<u64>)
+    -> Result<Page<FileRow>, String>;
+#[tauri::command] async fn search(scan_id: u32, query: String, cursor: Option<u32>)
+    -> Result<Page<FileRow>, String>;
+
+#[tauri::command] async fn get_rules(scan_id: u32) -> Result<Vec<RuleGroup>, String>;
+#[tauri::command] async fn preview_deletion(paths: Vec<String>) -> Result<DeletionPlan, String>;
+#[tauri::command] async fn execute_deletion(plan_id: String) -> Result<DeletionResult, String>;
+#[tauri::command] async fn undo_deletion(manifest_id: String) -> Result<(), String>;
+
+#[tauri::command] async fn list_apps(scan_id: u32) -> Result<Vec<AppRow>, String>;
+#[tauri::command] async fn find_duplicates(scan_id: u32, min_size: u64)
+    -> Result<Vec<DupGroup>, String>;
+
+#[tauri::command] async fn check_full_disk_access() -> Result<bool, String>;
+#[tauri::command] async fn open_full_disk_access_settings() -> Result<(), String>;
+```
+
+Events (backend → UI):
+
+```
+scan://progress   { scan_id, files, bytes, current_path, rate }
+scan://done       { scan_id, status, duration_ms }
+scan://error      { scan_id, message }
+dupes://progress  { scan_id, hashed, total }
+```
+
+`preview_deletion` is mandatory before `execute_deletion` — the UI can never skip the
+dry-run receipt.
+
+---
+
+## 15. Safety model
+
+Personal use means I can be more aggressive than a consumer app — but the cost of a
+mistake is my own data, so the mechanics stay.
+
+1. **Trash, never `unlink`.** `trash` crate → macOS Trash / Windows Recycle Bin. Recoverable
+   through the OS even if this app is deleted.
+2. **Dry-run receipt.** A sheet listing every path, size, and risk badge before anything
+   moves. No hidden work.
+3. **Preflight re-stat** immediately before deleting: confirm `(size, mtime, inode/file
+   index)` still match the scan. If anything changed, skip it and report. *(TOCTOU guard.)*
+4. **Path guards:** resolve symlinks/junctions, refuse `/System`, `C:\Windows`,
+   `C:\Program Files`, bundle internals, and anything escaping the scanned root.
+5. **Manifest + undo.** Write `trash-<timestamp>.json` before moving. Undo restores by
+   original path; report anything that couldn't be restored.
+6. **Never touch:** Photos library, Music library, Mail store, keychains, `.ssh`,
+   Time Machine backups, `pagefile.sys`, system/immutable-flagged files.
+7. **Friction on bulk:** anything over 5 GB needs a second confirmation click.
+8. **No background deletion.** Ever. Every removal is a click I made, in this session.
+9. **Local audit log.** Every action appended to a text log. No network.
+
+---
+
+## 16. Build schedule
+
+Scanner first. If the numbers are wrong, nothing else matters.
+
+| # | Milestone | Deliverable | Est. |
+|---|---|---|---|
+| **M0** | Core + CLI | Cargo workspace, `Entry`, schema, migrations, `scanbench` | 3 days |
+| **M1** | macOS scanner | `getattrlistbulk` FFI, buffer parser, hard-link dedupe, firmlink skips, ≤2% vs `du -sxd` | 1 wk |
+| **M2** | Windows scanner | `FindFirstFileExW` walk, junction skips, long paths, ≤2% vs `Get-ChildItem` | 1 wk |
+| **M3** | Catalog + treemap | Tree arena, rollups, Tauri shell, React treemap, breadcrumb, search | 1.5 wk |
+| **M3b** | Grouping views | Shared category table, tags, synthetic trees, grouping selector, filter chips | 4 days |
+| **M4** | Cleanup | Rules engine, both catalogs, Cleanup UI, trash + undo + manifest | 1.5 wk |
+| **M5** | Apps | Inventory, footprint, last-used, removal flow — both platforms | 1 wk |
+| **M6** | Duplicates | Size grouping, blake3 verify, keep-one UI, throttled I/O | 4 days |
+
+**≈ 8.5 weeks total.** M1 and M2 can overlap once the trait is stable.
+
+### Week 1, concretely
+
+- Day 1: `cargo new` workspace, `core` + `catalog` crates, `Entry`, schema, migrations.
+- Day 2: `getattrlistbulk` FFI, open a directory, get raw bytes back.
+- Day 3: buffer parser + `stat(2)` cross-check test.
+- Day 4: `scanbench` walks `~/Documents`, prints count/size/time.
+- Day 5: compare against `du -sxd`, fix drift to ≤2%.
+
+If week 1 ends with `scanbench` agreeing with `du` within 2%, the project is real.
+
+---
+
+## 17. Testing & accuracy gates
+
+Accuracy is the product, so gate on it **before** building UI.
+
+### `scanbench` CLI
+
+```
+$ scanbench ~/Documents
+path            /Users/me/Documents
+files           184,203
+dirs            12,884
+allocated       48.21 GB
+logical         51.07 GB
+skipped         37 dirs (permission denied)
+elapsed         4.31 s
+peak rss        212 MB
+```
+
+### Cross-check harness
+
+| Platform | Compare against | Tolerance |
+|---|---|---|
+| macOS | `du -sxd`, `df -k` | ≤ 2% |
+| Windows | `Get-ChildItem -Recurse \| Measure-Object Length -Sum` | ≤ 2% |
+
+Exclusions from the comparison: snapshots, purgeable, clones/reflinks, pagefile, hiberfil,
+and `System Volume Information`. Any drift outside that is a bug.
+
+### Fixture trees
+
+Generate a synthetic tree containing:
+
+- hard links (3 names → 1 inode)
+- symlink loops (`a → b`, `b → a`)
+- Windows junctions pointing at parents
+- sparse files (4 GB logical, 8 KB allocated)
+- unicode names, emoji, RTL text
+- 255-byte names, paths > 1,024 chars
+- permission-denied directories
+- empty directories
+- deeply nested (200 levels)
+
+Assert exact counts and exact byte totals. This suite is the regression net for both
+scanners.
+
+### Safety tests (100% coverage)
+
+- symlink escape (link points outside the scanned root)
+- TOCTOU (file replaced between scan and delete)
+- path traversal (`../../etc/passwd`)
+- refusal to delete inside an app bundle
+- manifest write failure → abort before moving anything
+- undo with a missing Trash item → reports, doesn't crash
+
+### Performance CI
+
+Nightly benchmark against a fixed 200k-file image. Fail on >20% regression.
+
+### Category invariants
+
+These are cheap to assert and catch real bugs:
+
+- `Σ category bytes == total scanned bytes` (nothing unclassified, nothing double-counted)
+- `Σ type-grouping tree bytes == total scanned bytes`
+- Every grouping view (`Folder`, `Type`, `App`, `Age`, `Size`, `Cleanliness`) produces the
+  same root total. If one view disagrees, the synthetic-tree builder is wrong.
+- Fixture tree has a known file per category; assert exact assignment for all ~400
+  extensions in the shared table.
+- `Other` is always present and its byte total is reported, never hidden.
+
+---
+
+## 18. Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Sizes wrong → tool is useless | Critical | `scanbench` accuracy gate before UI; always show allocated vs logical |
+| Delete something important | Critical | Trash-only, dry-run receipt, manifest, undo, preflight re-stat, bulk friction |
+| `getattrlistbulk` buffer offsets wrong | High | `stat(2)` cross-check test on every entry in the fixture tree |
+| Rust slower to write than expected | Medium | Fallback to Go core — schema, rules, and UI unchanged |
+| Windows MFT work is deep | Medium | Skip in v1; `FindFirstFileExW` is fast enough |
+| macOS FDA confusion | Medium | Poll + deep link + "scan anyway" degraded mode with visible gaps |
+| APFS/NTFS clone overcounting | Low | Documented; personal tool |
+| Two platforms drift | Low | One schema, one rules catalog, one UI; only `ScanKit` is per-platform |
+
+---
+
+## 19. The MVP cut
+
+For personal use, the 80/20 is:
+
+**M0 → M1 → M3** = scanner + treemap on Mac. **~3 weeks.** Immediately useful.
+
+**M3b** (grouping by type) is only ~4 extra days and roughly doubles how useful the map is,
+because "how much of my disk is video?" is the question people actually ask. Do it early.
+
+Then **M4** (cleanup rules) — that's where the actual gigabytes come from.
+
+**M5 (apps) and M6 (duplicates) are the least value per hour.** Do them last, or never.
+Duplicates in particular are expensive (full-file hashing) for usually modest returns on a
+modern SSD where the real space is in caches, old installers, and dev artifacts.
+
+### Ship criteria for v1
+
+- [ ] `scanbench` within 2% of `du` on the fixture tree
+- [ ] Scan of 1M files completes in under 90 s cold
+- [ ] Treemap stays at 60 fps while zooming
+- [ ] Category totals sum exactly to the scan total
+- [ ] All six grouping views agree on the root total
+- [ ] Cleanup finds ≥ 3 categories with real reclaim on my machine
+- [ ] Trash + undo round-trips perfectly
+- [ ] Nothing under `/System` or `C:\Windows` is ever deletable
