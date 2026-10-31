@@ -653,6 +653,9 @@ core/src/categories.rs
 - Covers ~99% of real-world files.
 - The OS-specific sources become an **optional enrichment layer** — used only to fill gaps
   in the static table, never as the primary path.
+  On Windows, `scan-windows::registry::load()` reads `HKCR\.ext` (`PerceivedType`, then
+  `Content Type`) once at startup, and `Category::install_overrides` accepts only
+  extensions the table maps to `Other`. The scan loop never touches the registry.
 
 This is the difference between a tool that says "Video 180 GB" on both machines and one
 that says it on one and "Other 180 GB" on the other.

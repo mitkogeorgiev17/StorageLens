@@ -6,6 +6,16 @@
 //!
 //! Lookup is a single hash probe and does not allocate: the extension is lowercased
 //! into a 32-byte stack buffer, then matched against the static table.
+//!
+//! # Platform enrichment
+//!
+//! PLAN §9.3 allows an OS source (the Windows registry today) to **fill gaps** in
+//! the table, never to replace it. [`Category::install_overrides`] takes such a
+//! map once, at startup, before any scan; it is consulted only when the static
+//! table has no entry, so every extension the table knows still classifies the
+//! same on both platforms (AGENTS.md invariant 6). An extension that would
+//! otherwise be `Other` may become more specific on one machine — the documented
+//! cost of enrichment.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -152,7 +162,35 @@ impl Category {
         // ASCII lowercasing preserves UTF-8 validity, so this never fails; the
         // fallback is `Other` rather than a panic.
         let key = std::str::from_utf8(&buffer[..bytes.len()]).unwrap_or("");
-        table().get(key).copied().unwrap_or(Self::Other)
+        table()
+            .get(key)
+            .copied()
+            .or_else(|| OVERRIDES.get()?.get(key).copied())
+            .unwrap_or(Self::Other)
+    }
+
+    /// Install platform gap-fillers for extensions the static table does not know.
+    ///
+    /// Call once at startup, before scanning. Entries for extensions the table
+    /// already maps, entries whose category is `Other`, and keys that are not a
+    /// lowercased extension are dropped, so a caller cannot override the shared
+    /// table even by mistake. Returns the number of overrides installed, or `None`
+    /// if overrides were already installed (the first set wins; classification
+    /// must not change mid-session).
+    pub fn install_overrides(overrides: HashMap<String, Category>) -> Option<usize> {
+        let filtered: HashMap<String, Category> = overrides
+            .into_iter()
+            .filter(|(extension, category)| {
+                *category != Self::Other
+                    && !extension.is_empty()
+                    && extension.len() <= MAX_EXTENSION_LEN
+                    && !extension.contains('.')
+                    && *extension == extension.to_ascii_lowercase()
+                    && !table().contains_key(extension.as_str())
+            })
+            .collect();
+        let installed = filtered.len();
+        OVERRIDES.set(filtered).ok().map(|()| installed)
     }
 
     /// Classify a path by its final extension, falling back to the whole filename.
@@ -264,6 +302,9 @@ fn iso_media_category(brand: &[u8]) -> Category {
     }
 }
 
+/// Gap-filling categories from the platform, installed once at startup.
+static OVERRIDES: OnceLock<HashMap<String, Category>> = OnceLock::new();
+
 fn table() -> &'static HashMap<&'static str, Category> {
     static TABLE: OnceLock<HashMap<&'static str, Category>> = OnceLock::new();
 
@@ -298,6 +339,40 @@ fn table() -> &'static HashMap<&'static str, Category> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The only test that installs overrides: `OVERRIDES` is process-global, so
+    /// every key here is unique to this test.
+    #[test]
+    fn overrides_fill_gaps_and_never_replace_the_table() {
+        assert_eq!(Category::for_extension("zzslgapcore"), Category::Other);
+
+        let overrides = HashMap::from([
+            // A genuine gap: installed.
+            ("zzslgapcore".to_owned(), Category::Audio),
+            // Known to the table: dropped.
+            ("jpg".to_owned(), Category::Video),
+            // Adds nothing: dropped.
+            ("zzslothercore".to_owned(), Category::Other),
+            // Not a normalised extension: dropped.
+            ("ZZSLUPPERCORE".to_owned(), Category::Video),
+            ("zz.slcore".to_owned(), Category::Video),
+        ]);
+        assert_eq!(Category::install_overrides(overrides), Some(1));
+
+        assert_eq!(Category::for_extension("zzslgapcore"), Category::Audio);
+        assert_eq!(Category::for_extension("ZZSLGAPCORE"), Category::Audio);
+        assert_eq!(
+            Category::for_path(Path::new("song.zzslgapcore")),
+            Category::Audio
+        );
+        assert_eq!(Category::for_extension("jpg"), Category::Images);
+        assert_eq!(Category::for_extension("zzslupperco"), Category::Other);
+
+        // The first set wins for the whole session.
+        let again = HashMap::from([("zzslgapcore2".to_owned(), Category::Video)]);
+        assert_eq!(Category::install_overrides(again), None);
+        assert_eq!(Category::for_extension("zzslgapcore2"), Category::Other);
+    }
 
     #[test]
     fn case_does_not_matter() {
