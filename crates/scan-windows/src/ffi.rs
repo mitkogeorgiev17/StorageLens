@@ -352,8 +352,34 @@ pub fn is_ntfs(name: &[u16]) -> bool {
     String::from_utf16_lossy(name).eq_ignore_ascii_case("NTFS")
 }
 
+// --- Drives -------------------------------------------------------------------------
+
+/// `GetDriveTypeW` results worth listing, from `WindowsProgramming` (a feature
+/// not otherwise needed): removable media and fixed disks. Network shares,
+/// optical drives, and RAM disks are left out, as the volume picker shows them.
+pub const DRIVE_REMOVABLE: u32 = 2;
+pub const DRIVE_FIXED: u32 = 3;
+
+/// Drive letters present in a `GetLogicalDrives` bitmask (bit 0 = `A:`).
+pub fn drive_letters(mask: u32) -> Vec<char> {
+    (0..26u8)
+        .filter(|bit| mask & (1 << bit) != 0)
+        .map(|bit| char::from(b'A' + bit))
+        .collect()
+}
+
+/// Display name for a drive: its label, or `Local Disk (C:)` like Explorer.
+pub fn drive_name(label: &str, letter: char) -> String {
+    let label = label.trim();
+    if label.is_empty() {
+        format!("Local Disk ({letter}:)")
+    } else {
+        format!("{label} ({letter}:)")
+    }
+}
+
 #[cfg(windows)]
-pub use sys::{compressed_size, throttle_current_thread, volume_info, DirReader};
+pub use sys::{compressed_size, drives, throttle_current_thread, volume_info, DirReader};
 
 #[cfg(windows)]
 mod sys {
@@ -361,20 +387,22 @@ mod sys {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
+    use storagelens_core::{Bytes, Volume};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FileIdBothDirectoryInfo, GetCompressedFileSizeW, GetFileInformationByHandleEx,
-        GetVolumeInformationW, GetVolumePathNameW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_SIZE, OPEN_EXISTING,
+        CreateFileW, FileIdBothDirectoryInfo, GetCompressedFileSizeW, GetDiskFreeSpaceExW,
+        GetDriveTypeW, GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW,
+        GetVolumePathNameW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_SIZE, OPEN_EXISTING,
     };
     use windows::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
     };
 
     use super::{
-        is_ntfs, join_u32, parse_dir_info, verbatim_c, win32_code, RawEntry, VolumeInfo,
-        DIR_INFO_BUFFER_BYTES,
+        drive_letters, drive_name, is_ntfs, join_u32, parse_dir_info, verbatim_c, win32_code,
+        RawEntry, VolumeInfo, DIR_INFO_BUFFER_BYTES, DRIVE_FIXED, DRIVE_REMOVABLE,
     };
 
     fn wide(path: &Path) -> Vec<u16> {
@@ -564,6 +592,90 @@ mod sys {
             serial,
             ntfs: is_ntfs(&filesystem[..end]),
         })
+    }
+
+    fn until_nul(units: &[u16]) -> String {
+        let end = units
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(units.len());
+        String::from_utf16_lossy(&units[..end])
+    }
+
+    /// Fixed and removable drives with their capacity. A drive that cannot be
+    /// queried (an empty card reader) is skipped, never an error.
+    pub fn drives() -> Vec<Volume> {
+        // SAFETY: no arguments; returns a bitmask.
+        let mask = unsafe { GetLogicalDrives() };
+        drive_letters(mask)
+            .into_iter()
+            .filter_map(|letter| {
+                let root = format!("{letter}:\\");
+                let wide_root: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+                let root_ptr = PCWSTR(wide_root.as_ptr());
+                // SAFETY: `wide_root` is NUL-terminated and outlives each call
+                // below; every output is a valid, writable local.
+                let kind = unsafe { GetDriveTypeW(root_ptr) };
+                if kind != DRIVE_FIXED && kind != DRIVE_REMOVABLE {
+                    return None;
+                }
+                let mut label = [0u16; 261];
+                let mut filesystem = [0u16; 64];
+                let mut serial = 0u32;
+                // SAFETY: as above; the name slices carry their own lengths.
+                unsafe {
+                    GetVolumeInformationW(
+                        root_ptr,
+                        Some(&mut label),
+                        Some(&mut serial),
+                        None,
+                        None,
+                        Some(&mut filesystem),
+                    )
+                }
+                .ok()?;
+                let mut available = 0u64;
+                let mut total = 0u64;
+                // SAFETY: as above; both outputs are writable u64 locals.
+                unsafe {
+                    GetDiskFreeSpaceExW(root_ptr, Some(&mut available), Some(&mut total), None)
+                }
+                .ok()?;
+                Some(Volume {
+                    id: serial,
+                    name: drive_name(&until_nul(&label), letter),
+                    mount_point: root.into(),
+                    fs_type: until_nul(&filesystem),
+                    total: Bytes::new(total),
+                    available: Bytes::new(available),
+                    purgeable: Bytes::ZERO,
+                    removable: kind == DRIVE_REMOVABLE,
+                })
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod drive_tests {
+    use super::*;
+
+    #[test]
+    fn drive_letters_follow_the_bitmask() {
+        assert_eq!(drive_letters(0), Vec::<char>::new());
+        assert_eq!(drive_letters(0b1100), vec!['C', 'D']);
+        assert_eq!(drive_letters(1 << 25 | 1), vec!['A', 'Z']);
+        assert_eq!(
+            drive_letters(u32::MAX).len(),
+            26,
+            "bits above Z are ignored"
+        );
+    }
+
+    #[test]
+    fn drives_are_named_like_explorer() {
+        assert_eq!(drive_name("", 'C'), "Local Disk (C:)");
+        assert_eq!(drive_name("  Data ", 'D'), "Data (D:)");
     }
 }
 

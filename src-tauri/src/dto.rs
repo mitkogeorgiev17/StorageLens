@@ -36,8 +36,13 @@ pub struct VolumeDto {
     pub name: String,
     pub mount_point: String,
     pub total: u64,
+    /// Space the OS reports as available. Includes `purgeable`.
     pub available: u64,
+    /// `total − available`.
     pub used: u64,
+    /// macOS purgeable space (APFS snapshots, caches the OS may evict), part of
+    /// `available`. 0 on Windows, and on macOS until the Foundation bridge lands.
+    pub purgeable: u64,
 }
 
 /// One category's share of the scan.
