@@ -1,12 +1,13 @@
 /**
- * Choose what to scan: the home folder, a mounted volume, or a typed absolute
- * path. No native folder dialog — that needs a Tauri plugin (a new
- * dependency, AGENTS.md §2.3), so it waits for a decision.
+ * Choose what to scan: the home folder, a mounted volume, a folder from the
+ * OS's own picker (NSOpenPanel / IFileOpenDialog, via the dialog plugin, #72),
+ * or a typed absolute path. Cancelling the picker changes nothing.
  *
  * On macOS, a denied Full Disk Access probe shows a banner first: without it,
  * protected folders are skipped and the totals come out low.
  */
 
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useId, useState, type FormEvent } from "react";
 
 import { api, type DiskAccess, type ScanTargetDto } from "../lib/api";
@@ -73,6 +74,24 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
     }
   };
 
+  const choose = async () => {
+    setError(null);
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Choose a folder to scan",
+      });
+      // `null` when the picker was cancelled: leave everything as it was.
+      if (typeof picked === "string") {
+        setPath(picked);
+        await start(picked);
+      }
+    } catch (cause: unknown) {
+      setError(message(cause));
+    }
+  };
+
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     void start(path);
@@ -131,8 +150,19 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
         </ul>
       ) : null}
 
+      <div className="choose-row">
+        <button
+          type="button"
+          className="button button-secondary"
+          disabled={busy}
+          onClick={() => void choose()}
+        >
+          Choose folder…
+        </button>
+      </div>
+
       <form className="path-form" onSubmit={onSubmit}>
-        <label htmlFor={pathId}>Or scan a folder by path</label>
+        <label htmlFor={pathId}>Or type a folder's path</label>
         <div className="path-row">
           <input
             id={pathId}
