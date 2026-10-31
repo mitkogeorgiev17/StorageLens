@@ -20,3 +20,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The fixture generator is the oracle for `tests/fixture_stat.rs`; the feature is
+# off in normal builds so it never ships.
+storagelens-core = { workspace = true, features = ["fixtures"] }
