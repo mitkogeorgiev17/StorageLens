@@ -206,6 +206,10 @@ pub struct Rule {
     /// Only when one of these names is inside the match (`pyvenv.cfg`).
     #[serde(default)]
     pub when_child: Vec<String>,
+    /// Whether hits start selected; defaults from `kind`. Never true for a
+    /// rule that is not deletable.
+    #[serde(default)]
+    pub selected: Option<bool>,
 }
 
 impl Rule {
@@ -227,6 +231,11 @@ impl Rule {
         } else {
             Action::Trash
         })
+    }
+
+    /// Whether its hits start selected on the Cleanup screen.
+    pub fn starts_selected(&self) -> bool {
+        self.deletable() && self.selected.unwrap_or(self.kind.selected_by_default())
     }
 
     /// Whether its hits may be offered for deletion at all.

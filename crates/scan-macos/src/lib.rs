@@ -24,6 +24,7 @@
 
 pub mod attrlist;
 pub mod parse;
+pub mod snapshots;
 
 #[cfg(target_os = "macos")]
 mod dedupe;

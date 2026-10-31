@@ -627,3 +627,12 @@ fn stamp_matches_what_the_walker_recorded() {
     }
     assert!(checked > 100, "only {checked} entries checked");
 }
+
+/// `tmutil` itself: read-only, and whatever snapshots exist, it parses.
+#[test]
+fn tmutil_lists_local_snapshots() {
+    let snapshots = storagelens_scan_macos::snapshots::list(Path::new("/")).expect("tmutil");
+    for snapshot in snapshots {
+        assert!(!snapshot.name.is_empty());
+    }
+}

@@ -867,6 +867,31 @@ without recompiling.
 its logical size, and deleting it nukes every image and container. Never delete it — show
 a card that says "run `docker system prune`" with the current `docker system df` output.
 
+**Built (#32).** `crates/analysis/rules/macos.json` has 20 rules, each with a fixture and
+an exact byte total in `tests/rules_macos.rs`. Where it differs from the table above:
+
+- **Report-only, because StorageLens moves things to the Trash and nothing else (§15.1):**
+  - **Trash** (`~/.Trash`): emptying it would also end undo.
+  - **Local TM snapshots:**
+    - They are not files, so no glob can see them.
+    - They are listed by `scan_macos::snapshots::list`, which parses `tmutil
+      listlocalsnapshots`.
+    - The card shows `tmutil deletelocalsnapshots`; `tmutil` gives no sizes.
+  - **Mail attachments:** the guard protects `~/Library/Mail` (§15.6). Mail's *opened*
+    copies in its container (`Mail Downloads`) are a separate review rule.
+  - **Docker.raw:** review risk with action `report`, so it can never be selected.
+- **Simulators** are matched as devices not booted for 90 days. Telling which ones are
+  "unavailable" needs `xcrun simctl`; the card names `xcrun simctl delete unavailable`.
+- **User and container caches** exclude `com.apple.*` (and `CloudKit` / `Homebrew`, which
+  have their own handling).
+- **Not selected by default:** Xcode Archives (needed to read crash reports), old
+  simulators and old downloads. This is set with the new optional `selected` field.
+- **Added:** SwiftUI previews, simulator caches, `~/.npm/_cacache`, Mail Downloads.
+- **Deferred to the app inventory (#36–#38):** orphaned app support and orphaned
+  preferences. "Orphaned" needs the list of installed apps.
+- **Known cautious case:** a sandbox container whose bundle id ends in `.app` looks like
+  a bundle to the guard, so its caches are refused (listed, not hit).
+
 ### Windows catalog
 
 | Rule | Path | Risk |

@@ -270,7 +270,7 @@ impl Walk<'_> {
                 risk: rule.risk(),
                 confidence: rule.confidence(),
                 deletable: rule.deletable(),
-                selected: rule.deletable() && rule.kind.selected_by_default(),
+                selected: rule.starts_selected(),
                 node: index,
                 path,
                 bytes: node.total_alloc,

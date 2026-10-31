@@ -11,8 +11,7 @@ use storagelens_analysis::rules::{
     evaluate, fingerprint, risk_weight, Context, Evaluation, Kind, RuleSet, BUILTIN,
 };
 use storagelens_analysis::{build, FileFilter, Grouping, GroupingInput, Risk};
-use storagelens_catalog::{modified_times, rollup, Arena, Catalog, Platform as CatalogPlatform};
-use storagelens_core::{Entry, EntryKind, EntrySink};
+use storagelens_core::EntryKind;
 use storagelens_safety::{Guard, Platform, Refusal};
 
 const NOW: i64 = 1_800_000_000;
@@ -21,67 +20,9 @@ const OLD: i64 = NOW - 400 * DAY;
 const NEW: i64 = NOW - DAY;
 const HOME: &str = "/Users/me";
 
-const D: EntryKind = EntryKind::Dir;
-const F: EntryKind = EntryKind::File;
+mod common;
 
-struct Scan {
-    _dir: tempfile::TempDir,
-    catalog: Catalog,
-    scan_id: i64,
-    arena: Arena,
-    times: Vec<i64>,
-}
-
-/// Rows are `(path below the root, kind, bytes, mtime)`; folders are created
-/// as they are named, parents first.
-fn scan(root: &str, rows: &[(&str, EntryKind, u64, i64)]) -> Scan {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let catalog = Catalog::open(dir.path().join("catalog.db")).expect("open");
-    let scan_id = catalog
-        .begin_session(CatalogPlatform::Macos, false, Path::new(root))
-        .expect("begin");
-    let mut writer = catalog.writer(scan_id).expect("writer");
-    let mut paths: Vec<String> = vec![String::new()];
-    let entry = |parent: u32, name: &str, kind: EntryKind, size: u64, modified: i64| Entry {
-        parent,
-        name: name.to_owned(),
-        kind,
-        size_alloc: size,
-        size_logical: size,
-        dev: 1,
-        file_id: 0,
-        nlink: 1,
-        attrs: 0,
-        created: 0,
-        modified,
-        accessed: 0,
-        hardlink_dup: false,
-    };
-    writer.accept(entry(0, "root", D, 0, 0)).expect("root");
-    for &(path, kind, size, modified) in rows {
-        let (parent_path, name) = path.rsplit_once('/').unwrap_or(("", path));
-        let parent = paths
-            .iter()
-            .position(|known| known == parent_path)
-            .unwrap_or_else(|| panic!("{path}: parent {parent_path} not listed yet"));
-        writer
-            .accept(entry(parent as u32, name, kind, size, modified))
-            .expect("accept");
-        paths.push(path.to_owned());
-    }
-    writer.flush().expect("flush");
-    drop(writer);
-    let mut arena = Arena::load(catalog.connection(), scan_id).expect("arena");
-    rollup::compute(&mut arena);
-    let times = modified_times(catalog.connection(), &arena).expect("times");
-    Scan {
-        _dir: dir,
-        catalog,
-        scan_id,
-        arena,
-        times,
-    }
-}
+use common::{scan, scan_fast, Scan, D, F};
 
 fn mac() -> Context {
     Context::new(Platform::MacOs, Some(HOME))
@@ -184,7 +125,7 @@ fn every_built_in_rule_matches_exactly_its_golden_set() {
     let scan = home_fixture();
     let rules = RuleSet::builtin(&mac());
     assert!(rules.problems.is_empty(), "{:?}", rules.problems);
-    assert_eq!(rules.rules.len(), 7);
+    assert_eq!(rules.rules.len(), 7 + 20, "shared + macOS");
     let evaluation = run(&rules, &scan, HOME);
     assert_eq!(
         hit_set(&evaluation),
@@ -655,7 +596,7 @@ fn invalid_rules_are_skipped_with_a_reason() {
 fn a_rules_folder_overrides_and_reloads_without_recompiling() {
     let dir = tempfile::tempdir().expect("tempdir");
     let empty = fingerprint(dir.path());
-    assert_eq!(RuleSet::load(&mac(), dir.path()).rules.len(), 7);
+    assert_eq!(RuleSet::load(&mac(), dir.path()).rules.len(), 27);
     assert_eq!(
         fingerprint(&dir.path().join("missing")),
         fingerprint(&dir.path().join("also-missing"))
@@ -676,7 +617,7 @@ fn a_rules_folder_overrides_and_reloads_without_recompiling() {
     assert_ne!(changed, empty, "a new catalog file changes the fingerprint");
     let loaded = RuleSet::load(&mac(), dir.path());
     assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
-    assert_eq!(loaded.rules.len(), 8);
+    assert_eq!(loaded.rules.len(), 28);
     assert_eq!(
         loaded.get("dev.rust_target").expect("rule").rule.stale_days,
         None
@@ -689,7 +630,7 @@ fn a_rules_folder_overrides_and_reloads_without_recompiling() {
     // An unreadable catalog file is a problem, not a failure.
     fs::create_dir(dir.path().join("folder.json")).expect("mkdir");
     let with_problem = RuleSet::load(&mac(), dir.path());
-    assert_eq!(with_problem.rules.len(), 8);
+    assert_eq!(with_problem.rules.len(), 28);
     assert_eq!(with_problem.problems.len(), 1);
     assert!(with_problem.problems[0].contains("folder.json"));
 }
@@ -737,51 +678,4 @@ fn one_million_nodes_evaluate_in_one_pass() {
     );
     assert_eq!(evaluation.hits.len(), 20_000);
     assert!(elapsed.as_millis() < 1_000, "{elapsed:?}");
-}
-
-/// [`scan`] with a path → index map, for large fixtures.
-fn scan_fast(root: &str, rows: &[(&str, EntryKind, u64, i64)]) -> Scan {
-    use std::collections::HashMap;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let catalog = Catalog::open(dir.path().join("catalog.db")).expect("open");
-    let scan_id = catalog
-        .begin_session(CatalogPlatform::Macos, false, Path::new(root))
-        .expect("begin");
-    let mut writer = catalog.writer(scan_id).expect("writer");
-    let entry = |parent: u32, name: &str, kind: EntryKind, size: u64, modified: i64| Entry {
-        parent,
-        name: name.to_owned(),
-        kind,
-        size_alloc: size,
-        size_logical: size,
-        dev: 1,
-        file_id: 0,
-        nlink: 1,
-        attrs: 0,
-        created: 0,
-        modified,
-        accessed: 0,
-        hardlink_dup: false,
-    };
-    writer.accept(entry(0, "root", D, 0, 0)).expect("root");
-    let mut index: HashMap<&str, u32> = HashMap::from([("", 0)]);
-    for (position, &(path, kind, size, modified)) in rows.iter().enumerate() {
-        let (parent_path, name) = path.rsplit_once('/').unwrap_or(("", path));
-        writer
-            .accept(entry(index[parent_path], name, kind, size, modified))
-            .expect("accept");
-        index.insert(path, position as u32 + 1);
-    }
-    writer.flush().expect("flush");
-    drop(writer);
-    let mut arena = Arena::load(catalog.connection(), scan_id).expect("arena");
-    rollup::compute(&mut arena);
-    let times = modified_times(catalog.connection(), &arena).expect("times");
-    Scan {
-        _dir: dir,
-        catalog,
-        scan_id,
-        arena,
-        times,
-    }
 }
