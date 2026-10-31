@@ -10,6 +10,17 @@
  * | Reveal            | double-click             | ⌘/Ctrl+Enter                  |
  * | Preview           | Space over the item      | Space on the selection        |
  *
+ * The toolbar switches the grouping (Folder / Type / App / Age / Size /
+ * Cleanliness) and sets filter chips (#26). The view lives in the store and
+ * the URL hash, so it survives other screens and back/forward. The plain
+ * folder view reads `get_tree`; every other view reads `get_grouping`, which
+ * returns the same tree shape, so the treemap draws them all unchanged. While
+ * a new view loads, the old one stays on screen (no flash).
+ *
+ * In the Folder view the breadcrumb is the location. Switching to another
+ * grouping inside a folder limits that view to the folder (a removable chip);
+ * switching back to Folder opens it again.
+ *
  * State is per scan: the screen is keyed by scan id, so a rescan starts over at
  * the new root with an empty cache. Every listener is a React prop on an
  * element of this screen, and timers and in-flight loads are dropped on
@@ -19,21 +30,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 import Breadcrumb from "../components/Breadcrumb";
+import FilterBar from "../components/FilterBar";
+import GroupingSelector from "../components/GroupingSelector";
 import Treemap, {
   type ActivationSource,
   type TreemapHandle,
   type TreemapHit,
 } from "../components/Treemap";
-import { api, type TreeNodeDto } from "../lib/api";
+import { api, type Grouping, type TreeNodeDto } from "../lib/api";
 import { formatBytes, formatCount } from "../lib/format";
 import {
   canZoomInto,
   chainTo,
   indexTree,
+  joinPath,
   pathOf,
   toTreemapInput,
   type Crumb,
 } from "../lib/mapTree";
+import { cleared, isFiltered, toFilter, viewKey, type MapView as View } from "../lib/mapView";
 import { CATEGORY_LABELS } from "../lib/treemap";
 import { hasScan, useAppStore, type ScanSummary } from "../store";
 
@@ -41,6 +56,8 @@ import { hasScan, useAppStore, type ScanSummary } from "../store";
 const DOUBLE_CLICK_MS = 220;
 /** Keeps the tooltip clear of the pointer and the map's edges. */
 const TOOLTIP_OFFSET = 14;
+/** Wait this long on an item before looking up its path (grouped views). */
+const PATH_DELAY_MS = 120;
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 const FILE_MANAGER = IS_MAC ? "Finder" : "Explorer";
@@ -76,10 +93,21 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const view = useAppStore((state) => state.mapView);
+  const setMapView = useAppStore((state) => state.setMapView);
+  const key = viewKey(view);
+  /** The plain folder view, read with `get_tree`. */
+  const plain = view.by === "folder" && !isFiltered(view);
+  const grouped = view.by !== "folder";
+  const [loading, setLoading] = useState(false);
+  /** Real paths of entries shown in a grouped view, looked up on demand. */
+  const [paths, setPaths] = useState<ReadonlyMap<number, string>>(new Map());
+
   const treemapRef = useRef<TreemapHandle | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const cache = useRef(new Map<number, TreeNodeDto>());
+  /** Loaded trees by view key and id; `root` for a view's root. */
+  const cache = useRef(new Map<string, TreeNodeDto>());
   /** Bumped by every navigation; a load that finishes late is dropped. */
   const navigation = useRef(0);
   const clickTimer = useRef<number | null>(null);
@@ -88,17 +116,30 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   const index = useMemo(() => (tree === null ? null : indexTree(tree)), [tree]);
   const input = useMemo(() => (tree === null ? null : toTreemapInput(tree)), [tree]);
 
+  // `view` is read through `key`: equal views share one cache and one loader.
+  const viewRef = useRef<View>(view);
+  viewRef.current = view;
+  const shown = useRef(false);
+  shown.current = tree !== null;
+  /** Load `id` in the current view, or the view's root for `null`. */
   const load = useCallback(
-    async (id: number): Promise<TreeNodeDto> => {
-      const cached = cache.current.get(id);
+    async (id: number | null): Promise<TreeNodeDto> => {
+      const cacheKey = `${key}|${id ?? "root"}`;
+      const cached = cache.current.get(cacheKey);
       if (cached !== undefined) {
         return cached;
       }
-      const loaded = await api.getTree(scanId, id);
-      cache.current.set(id, loaded);
+      const current = viewRef.current;
+      let loaded: TreeNodeDto;
+      if (current.by === "folder" && !isFiltered(current)) {
+        loaded = await api.getTree(scanId, id ?? (await api.getOverview(scanId)).rootId);
+      } else {
+        loaded = await api.getGrouping(scanId, current.by, toFilter(current), id ?? undefined);
+      }
+      cache.current.set(cacheKey, loaded);
       return loaded;
     },
-    [scanId],
+    [scanId, key],
   );
 
   const cancelClick = () => {
@@ -108,31 +149,41 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     }
   };
 
-  // Open on the scan root (unless a search result is being opened instead:
-  // its effect runs after this one and takes over the navigation ticket).
   useEffect(() => {
     mounted.current = true;
-    const ticket = ++navigation.current;
-    api
-      .getOverview(scanId)
-      .then(async (overview) => {
-        const root = await load(overview.rootId);
-        if (mounted.current && ticket === navigation.current) {
-          setCrumbs([{ id: root.id, name: root.name }]);
-          setTree(root);
-        }
-      })
-      .catch((cause: unknown) => {
-        if (mounted.current) {
-          setError(message(cause));
-        }
-      });
     return () => {
       mounted.current = false;
       navigation.current += 1;
       cancelClick();
     };
-  }, [scanId, load]);
+  }, []);
+
+  // Open the view's root whenever the view changes (unless a folder is being
+  // opened instead: that effect runs after this one and takes over the
+  // navigation ticket). The old view stays up until the new one arrives.
+  useEffect(() => {
+    const ticket = ++navigation.current;
+    cancelClick();
+    setLoading(true);
+    load(null)
+      .then((root) => {
+        if (mounted.current && ticket === navigation.current) {
+          show(root, [{ id: root.id, name: root.name }], null, null);
+          setLoading(false);
+        }
+      })
+      .catch((cause: unknown) => {
+        if (mounted.current && ticket === navigation.current) {
+          if (shown.current) {
+            setNotice(message(cause));
+          } else {
+            setError(message(cause));
+          }
+          setLoading(false);
+        }
+      });
+    // `show` and `cancelClick` only set state and clear a timer.
+  }, [load]);
 
   /**
    * Show `next` as the map's folder; `trail` is the breadcrumb that leads to
@@ -151,6 +202,7 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     setSelectedId(select);
     setHovered(null);
     setError(null);
+    setLoading(false);
   };
 
   // "Show in Map" from search: open the entry's folder (or the folder itself)
@@ -175,12 +227,14 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
         const next = await load(folder.id);
         if (mounted.current && ticket === navigation.current) {
           show(next, trail, null, focus.isDirectory ? null : focus.entryId);
+          setLoading(false);
           mapFocusHandled(focus.nonce);
         }
       })
       .catch((cause: unknown) => {
         if (mounted.current && ticket === navigation.current) {
           setNotice(message(cause));
+          setLoading(false);
           mapFocusHandled(focus.nonce);
         }
       });
@@ -214,7 +268,9 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
 
   const goTo = async (position: number) => {
     const target = crumbs[position];
-    if (target === undefined || position === crumbs.length - 1) {
+    // While a new view loads, the map still shows the old one: its ids mean
+    // nothing in the new view.
+    if (loading || target === undefined || position === crumbs.length - 1) {
       return;
     }
     cancelClick();
@@ -237,6 +293,10 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   };
 
   const run = (action: "reveal" | "preview", id: number) => {
+    if (id < 0) {
+      setNotice("That is a group of files, not one file or folder. Open it to see what is inside.");
+      return;
+    }
     setNotice(null);
     const call = action === "reveal" ? api.revealEntry : api.previewEntry;
     call(scanId, id).catch((cause: unknown) => {
@@ -248,7 +308,7 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
 
   const activate = (hit: TreemapHit, source: ActivationSource) => {
     const node = index?.get(hit.id)?.node;
-    if (node === undefined) {
+    if (node === undefined || loading) {
       return;
     }
     cancelClick();
@@ -269,12 +329,41 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   };
 
   const reveal = (hit: TreemapHit) => {
+    if (hit.id < 0) {
+      return;
+    }
     cancelClick();
     setSelectedId(hit.id);
     run("reveal", hit.id);
   };
 
+  const chooseGrouping = (by: Grouping) => {
+    if (by === view.by) {
+      return;
+    }
+    const here = crumbs[crumbs.length - 1];
+    if (view.by === "folder") {
+      // Leaving the Folder view inside a folder: group that folder.
+      const within = crumbs.length > 1 && here !== undefined ? here : null;
+      setMapView({ ...view, by, within });
+    } else if (by === "folder" && view.within !== null) {
+      // Back to Folder: open the folder the grouped view was limited to.
+      setMapView({ ...view, by, within: null }, view.within.id);
+    } else {
+      setMapView({ ...view, by });
+    }
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // The toolbar's own controls keep their keys (Space toggles, Esc closes).
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.closest("details") !== null)
+    ) {
+      return;
+    }
     const upChord = event.key === "ArrowUp" && (IS_MAC ? event.metaKey : event.altKey);
     if (event.key === "Escape" || upChord) {
       if (crumbs.length > 1) {
@@ -284,11 +373,11 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
       return;
     }
     // Space previews what the details line shows. Buttons keep their own Space.
-    if (event.key === " " && !(event.target instanceof HTMLButtonElement)) {
-      const target = hovered?.id ?? selectedId;
-      if (target !== null) {
+    if (event.key === " " && !(target instanceof HTMLButtonElement)) {
+      const shown = hovered?.id ?? selectedId;
+      if (shown !== null) {
         event.preventDefault();
-        run("preview", target);
+        run("preview", shown);
       }
     }
   };
@@ -312,6 +401,29 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     tooltip.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   };
 
+  // A grouped view's entries come from all over the scan: look up the real
+  // path of what the details line shows, once the pointer rests on it.
+  const detailId = hovered?.id ?? selectedId ?? tree?.id ?? null;
+  useEffect(() => {
+    if (!grouped || detailId === null || detailId < 0 || paths.has(detailId)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      api
+        .getAncestors(scanId, detailId)
+        .then((chain) => {
+          if (mounted.current) {
+            const names = chain.slice(1).map((crumb) => crumb.name);
+            setPaths((known) => new Map(known).set(detailId, joinPath(summary.root, names)));
+          }
+        })
+        .catch(() => {
+          // The details line just shows no path.
+        });
+    }, PATH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [grouped, detailId, paths, scanId, summary.root]);
+
   if (error !== null) {
     return (
       <section className="empty" role="alert">
@@ -327,15 +439,26 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     if (node === undefined || index === null) {
       return null;
     }
+    // A grouped view's breadcrumb is groups, not folders: a real entry's path
+    // is looked up (below), a group shows where it sits in the view.
+    const trail = [...crumbs.map((crumb) => crumb.name), ...chainTo(index, id).map((c) => c.name)];
+    const path = !grouped
+      ? pathOf(summary.root, crumbs, index, id)
+      : id >= 0
+        ? (paths.get(id) ?? "")
+        : trail.join(" › ");
     return {
       node,
-      path: pathOf(summary.root, crumbs, index, id),
-      category: node.kind === "Dir" ? "Folder" : CATEGORY_LABELS[node.category],
+      path,
+      category: id < 0 ? "Group" : node.kind === "Dir" ? "Folder" : CATEGORY_LABELS[node.category],
     };
   };
   const hoverInfo = hovered === null ? null : describe(hovered.id);
   const detail =
     hoverInfo ?? (selectedId === null ? null : describe(selectedId)) ?? (tree === null ? null : describe(tree.id));
+
+  // Only a filtered view can be empty; an empty folder is just an empty map.
+  const empty = tree !== null && !plain && isFiltered(view) && crumbs.length === 1 && tree.sizeAlloc === 0;
 
   const label =
     tree === null
@@ -346,9 +469,18 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
 
   return (
     <div className="map-screen" onKeyDown={onKeyDown}>
+      <div className="map-controls">
+        <GroupingSelector value={view.by} onChange={chooseGrouping} />
+        <FilterBar view={view} onChange={(next) => setMapView(next)} />
+      </div>
       <div className="map-toolbar">
         {current === undefined ? <span className="map-loading">Loading…</span> : null}
         <Breadcrumb crumbs={crumbs} onNavigate={(position) => void goTo(position)} />
+        {loading && current !== undefined ? (
+          <span className="map-loading" aria-live="polite">
+            Updating…
+          </span>
+        ) : null}
       </div>
 
       <div ref={stageRef} className="map-stage" onPointerMove={onPointerMove}>
@@ -363,6 +495,14 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
           onHover={setHovered}
           label={label}
         />
+        {empty ? (
+          <div className="map-empty">
+            <p>Nothing in this scan matches these filters.</p>
+            <button type="button" className="button" onClick={() => setMapView(cleared(view))}>
+              Clear filters
+            </button>
+          </div>
+        ) : null}
         <div
           ref={tooltipRef}
           className="map-tooltip"
@@ -405,7 +545,7 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
           </span>
         ) : (
           <>
-            Click a folder to zoom · Double-click to show in {FILE_MANAGER} ·{" "}
+            Click {grouped ? "a group" : "a folder"} to zoom · Double-click to show in {FILE_MANAGER} ·{" "}
             {IS_MAC ? "Space for Quick Look" : "Space to show in Explorer"} · Esc or{" "}
             {IS_MAC ? "⌘↑" : "Alt+↑"} to go up
           </>

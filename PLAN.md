@@ -759,6 +759,15 @@ JSON query that re-evaluates on every scan.
 That's how "find every video over 500 MB I haven't touched in a year" becomes one click
 instead of a manual hunt.
 
+**Built so far (#26):** the Map's toolbar has the grouping selector and chips for type (any
+number), minimum size, age, and location — a file must pass every chip. `Filter` is
+`{ categories, minSize, olderThanDays, within }`, where `within` is a folder's entry id
+("Path under"). In the Folder view the breadcrumb is the location; switching to another
+grouping inside a folder sets `within` to it. The view lives in the URL hash
+(`#map?by=type&type=video&size=1g&age=1y&in=42:Downloads`), so back/forward restore it.
+"Path not under" and the cleanliness chip wait for smart collections (#28) and the rules
+engine (#31); the Cleanliness grouping is disabled until rules give files a verdict.
+
 ### 9.8 Performance
 
 | Concern | Answer |
@@ -1049,6 +1058,7 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
 #[tauri::command] async fn get_grouping(scan_id: u32, by: Grouping, filter: Filter,
     parent_id: Option<i64>, depth: Option<u32>) -> Result<TreeNode, String>;
     // same shape as get_tree; groups that are not folders have negative ids
+    // Filter { categories, min_size, older_than_days, within: entry id of a folder }
 #[tauri::command] async fn get_children(scan_id: u32, parent_id: u32) -> Result<Vec<Child>, String>;
 #[tauri::command] async fn get_tree(scan_id: u32, parent_id: u32, depth: Option<u32>)
     -> Result<TreeNode, String>;   // the treemap's subtree, node-budgeted

@@ -222,6 +222,8 @@ pub struct FilterDto {
     pub categories: Vec<Category>,
     pub min_size: Option<u64>,
     pub older_than_days: Option<u32>,
+    /// Only files inside this folder (an entry id); `None` means the whole scan.
+    pub within: Option<i64>,
 }
 
 /// A cleanup rule's findings.
