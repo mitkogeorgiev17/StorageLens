@@ -329,8 +329,10 @@ impl<S: EntrySink> Walker<'_, S> {
 type FileKey = (u64, u64);
 
 /// Stable `std` cannot identify a file on Windows, so nothing is deduped there.
+/// The placeholder keeps the `seen` set well-typed without a unit argument;
+/// `nlink_of` is always `1` on Windows, so it is never populated.
 #[cfg(not(unix))]
-type FileKey = ();
+type FileKey = u64;
 
 #[cfg(unix)]
 fn file_key(metadata: &fs::Metadata) -> FileKey {
@@ -339,7 +341,9 @@ fn file_key(metadata: &fs::Metadata) -> FileKey {
 }
 
 #[cfg(not(unix))]
-fn file_key(_metadata: &fs::Metadata) -> FileKey {}
+fn file_key(_metadata: &fs::Metadata) -> FileKey {
+    0
+}
 
 #[cfg(unix)]
 fn sizes(metadata: &fs::Metadata) -> (u64, u64) {
@@ -621,21 +625,16 @@ mod tests {
         }
     }
 
+    /// Windows has no inode, so the reference walker deliberately counts every
+    /// hard-link name there; `fixtures_check` compensates for that.
+    #[cfg(unix)]
     #[test]
     fn hard_links_are_counted_once_on_unix() {
         let (tree, outcome, _) = walk_fixture();
         let manifest = tree.manifest();
 
-        #[cfg(unix)]
-        {
-            assert_eq!(outcome.result.files, manifest.files);
-            assert_eq!(manifest.hardlink_names, 3);
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = manifest;
-        }
+        assert_eq!(outcome.result.files, manifest.files);
+        assert_eq!(manifest.hardlink_names, 3);
     }
 
     #[test]

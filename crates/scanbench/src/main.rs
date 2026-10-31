@@ -280,4 +280,23 @@ mod tests {
         assert!(!cli.fixtures);
         assert_eq!(cli.db.as_deref(), Some(Path::new("/tmp/catalog.db")));
     }
+
+    /// `canonicalize` returns a verbatim path on Windows; leaving the prefix on
+    /// would defeat the `C:\Windows` prefix check in the walker.
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_paths_lose_their_prefix() {
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\Windows")),
+            PathBuf::from(r"C:\Windows")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"C:\Windows")),
+            PathBuf::from(r"C:\Windows")
+        );
+    }
 }
