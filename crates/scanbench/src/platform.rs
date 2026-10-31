@@ -14,11 +14,14 @@
 
 use std::path::Path;
 
-use storagelens_core::{CancelToken, Entry, EntryKind, EntrySink, Result, ScanOptions};
+use storagelens_core::{CancelToken, EntrySink, Result, ScanOptions};
+#[cfg(target_os = "macos")]
+use storagelens_core::{Entry, EntryKind};
 
 use crate::walk::{self, ScanOutcome};
 
 /// How often to sample resident memory, in accepted entries.
+#[cfg(target_os = "macos")]
 const RSS_SAMPLE_EVERY: u64 = 4_096;
 
 /// The implementation a run uses.
@@ -100,6 +103,7 @@ fn platform_scan<S: EntrySink>(
 }
 
 /// Forwards entries to the real sink while counting what the report needs.
+#[cfg(target_os = "macos")]
 struct Counting<'a, S: EntrySink> {
     inner: &'a mut S,
     links: u64,
@@ -107,6 +111,7 @@ struct Counting<'a, S: EntrySink> {
     peak_rss_bytes: u64,
 }
 
+#[cfg(target_os = "macos")]
 impl<'a, S: EntrySink> Counting<'a, S> {
     fn new(inner: &'a mut S) -> Self {
         Self {
@@ -124,6 +129,7 @@ impl<'a, S: EntrySink> Counting<'a, S> {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl<S: EntrySink> EntrySink for Counting<'_, S> {
     fn accept(&mut self, entry: Entry) -> Result<()> {
         if entry.kind == EntryKind::Symlink {
