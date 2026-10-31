@@ -242,7 +242,10 @@ adding complexity — and say so rather than quietly regressing.
 - `strict: true`, no `any` (use `unknown` + narrowing).
 - Function components only. State via `zustand`; no Redux, no context spaghetti.
 - No UI component may hold more than ~200 rows in memory — use `react-window` +
-  keyset pagination.
+  pagination without `OFFSET`: keyset cursors for forward-only lists, or a
+  positional range over an order the backend keeps in memory
+  (`catalog::listing`, as the Large Files table does) when the scrollbar must
+  jump anywhere.
 - All byte values formatted through one helper (`lib/format.ts`), never inline.
 
 ---

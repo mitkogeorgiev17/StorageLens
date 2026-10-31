@@ -147,6 +147,26 @@ pub struct FileRowDto {
     pub modified: Option<i64>,
 }
 
+/// Sort keys of the Large Files table. Each has a natural direction (size:
+/// largest first, modified: oldest first, type: by category then largest);
+/// `reversed` reads it backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileSortDto {
+    Size,
+    Modified,
+    Type,
+}
+
+/// Rows `start ..` of a file listing, and how many rows it has in all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRangeDto {
+    pub total: u64,
+    pub start: u64,
+    pub items: Vec<FileRowDto>,
+}
+
 /// Keyset cursor for size-ordered lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

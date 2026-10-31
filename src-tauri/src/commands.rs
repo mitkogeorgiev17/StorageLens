@@ -32,16 +32,17 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use storagelens_catalog::{
-    rollup, Arena, Catalog, EntryWriter, NodeIndex, Platform, ScanSession, SizeCursor,
-    DEFAULT_BATCH_SIZE,
+    file_order, modified_times, rollup, slice, Arena, Catalog, EntryWriter, FileSort, NodeIndex,
+    Platform, ScanSession, SizeCursor, DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
 };
 use storagelens_core::{CancelToken, EntryKind, Progress, ScanOptions, ScanResult, ScanStatus};
 use tauri::{AppHandle, State};
 
 use crate::dto::{
-    AppRowDto, CategoryDto, ChildDto, DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRowDto,
-    FilterDto, Grouping, OverviewDto, Page, RuleGroupDto, ScanStatusDto, ScanTargetDto,
-    ScanTargetKind, SizeCursorDto, SyntheticNodeDto, TreeNodeDto, VolumeDto,
+    AppRowDto, CategoryDto, ChildDto, DeletionPlanDto, DeletionResultDto, DupGroupDto,
+    FileRangeDto, FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page, RuleGroupDto,
+    ScanStatusDto, ScanTargetDto, ScanTargetKind, SizeCursorDto, SyntheticNodeDto, TreeNodeDto,
+    VolumeDto,
 };
 use crate::events::{
     self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
@@ -86,6 +87,16 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// The Large Files order in use, and the modified times it may need. One
+/// scan at a time, like the arena: ~4 MB of order plus ~8 MB of times per
+/// million files.
+struct Listing {
+    scan_id: i64,
+    times: Option<Arc<Vec<i64>>>,
+    key: Option<(FileSortDto, u64)>,
+    order: Arc<Vec<NodeIndex>>,
+}
+
 /// The scan currently running.
 struct RunningScan {
     scan_id: i64,
@@ -106,6 +117,7 @@ pub struct AppState {
     results: Mutex<HashMap<i64, ScanResult>>,
     /// Dry-run receipts, by plan id.
     plans: Mutex<HashMap<String, DeletionPlanDto>>,
+    listing: Mutex<Option<Listing>>,
     next_plan: AtomicU64,
 }
 
@@ -120,6 +132,7 @@ impl AppState {
             arena: Mutex::new(None),
             results: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
+            listing: Mutex::new(None),
             next_plan: AtomicU64::new(1),
         })
     }
@@ -832,6 +845,100 @@ fn path_of(root: Option<&Path>, arena: &Arena, index: NodeIndex) -> String {
     path.display().to_string()
 }
 
+/// Rows per `get_files` call: the table holds at most two of these.
+pub const MAX_FILE_RANGE: u32 = 200;
+
+/// A file order and the modified times its rows read from.
+type OrderAndTimes = (Arc<Vec<NodeIndex>>, Arc<Vec<i64>>);
+
+/// The file order for `(sort, min_size)`, built on first use and cached.
+fn file_listing(
+    state: &AppState,
+    arena: &Arena,
+    scan_id: i64,
+    sort: FileSortDto,
+    min_size: u64,
+) -> CommandResult<OrderAndTimes> {
+    let mut listing = lock(&state.listing)?;
+    if listing
+        .as_ref()
+        .is_none_or(|current| current.scan_id != scan_id)
+    {
+        *listing = Some(Listing {
+            scan_id,
+            times: None,
+            key: None,
+            order: Arc::new(Vec::new()),
+        });
+    }
+    let current = listing.as_mut().ok_or("listing cache is unavailable")?;
+    let times = match &current.times {
+        Some(times) => Arc::clone(times),
+        None => {
+            let loaded = {
+                let catalog = lock(&state.catalog)?;
+                modified_times(catalog.connection(), arena).map_err(|error| error.to_string())?
+            };
+            let loaded = Arc::new(loaded);
+            current.times = Some(Arc::clone(&loaded));
+            loaded
+        }
+    };
+    if current.key != Some((sort, min_size)) {
+        let key = match sort {
+            FileSortDto::Size => FileSort::Size,
+            FileSortDto::Modified => FileSort::Modified,
+            FileSortDto::Type => FileSort::Type,
+        };
+        current.order = Arc::new(file_order(arena, key, min_size, Some(&times)));
+        current.key = Some((sort, min_size));
+    }
+    Ok((Arc::clone(&current.order), times))
+}
+
+/// Rows `start .. start + count` of every counted file of at least `min_size`
+/// bytes, in `sort` order (backwards when `reversed`). Positional, so a table
+/// can jump anywhere in a million rows; never more than [`MAX_FILE_RANGE`].
+#[allow(clippy::too_many_arguments)]
+pub fn get_files(
+    state: &AppState,
+    scan_id: i64,
+    sort: FileSortDto,
+    reversed: bool,
+    min_size: u64,
+    start: u64,
+    count: u32,
+) -> CommandResult<FileRangeDto> {
+    let arena = state.arena(scan_id)?;
+    let root = state.root_of(scan_id);
+    let (order, times) = file_listing(state, &arena, scan_id, sort, min_size)?;
+    let start_position = usize::try_from(start).unwrap_or(usize::MAX);
+    let count = count.clamp(1, MAX_FILE_RANGE) as usize;
+    let items = slice(&order, start_position, count, reversed)
+        .into_iter()
+        .filter_map(|index| {
+            let node = arena.node(index)?;
+            Some(FileRowDto {
+                id: arena.entry_id(index)?,
+                name: arena.name(index)?.to_owned(),
+                path: path_of(root.as_deref(), &arena, index),
+                category: node.category(),
+                size_alloc: node.size_alloc,
+                size_logical: arena.size_logical(index).unwrap_or(0),
+                modified: times
+                    .get(index as usize)
+                    .copied()
+                    .filter(|&time| time != UNKNOWN_TIME),
+            })
+        })
+        .collect();
+    Ok(FileRangeDto {
+        total: order.len() as u64,
+        start,
+        items,
+    })
+}
+
 pub fn get_largest(
     state: &AppState,
     scan_id: i64,
@@ -1048,6 +1155,28 @@ pub mod ipc {
         entry_id: i64,
     ) -> CommandResult<()> {
         super::preview_entry(state.inner(), scan_id, entry_id)
+    }
+
+    #[tauri::command]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_files(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        sort: FileSortDto,
+        reversed: bool,
+        min_size: u64,
+        start: u64,
+        count: u32,
+    ) -> CommandResult<FileRangeDto> {
+        super::get_files(
+            state.inner(),
+            scan_id,
+            sort,
+            reversed,
+            min_size,
+            start,
+            count,
+        )
     }
 
     #[tauri::command]
@@ -1478,6 +1607,53 @@ mod tests {
         if homes == 1 {
             assert_eq!(targets[0].kind, ScanTargetKind::Home, "home comes first");
         }
+    }
+
+    #[test]
+    fn get_files_slices_every_sort_by_position() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let (scan_id, _) = scan(&state, &root);
+
+        let all = get_files(&state, scan_id, FileSortDto::Size, false, 0, 0, 200).expect("all");
+        assert_eq!(all.total, 4);
+        let names: Vec<&str> = all.items.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names[0], "a.jpg", "largest first");
+        assert_eq!(
+            all.items[0].path,
+            root.join("photos")
+                .join("2024")
+                .join("a.jpg")
+                .display()
+                .to_string()
+        );
+        assert!(all.items.iter().all(|row| row.modified.is_some()));
+
+        let reversed = get_files(&state, scan_id, FileSortDto::Size, true, 0, 0, 200).expect("rev");
+        let mut backwards: Vec<i64> = all.items.iter().map(|row| row.id).collect();
+        backwards.reverse();
+        assert_eq!(
+            reversed.items.iter().map(|row| row.id).collect::<Vec<_>>(),
+            backwards
+        );
+
+        let page = get_files(&state, scan_id, FileSortDto::Size, false, 0, 1, 2).expect("page");
+        assert_eq!(page.start, 1);
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].id, all.items[1].id);
+
+        let big =
+            get_files(&state, scan_id, FileSortDto::Size, false, 100_000, 0, 200).expect("min");
+        assert_eq!(big.total, 1, "only a.jpg is ≥ 100 kB");
+
+        for sort in [FileSortDto::Modified, FileSortDto::Type] {
+            let sorted = get_files(&state, scan_id, sort, false, 0, 0, 200).expect("sorted");
+            assert_eq!(sorted.total, 4, "{sort:?}");
+        }
+        let past = get_files(&state, scan_id, FileSortDto::Type, false, 0, 99, 200).expect("past");
+        assert!(past.items.is_empty());
+        assert!(get_files(&state, 999, FileSortDto::Size, false, 0, 0, 10).is_err());
     }
 
     #[test]

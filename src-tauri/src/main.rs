@@ -37,6 +37,7 @@ fn main() {
             ipc::get_tree,
             ipc::reveal_entry,
             ipc::preview_entry,
+            ipc::get_files,
             ipc::get_largest,
             ipc::search,
             ipc::get_rules,

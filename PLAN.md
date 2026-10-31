@@ -1031,6 +1031,8 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
     -> Result<TreeNode, String>;   // the treemap's subtree, node-budgeted
 #[tauri::command] async fn reveal_entry(scan_id: u32, entry_id: u32) -> Result<(), String>;
 #[tauri::command] async fn preview_entry(scan_id: u32, entry_id: u32) -> Result<(), String>;
+#[tauri::command] async fn get_files(scan_id: u32, sort: FileSort, reversed: bool, min_size: u64,
+    start: u64, count: u32) -> Result<FileRange, String>;   // positional, ≤ 200 rows
 #[tauri::command] async fn get_largest(scan_id: u32, min_size: u64, cursor: Option<u64>)
     -> Result<Page<FileRow>, String>;
 #[tauri::command] async fn search(scan_id: u32, query: String, cursor: Option<u32>)

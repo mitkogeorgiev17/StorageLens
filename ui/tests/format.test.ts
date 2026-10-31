@@ -9,6 +9,7 @@ import {
   UNKNOWN,
   formatBytes,
   formatCount,
+  formatDate,
   formatDuration,
   formatPercent,
 } from "../src/lib/format.ts";
@@ -67,4 +68,13 @@ test("percent keeps one decimal", () => {
   assert.equal(formatPercent(0), "0.0%");
   assert.equal(formatPercent(0.4231), "42.3%");
   assert.equal(formatPercent(1), "100.0%");
+});
+
+test("dates: unknown times render as the unknown mark, known ones as a date", () => {
+  assert.equal(formatDate(null), UNKNOWN);
+  assert.equal(formatDate(0), UNKNOWN);
+  assert.equal(formatDate(Number.NaN), UNKNOWN);
+  const text = formatDate(1_700_000_000);
+  assert.notEqual(text, UNKNOWN);
+  assert.match(text, /2023/);
 });
