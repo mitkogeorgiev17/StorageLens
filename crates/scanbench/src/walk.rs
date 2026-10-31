@@ -104,17 +104,24 @@ pub fn scan<S: EntrySink>(
     };
 
     // The root occupies arena index 0 and is not counted as a child directory.
-    let root_index = walker.next_index;
     walker.accept(root_name, kind, &metadata, 0)?;
 
     match kind {
-        EntryKind::Dir => walker.walk_dir(root, root_index, 0)?,
+        EntryKind::Dir => walker.walk_dir(root)?,
         EntryKind::File => walker.count_file(&metadata),
         EntryKind::Symlink | EntryKind::Other => {}
     }
 
     walker.sample_rss();
     Ok(walker.finish(started.elapsed().as_millis() as u64))
+}
+
+/// One open directory on the walk stack: its sorted children and where they
+/// belong in the arena.
+struct DirFrame {
+    children: std::vec::IntoIter<(std::ffi::OsString, PathBuf)>,
+    parent: u32,
+    depth: u32,
 }
 
 struct Walker<'a, S: EntrySink> {
@@ -158,33 +165,31 @@ impl<S: EntrySink> Walker<'_, S> {
         }
     }
 
-    fn walk_dir(&mut self, dir: &Path, parent: u32, depth: u32) -> Result<()> {
-        if self.cancel.is_cancelled() {
-            return Err(ScanError::Cancelled);
+    /// Walk `dir` depth-first, streaming pre-order.
+    ///
+    /// Uses an explicit stack of open directories rather than recursion: the
+    /// fixture tree is 200 levels deep and the Windows main thread has a 1 MB
+    /// stack, so recursion overflows there.
+    fn walk_dir(&mut self, dir: &Path) -> Result<()> {
+        let mut stack = Vec::new();
+        if let Some(frame) = self.open_frame(dir, 0, 0) {
+            stack.push(frame);
+        } else {
+            return Ok(());
         }
 
-        let read_dir = match fs::read_dir(dir) {
-            Ok(read_dir) => read_dir,
-            Err(source) => {
-                self.record_skip(dir, skip_reason(&source));
-                return Ok(());
-            }
-        };
-
-        // Sort so that a run is reproducible and the fixture totals are stable.
-        let mut children: Vec<(std::ffi::OsString, PathBuf)> = Vec::new();
-        for entry in read_dir {
-            match entry {
-                Ok(entry) => children.push((entry.file_name(), entry.path())),
-                Err(source) => self.record_skip(dir, skip_reason(&source)),
-            }
-        }
-        children.sort_by(|left, right| left.0.cmp(&right.0));
-
-        for (name, path) in children {
+        while !stack.is_empty() {
             if self.cancel.is_cancelled() {
                 return Err(ScanError::Cancelled);
             }
+
+            let top = stack.len() - 1;
+            let Some((name, path)) = stack[top].children.next() else {
+                stack.pop();
+                continue;
+            };
+            let parent = stack[top].parent;
+            let depth = stack[top].depth;
 
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
@@ -210,7 +215,12 @@ impl<S: EntrySink> Walker<'_, S> {
                     self.skipped.push(SkippedDir { path, reason });
                     continue;
                 }
-                self.walk_dir(&path, index, depth + 1)?;
+
+                // Descend before the current directory's next sibling, so entries
+                // stay in pre-order.
+                if let Some(frame) = self.open_frame(&path, index, depth + 1) {
+                    stack.push(frame);
+                }
                 continue;
             }
 
@@ -225,6 +235,34 @@ impl<S: EntrySink> Walker<'_, S> {
         }
 
         Ok(())
+    }
+
+    /// Read one directory and sort its children, recording a skip on failure.
+    ///
+    /// Sorting keeps a run reproducible and the fixture totals stable.
+    fn open_frame(&mut self, dir: &Path, parent: u32, depth: u32) -> Option<DirFrame> {
+        let read_dir = match fs::read_dir(dir) {
+            Ok(read_dir) => read_dir,
+            Err(source) => {
+                self.record_skip(dir, skip_reason(&source));
+                return None;
+            }
+        };
+
+        let mut children: Vec<(std::ffi::OsString, PathBuf)> = Vec::new();
+        for entry in read_dir {
+            match entry {
+                Ok(entry) => children.push((entry.file_name(), entry.path())),
+                Err(source) => self.record_skip(dir, skip_reason(&source)),
+            }
+        }
+        children.sort_by(|left, right| left.0.cmp(&right.0));
+
+        Some(DirFrame {
+            children: children.into_iter(),
+            parent,
+            depth,
+        })
     }
 
     /// Count a regular file once, unless a hard link to it was already counted.
@@ -627,6 +665,32 @@ mod tests {
                 entry.parent
             );
         }
+    }
+
+    /// The fixture tree is 200 levels deep and the Windows main thread has a 1 MB
+    /// stack, so the walk must not recurse per directory.
+    #[test]
+    fn deep_trees_do_not_need_a_large_stack() {
+        let tree = FixtureTree::generate().expect("generate fixture tree");
+        let root = tree.root().to_path_buf();
+
+        let walked = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                let mut sink = CollectingSink::default();
+                scan(
+                    &root,
+                    &ScanOptions::default(),
+                    &CancelToken::new(),
+                    &mut sink,
+                )
+                .map(|outcome| outcome.result.files)
+            })
+            .expect("spawn")
+            .join()
+            .expect("join");
+
+        assert!(walked.expect("scan") > 0);
     }
 
     /// Windows has no inode, so the reference walker deliberately counts every
