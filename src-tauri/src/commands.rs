@@ -657,6 +657,9 @@ pub fn execute_deletion(state: &AppState, plan_id: &str) -> CommandResult<Deleti
 // --- Full Disk Access --------------------------------------------------------------
 
 /// What the Full Disk Access probe found. Off macOS there is no such permission.
+// Each platform constructs only its own variants (macOS the first three,
+// everything else `NotApplicable`), but the wire type is shared.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DiskAccess {
@@ -664,8 +667,7 @@ pub enum DiskAccess {
     Denied,
     /// The probe could not tell (no protected folder to try on this machine).
     Unknown,
-    /// Off macOS. Only constructed there.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    /// Off macOS.
     NotApplicable,
 }
 
