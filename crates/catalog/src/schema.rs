@@ -1,6 +1,6 @@
 //! Schema definition and the migration runner.
 //!
-//! The schema is PLAN §5, unchanged. Migrations are append-only: once a version has
+//! The schema is PLAN §5, plus the migrations below. Migrations are append-only: once a version has
 //! shipped, its SQL is frozen. Add a new entry to [`MIGRATIONS`] instead of editing
 //! an old one.
 
@@ -11,7 +11,7 @@ use rusqlite::{params, Connection};
 use crate::error::{CatalogError, Result};
 
 /// Highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// The version table itself. Created outside the first migration so the runner can
 /// always read the current version.
@@ -101,6 +101,40 @@ CREATE TABLE trash_log (
     // before v2 have no root, and inventing one would be worse than admitting it.
     "
 ALTER TABLE scan_session ADD COLUMN root TEXT;
+",
+    // v3 — filename search (#24). An external-content FTS5 index over
+    // `entries.name`: it stores tokens only, never a second copy of the names.
+    //
+    // - `unicode61` with `remove_diacritics 2` folds case and accents; the
+    //   token categories add marks (M*, so Indic and other combining scripts
+    //   stay whole words) and symbols So/Sk (emoji and their skin-tone
+    //   modifiers), which the default L*/N*/Co would treat as separators.
+    // - `prefix` indexes 1–3 character prefixes, for search-as-you-type.
+    // - A scan is indexed in one bulk insert when it finishes
+    //   (`search::index_names`), not by a per-row trigger: on 1M entries that
+    //   costs ~5 s instead of ~35 s added to the scan. `names_indexed` records
+    //   it, so a scan is never indexed twice. Existing rows are indexed here.
+    // - Deleting an entry of an indexed scan removes its tokens. The trigger is
+    //   guarded: deleting tokens that were never added corrupts an FTS5 index.
+    "
+CREATE VIRTUAL TABLE entries_fts USING fts5(
+  name,
+  content = 'entries',
+  content_rowid = 'id',
+  tokenize = \"unicode61 remove_diacritics 2 categories 'L* N* Co M* So Sk'\",
+  prefix = '1 2 3'
+);
+
+ALTER TABLE scan_session ADD COLUMN names_indexed INTEGER NOT NULL DEFAULT 0;
+
+CREATE TRIGGER entries_fts_delete AFTER DELETE ON entries
+WHEN (SELECT names_indexed FROM scan_session WHERE id = old.scan_id) = 1
+BEGIN
+  INSERT INTO entries_fts(entries_fts, rowid, name) VALUES ('delete', old.id, old.name);
+END;
+
+INSERT INTO entries_fts(entries_fts) VALUES ('rebuild');
+UPDATE scan_session SET names_indexed = 1;
 ",
 ];
 
@@ -195,7 +229,7 @@ mod tests {
         )
         .expect("v1 session");
 
-        assert_eq!(migrate(&conn).expect("migrate"), 2);
+        assert_eq!(migrate(&conn).expect("migrate"), SCHEMA_VERSION);
         let (count, root): (i64, Option<String>) = conn
             .query_row("SELECT COUNT(*), MAX(root) FROM scan_session", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
@@ -203,6 +237,41 @@ mod tests {
             .expect("read back");
         assert_eq!(count, 1, "the v1 session survives");
         assert_eq!(root, None, "and honestly has no root");
+    }
+
+    #[test]
+    fn a_v2_database_gets_its_existing_names_indexed() {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(VERSION_TABLE).expect("version table");
+        for (index, sql) in MIGRATIONS[..2].iter().enumerate() {
+            conn.execute_batch(sql).expect("old schema");
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?1, 0)",
+                params![index as i64 + 1],
+            )
+            .expect("mark");
+        }
+        conn.execute(
+            "INSERT INTO scan_session (platform, started_at, status) VALUES ('macos', 1, 'complete')",
+            [],
+        )
+        .expect("session");
+        conn.execute(
+            "INSERT INTO entries (scan_id, parent_id, name, kind, size_alloc, size_logical, dev, \
+             file_id, nlink, attrs) VALUES (1, 0, 'Holiday Photos.zip', 1, 4096, 10, 1, 1, 1, 0)",
+            [],
+        )
+        .expect("v2 entry");
+
+        assert_eq!(migrate(&conn).expect("migrate"), SCHEMA_VERSION);
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries_fts WHERE entries_fts MATCH 'photo*'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("search");
+        assert_eq!(found, 1, "rows written before v3 are searchable after it");
     }
 
     #[test]

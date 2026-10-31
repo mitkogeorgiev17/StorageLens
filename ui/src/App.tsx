@@ -17,6 +17,7 @@ import {
 } from "react";
 
 import ScanPicker from "./components/ScanPicker";
+import SearchBar from "./components/SearchBar";
 import LargeFilesScreen from "./routes/LargeFiles";
 import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
@@ -258,7 +259,10 @@ export default function App() {
       <div className="main">
         <header className="header">
           <h1>{SCREENS[route].title}</h1>
-          <NewScan />
+          <div className="header-actions">
+            <SearchBar />
+            <NewScan />
+          </div>
         </header>
         <main className="content" data-route={route}>
           <ErrorBoundary resetKey={route}>

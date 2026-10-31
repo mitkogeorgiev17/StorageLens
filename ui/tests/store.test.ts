@@ -67,3 +67,22 @@ test("a failure keeps the root it was scanning", () => {
   const scan = store().scan;
   assert.ok(scan.kind === "failed" && scan.root === "/data" && scan.message === "disk went away");
 });
+
+test("show in map routes to the map and is cleared only by the request it made", () => {
+  store().reset();
+  store().navigate("overview");
+  store().showInMap(42, false);
+  assert.equal(store().route, "map");
+  const first = store().mapFocus;
+  assert.ok(first !== null && first.entryId === 42 && !first.isDirectory);
+  store().showInMap(43, true);
+  const second = store().mapFocus;
+  assert.ok(second !== null && second.nonce > first.nonce);
+  store().mapFocusHandled(first.nonce);
+  assert.equal(store().mapFocus?.entryId, 43, "a stale acknowledgement keeps the newer request");
+  store().mapFocusHandled(second.nonce);
+  assert.equal(store().mapFocus, null);
+  store().showInMap(44, true);
+  store().scanStarted(99, "/scan");
+  assert.equal(store().mapFocus, null, "a new scan drops focus requests for the old one");
+});

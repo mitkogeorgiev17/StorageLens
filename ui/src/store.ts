@@ -70,10 +70,23 @@ const EMPTY_PROGRESS: ScanProgress = {
   currentPath: null,
 };
 
+/** A request to open the Map on an entry (from search). */
+export interface MapFocus {
+  readonly entryId: number;
+  readonly isDirectory: boolean;
+  /** Distinguishes two requests for the same entry. */
+  readonly nonce: number;
+}
+
 export interface AppState {
   readonly route: RouteId;
   readonly scan: ScanState;
+  readonly mapFocus: MapFocus | null;
   navigate(route: RouteId): void;
+  /** Go to the Map, showing `entryId` (a folder opened, a file selected). */
+  showInMap(entryId: number, isDirectory: boolean): void;
+  /** The Map applied a focus request; clear it if it is still the current one. */
+  mapFocusHandled(nonce: number): void;
   scanStarted(scanId: number, root: string): void;
   scanProgressed(progress: ScanProgress): void;
   scanFinished(summary: ScanSummary): void;
@@ -84,8 +97,18 @@ export interface AppState {
 export const useAppStore = create<AppState>()((set) => ({
   route: "overview",
   scan: { kind: "idle" },
+  mapFocus: null,
 
   navigate: (route) => set({ route }),
+
+  showInMap: (entryId, isDirectory) =>
+    set((state) => ({
+      route: "map",
+      mapFocus: { entryId, isDirectory, nonce: (state.mapFocus?.nonce ?? 0) + 1 },
+    })),
+
+  mapFocusHandled: (nonce) =>
+    set((state) => (state.mapFocus?.nonce === nonce ? { mapFocus: null } : state)),
 
   // A tiny scan can finish — and its `scan://done` be handled — before the
   // `start_scan` call that started it returns. Starting after finishing would
@@ -94,7 +117,7 @@ export const useAppStore = create<AppState>()((set) => ({
     set((state) =>
       state.scan.kind === "done" && state.scan.summary.scanId === scanId
         ? state
-        : { scan: { kind: "scanning", scanId, root, progress: EMPTY_PROGRESS } },
+        : { scan: { kind: "scanning", scanId, root, progress: EMPTY_PROGRESS }, mapFocus: null },
     ),
 
   // Progress for a scan that is no longer running (a late event after
@@ -117,7 +140,7 @@ export const useAppStore = create<AppState>()((set) => ({
       },
     })),
 
-  reset: () => set({ scan: { kind: "idle" } }),
+  reset: () => set({ scan: { kind: "idle" }, mapFocus: null }),
 }));
 
 /** Whether a finished scan exists for screens to show. */

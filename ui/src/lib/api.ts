@@ -127,6 +127,8 @@ export interface OverviewDto {
 export interface FileRowDto {
   readonly id: number;
   readonly name: string;
+  /** `File` everywhere but search, which also finds folders. */
+  readonly kind: EntryKind;
   readonly path: string;
   readonly category: Category;
   readonly sizeAlloc: number;
@@ -143,6 +145,18 @@ export interface FileRangeDto {
   readonly total: number;
   readonly start: number;
   readonly items: readonly FileRowDto[];
+}
+
+/** Keyset cursor for search: biggest, then most recent, then id. */
+export interface SearchCursor {
+  readonly sizeAlloc: number;
+  readonly modified: number;
+  readonly id: number;
+}
+
+export interface CrumbDto {
+  readonly id: number;
+  readonly name: string;
 }
 
 export interface SizeCursor {
@@ -267,8 +281,12 @@ export const api = {
       minSize,
       cursor: cursor ?? null,
     }),
-  search: (scanId: number, query: string, cursor?: SizeCursor) =>
-    call<Page<FileRowDto, SizeCursor>>("search", { scanId, query, cursor: cursor ?? null }),
+  /** Files and folders whose name matches, biggest first; 50 per page. */
+  search: (scanId: number, query: string, cursor?: SearchCursor) =>
+    call<Page<FileRowDto, SearchCursor>>("search", { scanId, query, cursor: cursor ?? null }),
+  /** The folders from the scan root down to the entry, inclusive. */
+  getAncestors: (scanId: number, entryId: number) =>
+    call<readonly CrumbDto[]>("get_ancestors", { scanId, entryId }),
 
   getRules: (scanId: number) => call<readonly RuleGroupDto[]>("get_rules", { scanId }),
   previewDeletion: (paths: readonly string[]) =>

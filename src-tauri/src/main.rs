@@ -40,6 +40,7 @@ fn main() {
             ipc::get_files,
             ipc::get_largest,
             ipc::search,
+            ipc::get_ancestors,
             ipc::get_rules,
             ipc::preview_deletion,
             ipc::execute_deletion,

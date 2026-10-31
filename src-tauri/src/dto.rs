@@ -137,6 +137,8 @@ pub struct OverviewDto {
 pub struct FileRowDto {
     pub id: i64,
     pub name: String,
+    /// `File` everywhere but search, which also finds folders.
+    pub kind: EntryKind,
     /// Full path. Relative to the root's name only for scans recorded before
     /// schema v2, which stored no root.
     pub path: String,
@@ -165,6 +167,23 @@ pub struct FileRangeDto {
     pub total: u64,
     pub start: u64,
     pub items: Vec<FileRowDto>,
+}
+
+/// Keyset cursor for search results: biggest, then most recent, then id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCursorDto {
+    pub size_alloc: u64,
+    pub modified: i64,
+    pub id: i64,
+}
+
+/// One step of a breadcrumb.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrumbDto {
+    pub id: i64,
+    pub name: String,
 }
 
 /// Keyset cursor for size-ordered lists.

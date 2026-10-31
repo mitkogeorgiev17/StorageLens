@@ -10,7 +10,7 @@
 //!
 //! # Not built yet
 //!
-//! Grouping, search, rules, deletion, apps, and duplicates are declared with
+//! Grouping, rules, deletion, apps, and duplicates are declared with
 //! their final types and return [`not_built`] until their issues land. The
 //! preview-before-execute rule is enforced **now**: `execute_deletion` refuses a
 //! plan id that no `preview_deletion` produced (AGENTS.md invariant 10).
@@ -33,16 +33,16 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use storagelens_catalog::{
     file_order, modified_times, rollup, slice, Arena, Catalog, EntryWriter, FileSort, NodeIndex,
-    Platform, ScanSession, SizeCursor, DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
+    Platform, ScanSession, SearchCursor, SizeCursor, DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
 };
 use storagelens_core::{CancelToken, EntryKind, Progress, ScanOptions, ScanResult, ScanStatus};
 use tauri::{AppHandle, State};
 
 use crate::dto::{
-    AppRowDto, CategoryDto, ChildDto, DeletionPlanDto, DeletionResultDto, DupGroupDto,
+    AppRowDto, CategoryDto, ChildDto, CrumbDto, DeletionPlanDto, DeletionResultDto, DupGroupDto,
     FileRangeDto, FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page, RuleGroupDto,
-    ScanStatusDto, ScanTargetDto, ScanTargetKind, SizeCursorDto, SyntheticNodeDto, TreeNodeDto,
-    VolumeDto,
+    ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, SyntheticNodeDto,
+    TreeNodeDto, VolumeDto,
 };
 use crate::events::{
     self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
@@ -393,6 +393,11 @@ fn scan_and_record(
         let arena =
             Arena::load(catalog.connection(), scan_id).map_err(|error| error.to_string())?;
         rollup::write(catalog.connection(), &arena).map_err(|error| error.to_string())?;
+        // Index the names before `scan://done`, so search works the moment the
+        // UI hears it (~5 s per million entries).
+        catalog
+            .index_names(scan_id)
+            .map_err(|error| error.to_string())?;
         drop(catalog);
         *lock(&state.arena)? = Some(Arc::new(arena));
     }
@@ -919,6 +924,7 @@ pub fn get_files(
         .filter_map(|index| {
             let node = arena.node(index)?;
             Some(FileRowDto {
+                kind: node.kind(),
                 id: arena.entry_id(index)?,
                 name: arena.name(index)?.to_owned(),
                 path: path_of(root.as_deref(), &arena, index),
@@ -937,6 +943,82 @@ pub fn get_files(
         start,
         items,
     })
+}
+
+/// Search results per page; the UI shows at most four pages (AGENTS.md §8).
+pub const SEARCH_PAGE: u32 = 50;
+
+/// Entries of `scan_id` whose name matches `query`, biggest first, then most
+/// recent (`catalog::search`). A folder's size is its subtree total.
+pub fn search(
+    state: &AppState,
+    scan_id: i64,
+    query: &str,
+    cursor: Option<SearchCursorDto>,
+) -> CommandResult<Page<FileRowDto, SearchCursorDto>> {
+    let arena = state.arena(scan_id)?;
+    let root = state.root_of(scan_id);
+    let hits = lock(&state.catalog)?
+        .search(
+            scan_id,
+            query,
+            cursor.map(|cursor| SearchCursor {
+                size: cursor.size_alloc,
+                modified: cursor.modified,
+                id: cursor.id,
+            }),
+            SEARCH_PAGE,
+        )
+        .map_err(|error| error.to_string())?;
+    let next_cursor = (hits.len() == SEARCH_PAGE as usize)
+        .then(|| hits.last())
+        .flatten()
+        .map(|hit| SearchCursorDto {
+            size_alloc: hit.size,
+            modified: hit.modified,
+            id: hit.id,
+        });
+    let items = hits
+        .into_iter()
+        .map(|hit| FileRowDto {
+            path: arena.index_of(hit.id).map_or_else(
+                || hit.name.clone(),
+                |index| path_of(root.as_deref(), &arena, index),
+            ),
+            id: hit.id,
+            name: hit.name,
+            kind: hit.kind,
+            category: hit.category,
+            size_alloc: hit.size,
+            size_logical: hit.size_logical,
+            modified: (hit.modified != 0).then_some(hit.modified),
+        })
+        .collect();
+    Ok(Page { items, next_cursor })
+}
+
+/// The folders from the scan root down to `entry_id`, inclusive — a
+/// breadcrumb, for opening a search result in the Map.
+pub fn get_ancestors(
+    state: &AppState,
+    scan_id: i64,
+    entry_id: i64,
+) -> CommandResult<Vec<CrumbDto>> {
+    let arena = state.arena(scan_id)?;
+    let index = arena
+        .index_of(entry_id)
+        .ok_or_else(|| format!("entry {entry_id} is not part of scan {scan_id}"))?;
+    let mut chain: Vec<CrumbDto> = std::iter::once(index)
+        .chain(arena.ancestors(index))
+        .filter_map(|index| {
+            Some(CrumbDto {
+                id: arena.entry_id(index)?,
+                name: arena.name(index)?.to_owned(),
+            })
+        })
+        .collect();
+    chain.reverse();
+    Ok(chain)
 }
 
 pub fn get_largest(
@@ -970,6 +1052,7 @@ pub fn get_largest(
     let items = rows
         .into_iter()
         .map(|row| FileRowDto {
+            kind: row.kind,
             path: arena
                 .index_of(row.id)
                 .map(|index| path_of(root.as_deref(), &arena, index))
@@ -1191,12 +1274,21 @@ pub mod ipc {
 
     #[tauri::command]
     pub async fn search(
+        state: AppStateRef<'_>,
         scan_id: i64,
         query: String,
-        cursor: Option<SizeCursorDto>,
-    ) -> CommandResult<Page<FileRowDto, SizeCursorDto>> {
-        let _ = (scan_id, query, cursor);
-        Err(not_built("Search", "#24"))
+        cursor: Option<SearchCursorDto>,
+    ) -> CommandResult<Page<FileRowDto, SearchCursorDto>> {
+        super::search(state.inner(), scan_id, &query, cursor)
+    }
+
+    #[tauri::command]
+    pub async fn get_ancestors(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        entry_id: i64,
+    ) -> CommandResult<Vec<CrumbDto>> {
+        super::get_ancestors(state.inner(), scan_id, entry_id)
     }
 
     #[tauri::command]
@@ -1654,6 +1746,51 @@ mod tests {
         let past = get_files(&state, scan_id, FileSortDto::Type, false, 0, 99, 200).expect("past");
         assert!(past.items.is_empty());
         assert!(get_files(&state, 999, FileSortDto::Size, false, 0, 0, 10).is_err());
+    }
+
+    #[test]
+    fn search_finds_files_and_folders_with_paths_and_ancestors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let (scan_id, _) = scan(&state, &root);
+
+        let page = search(&state, scan_id, "a.j", None).expect("search");
+        assert_eq!(page.items.len(), 1);
+        let jpg = &page.items[0];
+        assert_eq!(jpg.name, "a.jpg");
+        assert_eq!(jpg.kind, EntryKind::File);
+        assert_eq!(
+            jpg.path,
+            root.join("photos")
+                .join("2024")
+                .join("a.jpg")
+                .display()
+                .to_string()
+        );
+        assert!(page.next_cursor.is_none());
+
+        let folders = search(&state, scan_id, "PHOTO", None).expect("folders");
+        assert_eq!(folders.items[0].name, "photos");
+        assert_eq!(folders.items[0].kind, EntryKind::Dir);
+        assert!(
+            folders.items[0].size_alloc >= 300_000,
+            "a folder carries its subtree"
+        );
+
+        assert!(search(&state, scan_id, "nothing-like-this", None)
+            .expect("empty")
+            .items
+            .is_empty());
+        assert!(search(&state, scan_id, "", None)
+            .expect("blank")
+            .items
+            .is_empty());
+
+        let chain = get_ancestors(&state, scan_id, jpg.id).expect("ancestors");
+        let names: Vec<&str> = chain.iter().map(|crumb| crumb.name.as_str()).collect();
+        assert_eq!(names, ["scanned", "photos", "2024", "a.jpg"]);
+        assert!(get_ancestors(&state, scan_id, i64::MAX).is_err());
     }
 
     #[test]
