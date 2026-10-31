@@ -4,7 +4,6 @@
 //! and directory counts and the exact allocated/logical byte totals, so a
 //! scanner either agrees or is wrong.
 
-#[cfg(not(unix))]
 use std::fs;
 
 use serde::Serialize;
@@ -12,6 +11,7 @@ use storagelens_core::Manifest;
 #[cfg(unix)]
 use storagelens_core::SkipReason;
 
+use crate::platform::{self, Backend};
 use crate::walk::ScanOutcome;
 
 /// The result of comparing a scan with the manifest.
@@ -34,10 +34,18 @@ impl FixtureCheck {
     }
 }
 
-/// Compare `outcome` with the manifest of the tree it scanned.
-pub fn check(outcome: &ScanOutcome, manifest: &Manifest) -> FixtureCheck {
+/// Compare `outcome` with the manifest of the tree `backend` scanned.
+///
+/// Two backend-specific allowances, both from [`platform`]: hard-link names are
+/// added back only for a walker that cannot dedupe, and the allocated total is
+/// compared only where the manifest can know it exactly.
+pub fn check(outcome: &ScanOutcome, manifest: &Manifest, backend: Backend) -> FixtureCheck {
     let mut mismatches = Vec::new();
-    let (extra_files, extra_bytes) = hardlink_extras(manifest);
+    let (extra_files, extra_bytes) = if platform::dedupes_hard_links(backend) {
+        (0, 0)
+    } else {
+        hardlink_extras(manifest)
+    };
 
     compare(
         &mut mismatches,
@@ -52,12 +60,14 @@ pub fn check(outcome: &ScanOutcome, manifest: &Manifest) -> FixtureCheck {
         outcome.links,
         manifest.symlinks + manifest.junctions,
     );
-    compare(
-        &mut mismatches,
-        "allocated_bytes",
-        outcome.result.bytes_alloc.get(),
-        manifest.bytes_alloc + extra_bytes,
-    );
+    if platform::manifest_alloc_is_exact(backend) {
+        compare(
+            &mut mismatches,
+            "allocated_bytes",
+            outcome.result.bytes_alloc.get(),
+            manifest.bytes_alloc + extra_bytes,
+        );
+    }
     compare(
         &mut mismatches,
         "logical_bytes",
@@ -107,18 +117,11 @@ fn compare(mismatches: &mut Vec<String>, field: &str, actual: u64, expected: u64
     }
 }
 
-/// Hard-link names the walker counts but the manifest folds into one file.
+/// Hard-link names a non-deduping walker counts but the manifest folds into one
+/// file, and their bytes.
 ///
-/// Zero on Unix, where the walker dedupes by inode. Stable `std` has no file
-/// identity on Windows, so the reference walker counts every name there and the
-/// expected total adds the extra names and bytes back. The real Windows scanner
-/// dedupes and needs no compensation.
-#[cfg(unix)]
-fn hardlink_extras(_manifest: &Manifest) -> (u64, u64) {
-    (0, 0)
-}
-
-#[cfg(not(unix))]
+/// Only the Windows reference walker needs this: stable `std` has no file index
+/// there. Every other backend dedupes and gets no compensation.
 fn hardlink_extras(manifest: &Manifest) -> (u64, u64) {
     let extras = manifest.hardlink_names.saturating_sub(1);
     let size = fs::metadata(&manifest.paths.hardlinks[0])
@@ -160,7 +163,7 @@ mod tests {
     fn a_correct_scan_passes() {
         let tree = FixtureTree::generate().expect("generate");
         let outcome = outcome_for(&tree);
-        let check = check(&outcome, tree.manifest());
+        let check = check(&outcome, tree.manifest(), Backend::Reference);
 
         assert!(check.ok, "{:?}", check.mismatches);
         assert_eq!(check.summary(), "ok");
@@ -172,7 +175,7 @@ mod tests {
         let mut outcome = outcome_for(&tree);
         outcome.result.files = outcome.result.files.saturating_add(1);
 
-        let check = check(&outcome, tree.manifest());
+        let check = check(&outcome, tree.manifest(), Backend::Reference);
         assert!(!check.ok);
         assert!(check
             .mismatches
@@ -189,7 +192,7 @@ mod tests {
             reason: storagelens_core::SkipReason::IoError,
         });
 
-        let check = check(&outcome, tree.manifest());
+        let check = check(&outcome, tree.manifest(), Backend::Reference);
         assert!(!check.ok);
         assert!(check
             .mismatches
@@ -215,7 +218,7 @@ mod tests {
             peak_rss_bytes: 0,
         };
 
-        let check = check(&outcome, tree.manifest());
+        let check = check(&outcome, tree.manifest(), Backend::Reference);
         assert!(!check.ok);
         assert!(check.mismatches.len() >= 5);
     }

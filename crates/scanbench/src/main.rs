@@ -1,7 +1,8 @@
 //! `scanbench` — measure scanner correctness and speed without a UI.
 //!
-//! One run walks a path with the platform scanner (`MacScanner` on macOS, the
-//! portable reference walker elsewhere and with `--reference`), streams every
+//! One run walks a path with the platform scanner (`MacScanner` on macOS,
+//! `WinScanner` on Windows, the portable reference walker elsewhere and with
+//! `--reference`), streams every
 //! entry through the real catalog ([`Catalog`] + [`EntryWriter`]), verifies that
 //! the row count matches what the walker produced, and prints the PLAN §17 table
 //! (or the stable `--json` document).
@@ -91,7 +92,8 @@ struct Cli {
     /// Use the portable reference walker instead of the platform scanner.
     ///
     /// The reference walker is the accuracy baseline; comparing the two isolates a
-    /// platform bug. Off macOS it is the only backend, so the flag is a no-op there.
+    /// platform bug. Where no platform scanner exists it is the only backend, so the
+    /// flag is a no-op there.
     #[arg(long)]
     reference: bool,
 }
@@ -184,7 +186,7 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn Error>> {
 
     let fixture = fixture_tree
         .as_ref()
-        .map(|tree| fixtures_check::check(&outcome, tree.manifest()));
+        .map(|tree| fixtures_check::check(&outcome, tree.manifest(), backend));
     let budget = cli.budget.then(|| {
         budget::evaluate(
             outcome.result.files,
@@ -228,12 +230,12 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn Error>> {
 }
 
 /// Choose the backend, downgrading to the reference walker where no platform
-/// scanner exists yet.
+/// scanner exists.
 ///
 /// `cfg!(...)` is a compile-time constant, so this is a single branch with no
 /// runtime cost.
 fn resolve_backend(reference: bool) -> Backend {
-    if reference || !cfg!(target_os = "macos") {
+    if reference || !platform::HAS_PLATFORM {
         Backend::Reference
     } else {
         Backend::Platform
@@ -312,12 +314,12 @@ mod tests {
         assert_eq!(resolve_backend(true), Backend::Reference);
         assert_eq!(
             resolve_backend(false),
-            if cfg!(target_os = "macos") {
+            if cfg!(any(target_os = "macos", windows)) {
                 Backend::Platform
             } else {
                 Backend::Reference
             },
-            "the platform scanner only exists on macOS today"
+            "macOS and Windows have platform scanners"
         );
     }
 
