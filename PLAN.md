@@ -1530,6 +1530,27 @@ scanners.
 - manifest write failure → abort before moving anything
 - undo with a missing Trash item → reports, doesn't crash
 
+**Built (#35).** The safety suite covers every case above, and also:
+- preflight skip reporting;
+- a cancelled deletion;
+- the no-allocation fast path.
+
+`crates/safety` has 100% line and branch coverage. Excluded are only the two OS calls no
+test may make: the real Trash move and the real volume lookup.
+
+`scripts/safety-mutants.py` removes each of 21 guards in turn (traversal, root
+containment, system, protected and never-touch paths, bundles, both symlink checks, the
+five preflight comparisons, manifest-first, guard and preflight before each move, stop,
+and undo's two no-overwrite checks). It requires a failing test for every one.
+
+No test touches a real path:
+- filesystem tests work inside their own temp dir;
+- path rules are tested as strings;
+- Trash folders are found through an injected volume lookup.
+
+There is no CI (#64), so the suite runs in the local gate (`cargo test`). The mutation
+script runs after any change to `crates/safety`.
+
 ### Performance checks
 
 Manual, not automated (there is no CI, #64): before a release, run `scanbench --budget`
