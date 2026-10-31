@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "StorageLens frontend \u2014 React + TypeScript + Vite",
+  "description": "StorageLens frontend — React + TypeScript + Vite",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -12,6 +12,7 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
+    "@tauri-apps/api": "2.12.4",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "zustand": "5.0.15"
