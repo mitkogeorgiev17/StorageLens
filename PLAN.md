@@ -211,6 +211,7 @@ pub trait StorageScanner: Send + Sync {
     fn scan(
         &self,
         roots: &[PathBuf],
+        sink: &mut dyn EntrySink,
         cancel: CancelToken,
         progress: &(dyn Fn(Progress) + Send + Sync),
     ) -> Result<ScanResult>;
@@ -227,8 +228,16 @@ whole tree in memory before the first row reaches SQLite. `ScanResult` carries o
 summary and the list of skipped directories.
 
 `Entry` carries only `parent`, not its own arena index, so the sink assigns indices in
-acceptance order. **Entries must therefore arrive in pre-order** — a parent before its
-children, root first — which is the order a depth-first walk already produces.
+acceptance order. **Entries must therefore arrive in pre-order** — a parent before any of
+its children, root first — which is the order a depth-first walk already produces.
+
+The sink is passed to `scan` as `&mut dyn EntrySink`, not stored on the scanner, because
+`EntrySink` is `!Send` (it wraps a SQLite connection). A parallel scanner forwards `Entry`
+values from its workers to the calling thread, which is the only writer. Sibling subtrees
+may interleave, but the writer accepts a directory's own entry before dispatching the
+enumeration of that directory, so parents are always persisted before their children and
+the arena indices stay parent-first. Only the first root is the arena's node 0; M1 scans
+exactly one root per call.
 
 ---
 

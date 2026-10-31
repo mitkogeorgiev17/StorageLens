@@ -14,9 +14,10 @@
 //!   entry at a time (macOS only).
 //! - [`volumes`] — mounted volumes, capacity, and the Full Disk Access probe
 //!   (macOS only).
+//! - [`walk`] / `writer` — the parallel walker behind [`MacScanner`] (macOS only).
 //!
-//! Later issues add the parallel walker (#8), dedupe and skip rules (#9), and the
-//! accuracy gate (#11).
+//! Later issues add dedupe and the system-path skip list (#9), and the accuracy
+//! gate (#11).
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
@@ -28,6 +29,10 @@ pub mod parse;
 mod ffi;
 #[cfg(target_os = "macos")]
 pub mod volumes;
+#[cfg(target_os = "macos")]
+pub mod walk;
+#[cfg(target_os = "macos")]
+mod writer;
 
 pub use attrlist::{AttrSet, Request};
 pub use parse::{ObjType, ParseError, RawEntry};
@@ -36,6 +41,8 @@ pub use parse::{ObjType, ParseError, RawEntry};
 pub use ffi::{DirReader, BUFFER_BYTES};
 #[cfg(target_os = "macos")]
 pub use volumes::{full_disk_access, open_full_disk_access_settings, volumes};
+#[cfg(target_os = "macos")]
+pub use walk::{MacScanner, MAX_THREADS};
 
 /// Deep link to the Full Disk Access pane in System Settings.
 pub const FULL_DISK_ACCESS_URL: &str =
