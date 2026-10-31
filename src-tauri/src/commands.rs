@@ -704,12 +704,17 @@ fn volume_for(root: Option<&Path>) -> Option<VolumeDto> {
     let root = root?;
     #[cfg(target_os = "macos")]
     let volumes = storagelens_scan_macos::volumes();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    let volumes = {
+        use storagelens_core::StorageScanner;
+        storagelens_scan_windows::WinScanner::default().volumes()
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
     let volumes: Vec<storagelens_core::Volume> = Vec::new();
 
     volumes
         .into_iter()
-        .filter(|volume| root.starts_with(&volume.mount_point))
+        .filter(|volume| on_volume(root, &volume.mount_point))
         .max_by_key(|volume| volume.mount_point.as_os_str().len())
         .map(|volume| VolumeDto {
             name: volume.name,
@@ -717,7 +722,21 @@ fn volume_for(root: Option<&Path>) -> Option<VolumeDto> {
             total: volume.total.get(),
             available: volume.available.get(),
             used: volume.total.get().saturating_sub(volume.available.get()),
+            purgeable: volume.purgeable.get().min(volume.available.get()),
         })
+}
+
+/// Whether `root` lies on the volume mounted at `mount_point`. Windows drive
+/// letters compare case-insensitively (`c:\` is `C:\`).
+fn on_volume(root: &Path, mount_point: &Path) -> bool {
+    if cfg!(windows) {
+        let root = root.display().to_string().to_ascii_lowercase();
+        let mount = mount_point.display().to_string().to_ascii_lowercase();
+        let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
+        root.starts_with(&mount)
+    } else {
+        root.starts_with(mount_point)
+    }
 }
 
 pub fn get_categories(state: &AppState, scan_id: i64) -> CommandResult<Vec<CategoryDto>> {

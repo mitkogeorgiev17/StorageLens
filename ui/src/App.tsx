@@ -3,13 +3,14 @@
  * screen inside an error boundary, and a status line for the scan session.
  *
  * Screens without a component yet are placeholders with honest empty states
- * until their own issues land (Overview #22, Large Files #23, Cleanup #29+,
+ * until their own issues land (Large Files #23, Cleanup #29+,
  * Apps #36+, Duplicates #39+). Each issue adds its component to `COMPONENTS`.
  */
 
 import { Component, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 
 import MapScreen from "./routes/Map";
+import OverviewScreen from "./routes/Overview";
 import { formatBytes, formatCount, formatDuration } from "./lib/format";
 import { ROUTE_IDS, type RouteId, type ScanState, useAppStore } from "./store";
 
@@ -140,6 +141,7 @@ function Sidebar() {
 
 /** Screens that are built. The rest show their placeholder. */
 const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
+  overview: OverviewScreen,
   map: MapScreen,
 };
 

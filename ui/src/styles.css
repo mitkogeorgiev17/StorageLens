@@ -382,3 +382,234 @@ body {
 .map-notice {
   color: var(--danger);
 }
+
+/* --- Overview ------------------------------------------------------------------ */
+
+:root {
+  --gauge-scan: #2459d6;
+  --gauge-other: #6b6b78;
+  --gauge-purgeable: #946c0f;
+  --gauge-free: #e6e6eb;
+  --risk-safe-bg: #dcf3e3;
+  --risk-safe-text: #17602f;
+  --risk-review-bg: #fbeccd;
+  --risk-review-text: #7a4a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gauge-scan: #6f95ff;
+    --gauge-other: #8a8a9c;
+    --gauge-purgeable: #c99a2e;
+    --gauge-free: #2a2a31;
+    --risk-safe-bg: #173823;
+    --risk-safe-text: #9fe0b2;
+    --risk-review-bg: #3d2e10;
+    --risk-review-text: #f3cf86;
+  }
+}
+
+.loading {
+  color: var(--text-muted);
+}
+
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.overview-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-4);
+}
+
+.card {
+  padding: var(--space-4) var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.card-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.card-title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.card-heading .card-title {
+  margin: 0;
+}
+
+.card-meta,
+.card-note {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.card-note {
+  margin: var(--space-3) 0 0;
+}
+
+.reclaim-headline {
+  margin: 0 0 var(--space-3);
+  font-size: 24px;
+  font-weight: 650;
+}
+
+.reclaim-split {
+  display: flex;
+  gap: var(--space-8);
+  margin: 0;
+}
+
+.reclaim-split dt {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.reclaim-split dd {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  display: flex;
+  gap: 2px;
+  height: 18px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--gauge-free);
+}
+
+.bar-segment {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-1) var(--space-4);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.legend-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 15%);
+}
+
+.legend-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend-value,
+.legend-share,
+.legend-extra {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.legend-value {
+  margin-left: auto;
+  color: var(--text);
+}
+
+.ranked {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ranked li {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) 0 calc(var(--space-2) + 4px);
+  border-bottom: 1px solid var(--border);
+}
+
+.ranked li:last-child {
+  border-bottom: 0;
+}
+
+.ranked-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranked-kind {
+  color: var(--text-muted);
+}
+
+.ranked-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ranked-share {
+  width: 4.5em;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.ranked-bar {
+  position: absolute;
+  bottom: 3px;
+  left: 0;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--gauge-scan);
+}
+
+.risk {
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.risk[data-risk="safe"] {
+  background: var(--risk-safe-bg);
+  color: var(--risk-safe-text);
+}
+
+.risk[data-risk="review"] {
+  background: var(--risk-review-bg);
+  color: var(--risk-review-text);
+}

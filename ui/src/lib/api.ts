@@ -53,8 +53,12 @@ export interface VolumeDto {
   readonly name: string;
   readonly mountPoint: string;
   readonly total: number;
+  /** Includes `purgeable`. */
   readonly available: number;
+  /** `total − available`. */
   readonly used: number;
+  /** macOS purgeable space, part of `available`; 0 where not measured. */
+  readonly purgeable: number;
 }
 
 export interface CategoryDto {

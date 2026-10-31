@@ -84,9 +84,7 @@ impl Default for WinScanner {
 
 impl StorageScanner for WinScanner {
     fn volumes(&self) -> Vec<Volume> {
-        // Drive enumeration is not part of the walker (#12); nothing else in M2
-        // owns it yet, so the UI work in M3 will add it alongside the picker.
-        Vec::new()
+        crate::ffi::drives()
     }
 
     fn scan(
