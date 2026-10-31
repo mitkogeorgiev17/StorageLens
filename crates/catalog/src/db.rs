@@ -69,15 +69,21 @@ impl Catalog {
     /// The session is created in `running` state with zero counters; call
     /// [`finish_session`](Self::finish_session) when the scan ends, including when
     /// it is cancelled.
-    pub fn begin_session(&self, platform: Platform, elevated: bool) -> Result<i64> {
+    ///
+    /// `root` is stored as text. A path that is not valid Unicode (possible on
+    /// both platforms, rare in practice) is stored lossily; it is for display
+    /// and for building child paths, never for deletion, which re-resolves every
+    /// path through the safety layer.
+    pub fn begin_session(&self, platform: Platform, elevated: bool, root: &Path) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO scan_session (platform, started_at, status, elevated) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO scan_session (platform, started_at, status, elevated, root) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 platform.as_str(),
                 now(),
                 ScanStatus::Running.as_str(),
-                i64::from(elevated)
+                i64::from(elevated),
+                root.to_string_lossy(),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -118,7 +124,7 @@ impl Catalog {
         self.conn
             .query_row(
                 "SELECT id, platform, started_at, finished_at, status, files_seen, \
-                        bytes_seen, dirs_skipped, elevated \
+                        bytes_seen, dirs_skipped, elevated, root \
                  FROM scan_session WHERE id = ?1",
                 params![scan_id],
                 map_session,
@@ -133,7 +139,7 @@ impl Catalog {
             .conn
             .query_row(
                 "SELECT id, platform, started_at, finished_at, status, files_seen, \
-                        bytes_seen, dirs_skipped, elevated \
+                        bytes_seen, dirs_skipped, elevated, root \
                  FROM scan_session ORDER BY id DESC LIMIT 1",
                 [],
                 map_session,
@@ -240,6 +246,7 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<ScanSession> {
         bytes_seen: to_u64(row.get(6)?),
         dirs_skipped: to_u64(row.get(7)?),
         elevated: row.get::<_, i64>(8)? != 0,
+        root: row.get::<_, Option<String>>(9)?.map(PathBuf::from),
     })
 }
 
@@ -277,7 +284,7 @@ mod tests {
         let scan_id = {
             let catalog = Catalog::open(&path).expect("open");
             let id = catalog
-                .begin_session(Platform::Macos, false)
+                .begin_session(Platform::Macos, false, Path::new("/scanned"))
                 .expect("begin");
 
             let mut writer = catalog.writer(id).expect("writer");
@@ -323,6 +330,30 @@ mod tests {
     }
 
     #[test]
+    fn sessions_round_trip_their_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catalog = Catalog::open(dir.path().join("catalog.db")).expect("open");
+        let root = Path::new("/Users/me/Фото & Docs");
+        let scan_id = catalog
+            .begin_session(Platform::Macos, false, root)
+            .expect("begin");
+
+        assert_eq!(
+            catalog.session(scan_id).expect("session").root.as_deref(),
+            Some(root)
+        );
+        assert_eq!(
+            catalog
+                .latest_session()
+                .expect("latest")
+                .expect("a session")
+                .root
+                .as_deref(),
+            Some(root)
+        );
+    }
+
+    #[test]
     fn finishing_an_unknown_session_fails() {
         let dir = tempfile::tempdir().expect("tempdir");
         let catalog = catalog(&dir);
@@ -346,7 +377,7 @@ mod tests {
         let path = dir.path().join("catalog.db");
         let catalog = Catalog::open(&path).expect("open");
         let scan_id = catalog
-            .begin_session(Platform::Macos, false)
+            .begin_session(Platform::Macos, false, Path::new("/scanned"))
             .expect("begin");
 
         // A second connection holding an open write transaction, exactly like a
@@ -377,7 +408,7 @@ mod tests {
         let path = dir.path().join("catalog.db");
         let catalog = Catalog::open(&path).expect("open");
         let scan_id = catalog
-            .begin_session(Platform::Macos, false)
+            .begin_session(Platform::Macos, false, Path::new("/scanned"))
             .expect("begin");
 
         let mut writer = catalog.writer(scan_id).expect("writer");

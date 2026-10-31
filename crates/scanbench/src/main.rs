@@ -137,7 +137,7 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn Error>> {
     };
 
     let catalog = Catalog::open(&db_path)?;
-    let scan_id = catalog.begin_session(Platform::current(), false)?;
+    let scan_id = catalog.begin_session(Platform::current(), false, &root)?;
     let mut writer = catalog.writer(scan_id)?;
 
     let cancel = CancelToken::new();
