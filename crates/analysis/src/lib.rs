@@ -2,11 +2,11 @@
 //!
 //! Grouping views (#25) live in [`grouping`]; rules, duplicates and the app
 //! inventory are filled in by issues #31–#33 and #36–#40. The rules engine
-//! (#31) is [`rules`]; macOS app classification (#36) is [`apps_macos`].
+//! (#31) is [`rules`]; app classification (#36/#37) is [`apps`].
 
 #![forbid(unsafe_code)]
 
-pub mod apps_macos;
+pub mod apps;
 pub mod grouping;
 pub mod rules;
 

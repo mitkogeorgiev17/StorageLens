@@ -12,6 +12,8 @@
 //! - `dedupe` — hard-link accounting on the NTFS file id. Pure.
 //! - [`registry`] — one startup pass over `HKEY_CLASSES_ROOT` that fills gaps
 //!   in the shared category table. Never called during a scan.
+//! - [`apps`] — installed-app inventory: uninstall keys, usage evidence,
+//!   footprint. Matching is pure; the reads are Windows only.
 //! - [`elevation`] — elevation state and the "relaunch elevated" flow.
 //! - `skip` — which directories the walker refuses to enter. Pure, so it is
 //!   tested on every runner.
@@ -29,6 +31,7 @@ pub mod ffi;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod skip;
 
+pub mod apps;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod dedupe;
 pub mod elevation;

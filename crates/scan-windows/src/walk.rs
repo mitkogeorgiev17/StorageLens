@@ -120,8 +120,7 @@ impl StorageScanner for WinScanner {
     }
 
     fn installed_apps(&self) -> Vec<AppInfo> {
-        // Discovered by the app-inventory work in M5 (#36+).
-        Vec::new()
+        crate::apps::inventory()
     }
 }
 
