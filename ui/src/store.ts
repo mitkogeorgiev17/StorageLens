@@ -90,7 +90,8 @@ export interface AppState {
   navigate(route: RouteId): void;
   /**
    * Go to the Map, showing `entryId` (a folder opened, a file selected) in the
-   * plain folder view: a filtered or grouped view might not contain it.
+   * plain folder view: a filtered or grouped view might not contain it. The
+   * chart (treemap or sunburst) stays.
    */
   showInMap(entryId: number, isDirectory: boolean): void;
   /** Change the Map's view; with `openFolder`, open that folder in it. */
@@ -117,7 +118,7 @@ export const useAppStore = create<AppState>()((set) => ({
   showInMap: (entryId, isDirectory) =>
     set((state) => ({
       route: "map",
-      mapView: DEFAULT_VIEW,
+      mapView: { ...DEFAULT_VIEW, chart: state.mapView.chart },
       mapFocus: { entryId, isDirectory, nonce: (state.mapFocus?.nonce ?? 0) + 1 },
     })),
 
