@@ -184,7 +184,7 @@ thread_local! {
 /// Rayon reuses worker threads across directories and scans, so the first task on
 /// each thread applies the policy and later tasks skip the syscall. Failure is
 /// ignored: throttling is a responsiveness nicety, not a correctness requirement.
-pub(crate) fn throttle_current_thread() {
+pub fn throttle_current_thread() {
     IO_POLICY_APPLIED.with(|applied| {
         if applied.get() {
             return;

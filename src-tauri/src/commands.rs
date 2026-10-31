@@ -8,12 +8,11 @@
 //! running app. Errors cross the boundary as `String` — the message the UI shows.
 //! Nothing here panics on input: every lookup, lock, and conversion is fallible.
 //!
-//! # Not built yet
+//! # Deletion
 //!
-//! Rules, deletion, apps, and duplicates are declared with
-//! their final types and return [`not_built`] until their issues land. The
-//! preview-before-execute rule is enforced **now**: `execute_deletion` refuses a
-//! plan id that no `preview_deletion` produced (AGENTS.md invariant 10).
+//! Every removal — cleanup suggestions, apps, duplicate copies — is a dry-run
+//! receipt from a `preview_*` command that `execute_deletion` then runs:
+//! it refuses a plan id that no preview produced (AGENTS.md invariant 10).
 //!
 //! # Scans
 //!
@@ -45,13 +44,15 @@ use tauri::{AppHandle, State};
 
 use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CollectionDto,
-    CollectionResultDto, CrumbDto, DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRangeDto,
-    FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page, PlanItemDto, ResultItemDto,
-    RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind,
-    SearchCursorDto, SizeCursorDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
+    CollectionResultDto, CrumbDto, DeletionPlanDto, DeletionResultDto, DupFileDto, DupGroupDto,
+    DupesDto, FileRangeDto, FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page,
+    PlanItemDto, ResultItemDto, RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto,
+    ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, TreeNodeDto, UndoItemDto,
+    UndoResultDto, VolumeDto,
 };
 use crate::events::{
-    self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
+    self, DupesProgressEvent, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle,
+    PROGRESS_INTERVAL,
 };
 
 /// Rows per page for flat lists (AGENTS.md §8: no component holds more than
@@ -74,11 +75,6 @@ const TREE_BUDGET: usize = 6_000;
 const OVERVIEW_BIGGEST: usize = 10;
 
 type CommandResult<T> = Result<T, String>;
-
-/// The error for a command whose backend is not built yet.
-pub fn not_built(feature: &str, issue: &str) -> String {
-    format!("{feature} is not available yet (built in {issue})")
-}
 
 fn lock<T>(mutex: &Mutex<T>) -> CommandResult<MutexGuard<'_, T>> {
     mutex
@@ -167,7 +163,20 @@ pub struct AppState {
     rules: Mutex<Option<RulesCache>>,
     /// The last app inventory, classified. Reading it takes seconds.
     apps: Mutex<Option<Vec<storagelens_core::AppInfo>>>,
+    /// The last duplicate search: its scan, groups, and what it skipped.
+    dupes: Mutex<Option<DupesCache>>,
+    /// Cancels the running duplicate search.
+    cancel_dupes: Mutex<CancelToken>,
     next_plan: AtomicU64,
+}
+
+/// A finished (or stopped) duplicate search.
+#[derive(Clone)]
+struct DupesCache {
+    scan_id: i64,
+    groups: Vec<storagelens_analysis::dupes::Group>,
+    unreadable: u64,
+    cancelled: bool,
 }
 
 impl AppState {
@@ -187,6 +196,8 @@ impl AppState {
             grouping: Mutex::new(None),
             rules: Mutex::new(None),
             apps: Mutex::new(None),
+            dupes: Mutex::new(None),
+            cancel_dupes: Mutex::new(CancelToken::new()),
             next_plan: AtomicU64::new(1),
         })
     }
@@ -2006,6 +2017,217 @@ pub fn preview_app_removal(
     store_plan(state, scan_id, items, lines)
 }
 
+/// Byte-identical files in a scan (PLAN §12). Reuses the last search of the
+/// same scan unless `refresh`; groups shrink as copies go to the Trash, and a
+/// group with one copy left is no longer listed.
+///
+/// Runs on the calling thread, which `throttle` slows down first (I/O policy);
+/// hashing paces its own CPU use. `cancel_duplicates` stops it between
+/// chunks.
+pub fn find_duplicates(
+    state: &AppState,
+    sink: &dyn Emit,
+    scan_id: i64,
+    refresh: bool,
+    options: storagelens_analysis::dupes::Options,
+    throttle: &dyn Fn(),
+) -> CommandResult<DupesDto> {
+    use storagelens_analysis::dupes;
+
+    let cached = lock(&state.dupes)?
+        .clone()
+        .filter(|cache| cache.scan_id == scan_id && !refresh);
+    let cache = match cached {
+        Some(cache) => cache,
+        None => {
+            let arena = state.arena(scan_id)?;
+            let root = state
+                .root_of(scan_id)
+                .ok_or("this scan predates path recording; rescan first")?;
+            let home = home_dir();
+            let home = home.as_deref().map(Path::new);
+            let guard = storagelens_safety::Guard::new(&root, home)
+                .map_err(|refusal| format!("cannot search {}: {refusal}", root.display()))?;
+            let candidates = dupes::candidates(&arena, &root, &guard, home, options.min_size);
+
+            let cancel = CancelToken::new();
+            *lock(&state.cancel_dupes)? = cancel.clone();
+            throttle();
+            let pace = Throttle::new(PROGRESS_INTERVAL);
+            let report = dupes::find(candidates, options, &cancel, &mut |progress| {
+                if pace.ready() || progress.groups_done == progress.groups_total {
+                    events::emit(
+                        sink,
+                        events::DUPES_PROGRESS,
+                        &DupesProgressEvent {
+                            scan_id,
+                            groups_done: progress.groups_done,
+                            groups_total: progress.groups_total,
+                            files_hashed: progress.files_hashed,
+                            bytes_read: progress.bytes_read,
+                        },
+                    );
+                }
+            });
+            let cache = DupesCache {
+                scan_id,
+                groups: report.groups,
+                unreadable: report.unreadable,
+                cancelled: report.cancelled,
+            };
+            *lock(&state.dupes)? = Some(cache.clone());
+            cache
+        }
+    };
+
+    let removed = lock(&state.removed)?.clone();
+    let arena = state.arena(scan_id)?;
+    let catalog = lock(&state.catalog)?;
+    let groups = cache
+        .groups
+        .iter()
+        .filter_map(|group| {
+            let files: Vec<DupFileDto> = group
+                .files
+                .iter()
+                .filter(|file| !removed.contains(&file.path.display().to_string()))
+                .map(|file| DupFileDto {
+                    path: file.path.display().to_string(),
+                    size_alloc: file.size_alloc,
+                    modified: arena
+                        .entry_id(file.node)
+                        .and_then(|id| catalog.entry(scan_id, id).ok().flatten())
+                        .and_then(|entry| entry.modified),
+                })
+                .collect();
+            (files.len() >= 2).then(|| {
+                let total: u64 = files.iter().map(|file| file.size_alloc).sum();
+                let largest = files.iter().map(|file| file.size_alloc).max().unwrap_or(0);
+                DupGroupDto {
+                    hash: group.hash.clone(),
+                    size_logical: group.size_logical,
+                    reclaimable: total - largest,
+                    files,
+                }
+            })
+        })
+        .collect();
+    Ok(DupesDto {
+        scan_id,
+        groups,
+        unreadable: cache.unreadable,
+        cancelled: cache.cancelled,
+    })
+}
+
+/// Stop the running duplicate search before its next chunk.
+pub fn cancel_duplicates(state: &AppState) -> CommandResult<()> {
+    lock(&state.cancel_dupes)?.cancel();
+    Ok(())
+}
+
+/// Dry-run receipt for trashing duplicate copies. Every path must be a copy
+/// found by the last search of this scan, and every group must keep at least
+/// one copy that is neither selected nor already in the Trash. Stamps come
+/// from the scan, so the preflight re-stat catches a copy edited since.
+pub fn preview_duplicate_removal(
+    state: &AppState,
+    scan_id: i64,
+    paths: Vec<String>,
+) -> CommandResult<DeletionPlanDto> {
+    if paths.is_empty() {
+        return Err("nothing selected to delete".to_owned());
+    }
+    let cache = lock(&state.dupes)?
+        .clone()
+        .filter(|cache| cache.scan_id == scan_id)
+        .ok_or("no duplicate search for this scan; search first")?;
+    let removed = lock(&state.removed)?.clone();
+
+    let mut wanted: HashMap<&str, bool> = HashMap::new();
+    for path in &paths {
+        if wanted.insert(path.as_str(), false).is_some() {
+            return Err(format!("listed twice: {path}"));
+        }
+    }
+    let mut chosen = Vec::new();
+    for group in &cache.groups {
+        let mut kept = 0usize;
+        for file in &group.files {
+            let shown = file.path.display().to_string();
+            if removed.contains(&shown) {
+                continue;
+            }
+            match wanted.get_mut(shown.as_str()) {
+                Some(seen) => {
+                    *seen = true;
+                    chosen.push((file.clone(), group.hash.clone()));
+                }
+                None => kept += 1,
+            }
+        }
+        if kept == 0
+            && group
+                .files
+                .iter()
+                .any(|f| wanted.contains_key(f.path.display().to_string().as_str()))
+        {
+            return Err(format!(
+                "that would trash every copy of {}; keep at least one",
+                group
+                    .files
+                    .first()
+                    .map_or_else(String::new, |f| f.path.display().to_string())
+            ));
+        }
+    }
+    if let Some((path, _)) = wanted.iter().find(|(_, seen)| !**seen) {
+        return Err(format!("{path} is not a duplicate found in this scan"));
+    }
+
+    let arena = state.arena(scan_id)?;
+    let catalog = lock(&state.catalog)?;
+    let mut items = Vec::new();
+    let mut lines = Vec::new();
+    for (file, hash) in chosen {
+        let shown = file.path.display().to_string();
+        let entry = arena
+            .entry_id(file.node)
+            .and_then(|id| catalog.entry(scan_id, id).ok().flatten())
+            .ok_or_else(|| format!("{shown} is not in the catalog"))?;
+        items.push(storagelens_safety::Item {
+            path: file.path.clone(),
+            bytes: file.size_alloc,
+            rule_id: Some("duplicate".to_owned()),
+            stamp: storagelens_core::FileStamp {
+                kind: entry.kind,
+                size_logical: entry.size_logical,
+                modified: entry.modified.unwrap_or(0),
+                dev: entry.dev,
+                file_id: entry.file_id,
+                attrs: entry.attrs,
+            },
+        });
+        lines.push(PlanItemDto {
+            path: shown,
+            bytes: file.size_alloc,
+            rule_id: "duplicate".to_owned(),
+            title: format!("Duplicate copy ({})", &hash[..hash.len().min(12)]),
+            risk: "review".to_owned(),
+        });
+    }
+    drop(catalog);
+    store_plan(state, scan_id, items, lines)
+}
+
+/// Throttle the calling thread's disk I/O (and, on Windows, its priority).
+fn throttle_this_thread() {
+    #[cfg(target_os = "macos")]
+    storagelens_scan_macos::throttle_current_thread();
+    #[cfg(windows)]
+    storagelens_scan_windows::ffi::throttle_current_thread();
+}
+
 /// Installed apps on this platform.
 fn platform_apps() -> Vec<storagelens_core::AppInfo> {
     #[cfg(any(target_os = "macos", windows))]
@@ -2552,9 +2774,39 @@ pub mod ipc {
     }
 
     #[tauri::command]
-    pub async fn find_duplicates(scan_id: i64, min_size: u64) -> CommandResult<Vec<DupGroupDto>> {
-        let _ = (scan_id, min_size);
-        Err(not_built("Duplicate detection", "#39"))
+    pub async fn find_duplicates(
+        app: AppHandle,
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        refresh: bool,
+    ) -> CommandResult<DupesDto> {
+        let state = Arc::clone(state.inner());
+        tauri::async_runtime::spawn_blocking(move || {
+            super::find_duplicates(
+                &state,
+                &app,
+                scan_id,
+                refresh,
+                storagelens_analysis::dupes::Options::default(),
+                &super::throttle_this_thread,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    pub async fn cancel_duplicates(state: AppStateRef<'_>) -> CommandResult<()> {
+        super::cancel_duplicates(state.inner())
+    }
+
+    #[tauri::command]
+    pub async fn preview_duplicate_removal(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        paths: Vec<String>,
+    ) -> CommandResult<DeletionPlanDto> {
+        super::preview_duplicate_removal(state.inner(), scan_id, paths)
     }
 
     #[tauri::command]
@@ -2802,6 +3054,99 @@ mod tests {
             .filter(|group| group.deletable)
             .flat_map(|group| group.items.into_iter().map(|item| item.path))
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicates_keep_one_copy_trash_the_rest_and_undo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let x: Vec<u8> = (0..1_500_000u32).map(|i| (i % 251) as u8).collect();
+        let y: Vec<u8> = (0..1_200_000u32).map(|i| (i % 241) as u8).collect();
+        fs::create_dir_all(root.join("sub")).expect("sub");
+        for name in ["x1", "x2", "sub/x3"] {
+            fs::write(root.join(name), &x).expect("x");
+        }
+        for name in ["y1", "y2"] {
+            fs::write(root.join(name), &y).expect("y");
+        }
+        let (scan_id, _) = scan(&state, &root);
+        let recorder = Recorder::default();
+        let options = storagelens_analysis::dupes::Options {
+            duty: 1.0,
+            ..Default::default()
+        };
+        let throttled = std::sync::atomic::AtomicBool::new(false);
+        let throttle = || throttled.store(true, Ordering::SeqCst);
+
+        let found =
+            find_duplicates(&state, &recorder, scan_id, false, options, &throttle).expect("find");
+        assert!(
+            throttled.load(Ordering::SeqCst),
+            "the hashing thread is throttled"
+        );
+        assert!(!found.cancelled);
+        assert!(!recorder.named(events::DUPES_PROGRESS).is_empty());
+        assert_eq!(found.groups.len(), 2, "{:?}", found.groups);
+        let path = |name: &str| root.join(name).display().to_string();
+        let xs: Vec<String> = found.groups[0]
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert_eq!(xs, [path("sub/x3"), path("x1"), path("x2")]);
+        assert_eq!(
+            found.groups[0].reclaimable,
+            2 * found.groups[0].files[0].size_alloc
+        );
+        assert!(found.groups[0].files.iter().all(|f| f.modified.is_some()));
+
+        // The guard: never every copy of a group.
+        let error = preview_duplicate_removal(&state, scan_id, xs.clone()).expect_err("all");
+        assert!(error.contains("every copy"), "{error}");
+        let error = preview_duplicate_removal(&state, scan_id, vec![path("notes.txt")])
+            .expect_err("not a duplicate");
+        assert!(error.contains("not a duplicate"), "{error}");
+
+        let plan = preview_duplicate_removal(&state, scan_id, vec![path("x1"), path("sub/x3")])
+            .expect("preview");
+        assert_eq!(plan.items.len(), 2);
+        let bin = FolderBin::new(&dir);
+        let result = execute_deletion(
+            &state,
+            &recorder,
+            &plan.plan_id,
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect("execute");
+        assert_eq!(result.trashed, 2, "{:?}", result.items);
+        assert!(root.join("x2").exists(), "the kept copy stays");
+
+        // Cached: no rehash. The x group has one copy left and is gone.
+        let never = || panic!("cached results do not rehash or throttle");
+        let after =
+            find_duplicates(&state, &recorder, scan_id, false, options, &never).expect("again");
+        assert_eq!(after.groups.len(), 1);
+        assert_eq!(after.groups[0].files.len(), 2, "the y group is untouched");
+        // x2 is now the only copy: trashing it is refused.
+        let error = preview_duplicate_removal(&state, scan_id, vec![path("x2")]).expect_err("last");
+        assert!(
+            error.contains("not a duplicate") || error.contains("every copy"),
+            "{error}"
+        );
+
+        let undone = undo_deletion(&state, &result.manifest_id, &bin).expect("undo");
+        assert_eq!(undone.restored, 2);
+        let back =
+            find_duplicates(&state, &recorder, scan_id, false, options, &never).expect("back");
+        assert_eq!(
+            back.groups.len(),
+            2,
+            "restored copies make the group whole again"
+        );
     }
 
     #[cfg(unix)]
@@ -3689,14 +4034,6 @@ mod tests {
         delete_collection(&state, big.id).expect("delete");
         assert!(evaluate_collection(&state, second, big.id).is_err());
         assert_eq!(list_collections(&state).expect("list").len(), 2);
-    }
-
-    #[test]
-    fn unbuilt_features_name_their_issue() {
-        assert_eq!(
-            not_built("Search", "#24"),
-            "Search is not available yet (built in #24)"
-        );
     }
 
     /// Bytes per Cleanliness bucket of `scan_id`.

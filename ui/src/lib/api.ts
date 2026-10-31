@@ -341,10 +341,31 @@ export interface AppRowDto {
   readonly satellites: readonly SatelliteDto[];
 }
 
-export interface DupGroupDto {
-  readonly hash: string;
+/** One copy of a duplicated file. */
+export interface DupFileDto {
+  readonly path: string;
   readonly sizeAlloc: number;
-  readonly paths: readonly string[];
+  /** Unix seconds, as scanned. */
+  readonly modified: number | null;
+}
+
+/** Byte-identical files; always two or more still on disk. */
+export interface DupGroupDto {
+  /** BLAKE3, hex. */
+  readonly hash: string;
+  readonly sizeLogical: number;
+  /** Freed by keeping one copy. */
+  readonly reclaimable: number;
+  readonly files: readonly DupFileDto[];
+}
+
+export interface DupesDto {
+  readonly scanId: number;
+  /** Largest reclaimable first. */
+  readonly groups: readonly DupGroupDto[];
+  readonly unreadable: number;
+  /** Stopped early: only finished groups are listed. */
+  readonly cancelled: boolean;
 }
 
 export type DiskAccess = "granted" | "denied" | "unknown" | "not-applicable";
@@ -502,8 +523,19 @@ export const api = {
       includeData,
       allowRunning,
     }),
-  findDuplicates: (scanId: number, minSize: number) =>
-    call<readonly DupGroupDto[]>("find_duplicates", { scanId, minSize }),
+  /**
+   * Byte-identical files of a scan. Reuses the last search unless `refresh`;
+   * a fresh search hashes in the background and can take minutes.
+   */
+  findDuplicates: (scanId: number, refresh: boolean) =>
+    call<DupesDto>("find_duplicates", { scanId, refresh }),
+  cancelDuplicates: () => call<void>("cancel_duplicates"),
+  /**
+   * Receipt for trashing duplicate copies; refused if any group would lose
+   * its last copy. Executed by {@link api.executeDeletion}.
+   */
+  previewDuplicateRemoval: (scanId: number, paths: readonly string[]) =>
+    call<DeletionPlanDto>("preview_duplicate_removal", { scanId, paths }),
 
   checkFullDiskAccess: () => call<DiskAccess>("check_full_disk_access"),
   openFullDiskAccessSettings: () =>
@@ -536,8 +568,11 @@ export interface ScanErrorEvent {
 
 export interface DupesProgressEvent {
   readonly scanId: number;
-  readonly hashed: number;
-  readonly total: number;
+  /** Size groups finished, of `groupsTotal`. */
+  readonly groupsDone: number;
+  readonly groupsTotal: number;
+  readonly filesHashed: number;
+  readonly bytesRead: number;
 }
 
 export const EVENTS = {
@@ -624,6 +659,15 @@ export function onCleanupProgress(
   handler: (event: CleanupProgressEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<CleanupProgressEvent>(EVENTS.cleanupProgress, (event) =>
+    handler(event.payload),
+  );
+}
+
+/** Follow a duplicate search. Returns a function that stops. */
+export function onDupesProgress(
+  handler: (event: DupesProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<DupesProgressEvent>(EVENTS.dupesProgress, (event) =>
     handler(event.payload),
   );
 }

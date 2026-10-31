@@ -23,8 +23,7 @@ use storagelens_core::ScanStatus;
 pub const SCAN_PROGRESS: &str = "scan://progress";
 pub const SCAN_DONE: &str = "scan://done";
 pub const SCAN_ERROR: &str = "scan://error";
-/// Emitted by the duplicate finder (#39); declared now so the UI can listen.
-#[allow(dead_code)]
+/// While `find_duplicates` hashes: [`DupesProgressEvent`].
 pub const DUPES_PROGRESS: &str = "dupes://progress";
 /// Before each item of an executing deletion: [`CleanupProgressDto`](crate::dto::CleanupProgressDto).
 pub const CLEANUP_PROGRESS: &str = "cleanup://progress";
@@ -61,14 +60,16 @@ pub struct ScanErrorEvent {
     pub message: String,
 }
 
-/// Payload of [`DUPES_PROGRESS`] (#39).
-#[allow(dead_code)]
+/// Payload of [`DUPES_PROGRESS`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DupesProgressEvent {
     pub scan_id: i64,
-    pub hashed: u64,
-    pub total: u64,
+    /// Size groups finished, of `groups_total`.
+    pub groups_done: u64,
+    pub groups_total: u64,
+    pub files_hashed: u64,
+    pub bytes_read: u64,
 }
 
 /// Somewhere events can go: the Tauri app, or a recorder in tests.
