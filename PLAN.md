@@ -1114,13 +1114,21 @@ for both platforms (`analysis::apps`).
 
 Three stages, each filtering the previous:
 
-1. **Group by exact `size_alloc`.** Files with unique sizes cannot be duplicates. This
-   alone eliminates ~95% of candidates.
+1. **Group by exact logical size.** Files with unique sizes cannot be duplicates. This
+   alone eliminates ~95% of candidates. (Logical, not `size_alloc`: identical bytes can
+   have different allocations — sparse or compressed files — so grouping on `size_alloc`
+   would miss real duplicates. `size_alloc` is still what "reclaimable" reports.)
 2. **Partial hash** the first 64 KB. Eliminates most remaining false positives.
 3. **Full BLAKE3** only for survivors.
 
 Throttle hashing I/O (`IOPOL_THROTTLE` on macOS, `FILE_FLAG_SEQUENTIAL_SCAN` on Windows)
 so the disk doesn't stall. Show progress per group, cancellable.
+
+Implementation (#39, `analysis::dupes`): hashing is sequential on the caller's thread,
+which sets the I/O throttle (the scanner crates own that syscall). CPU is paced by a
+duty cycle — sleep after each 1 MiB chunk so work is ≤ `duty` of wall time; the
+default 0.1 measured 8.5% of one core hashing 2 × 256 MiB. Cancel is checked per chunk.
+A file whose length no longer matches the scan is skipped as unreadable.
 
 ### Keep-one policy
 
