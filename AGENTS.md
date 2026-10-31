@@ -32,7 +32,7 @@ milestones. Start at M0 (`#1`), and follow the dependency links in each issue.
 |---|---|---|
 | M0 — Foundation | #1–#6 | Workspace, domain model, schema, fixtures, `scanbench` |
 | M1 — macOS scanner | #7–#11 | `getattrlistbulk`, dedupe, FDA, 2% accuracy gate |
-| M2 — Windows scanner | #12–#16 | `FindFirstFileExW`, sizes, registry, accuracy gate |
+| M2 — Windows scanner | #12–#16 | Bulk directory query, sizes, registry, accuracy gate |
 | M3 — Catalog & treemap | #17–#24 | Arena, IPC, React shell, canvas treemap |
 | M3b — Categorization & grouping | #25–#28 | Six groupings, filters, sunburst, collections |
 | M4 — Cleanup & safety | #29–#35 | Guards, trash + undo, rules, catalogs, UI |
@@ -67,7 +67,7 @@ crates/core/           Entry, Volume, ScanOptions, StorageScanner trait, errors
   grouping.rs          synthetic tree builders (Folder/Type/App/Age/Size/Cleanliness)
 crates/catalog/        SQLite schema, migrations, queries, tree arena, rollups
 crates/scan-macos/     getattrlistbulk FFI, buffer parser, FSEvents
-crates/scan-windows/   FindFirstFileExW walk, USN journal, registry
+crates/scan-windows/   bulk dir-query walk, USN journal, registry
 crates/analysis/       duplicate finder, app inventory, rules engine
 crates/safety/         path guards, trash service, manifests, undo
 crates/scanbench/      CLI binary — no UI, used to validate the scanners
