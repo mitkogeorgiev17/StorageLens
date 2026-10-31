@@ -204,6 +204,7 @@ pub struct Entry {
     pub created: i64,
     pub modified: i64,
     pub accessed: i64,
+    pub hardlink_dup: bool,   // row kept, but not counted in rollups
 }
 
 pub trait StorageScanner: Send + Sync {
@@ -426,7 +427,7 @@ Mitigation: write a `parse_bulk_buffer` unit test that compares parsed output ag
 |---|---|
 | **Full Disk Access** | Required for `~/Library/Mail`, other apps' containers, TM data. **No API to request it** — deep-link to `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles` and poll. Probe `~/Library/Mail` for `EPERM` to detect status. |
 | **Firmlinks** | `/Users` → `/System/Volumes/Data/Users`. Walking both double-counts the entire disk. **Skip all `/System/Volumes/*`.** |
-| **Hard links** | Dedupe on `(devid, fileid)` when `nlink > 1`. Count once, attribute to first path seen. |
+| **Hard links** | Dedupe on `(devid, fileid)` when `nlink > 1`. Count once, attribute to first path seen. Every name still gets a row; later names carry their true size but set `hardlink_dup`, and rollups exclude them. |
 | **APFS clones** | Shared extents, both report full size. Not exposed by `getattrlist`. Accept overcount. |
 | **Sparse files** | `Docker.raw` = 100 GB logical, 4 GB allocated. Always show **allocated**. |
 | **Local TM snapshots** | Invisible to `du`, real space. `tmutil listlocalsnapshots /`. |
@@ -436,21 +437,31 @@ Mitigation: write a `parse_bulk_buffer` unit test that compares parsed output ag
 
 ### 6.4 Default skip list
 
+Skipped with `SkipReason::SystemPath` (the directory keeps its own row, its subtree is
+never enumerated):
+
 ```
-/System/Volumes/Data
-/System/Volumes/VM
-/System/Volumes/Preboot
-/System/Volumes/Update
-/System/Volumes/xarts
-/System/Volumes/iSCPreboot
-/System/Volumes/Hardware
+/System/Volumes                (all of Data, VM, Preboot, Update, xarts, iSCPreboot, Hardware)
 /dev
 /Volumes                      (recurse per-volume instead)
 /.Spotlight-V100
 /.fseventsd
-/.DocumentRevisions-V100      (report separately — can be GBs)
-/private/var/vm               (swap — report, never delete)
+/.Trashes
 ```
+
+Walked and reported in the tree, but never offered for deletion:
+
+```
+/.DocumentRevisions-V100      (can be GBs)
+/private/var/vm               (swap and the sleep image)
+```
+
+They are real space, so hiding them from the scan would make the total wrong. The safety
+layer's path guards refuse to delete them; M4 surfaces each as a `system (report)` rule.
+
+A directory on another device is reported as `SkipReason::MountPoint` unless
+`cross_filesystems` is set. The scan root itself is always entered, even if it is on the
+skip list.
 
 ### 6.5 Speed
 

@@ -123,6 +123,7 @@ struct OracleEntry {
     size_logical: u64,
     dev: u32,
     file_id: u64,
+    nlink: u32,
 }
 
 /// Walk the tree with `std::fs`, the way the reference walker does.
@@ -171,6 +172,7 @@ fn oracle(root: &Path) -> (BTreeMap<PathBuf, OracleEntry>, Vec<PathBuf>) {
                     size_logical,
                     dev: metadata.dev() as u32,
                     file_id: metadata.ino(),
+                    nlink: metadata.nlink() as u32,
                 },
             );
 
@@ -264,29 +266,109 @@ fn walker_matches_the_read_dir_oracle() {
         );
         assert_eq!(entry.dev, want.dev, "device of {}", path.display());
         assert_eq!(entry.file_id, want.file_id, "inode of {}", path.display());
+
+        if want.kind != EntryKind::File || want.nlink <= 1 {
+            assert!(
+                !entry.hardlink_dup,
+                "{} is not a hard-link duplicate but was flagged",
+                path.display()
+            );
+        }
+    }
+
+    // --- Hard links --------------------------------------------------------
+    // Every name keeps a row with its true size; exactly one name per inode owns
+    // the bytes and the rest set `hardlink_dup`.
+    let mut by_inode: BTreeMap<(u32, u64), Vec<(&PathBuf, bool)>> = BTreeMap::new();
+    for (path, want) in &expected {
+        if want.kind == EntryKind::File && want.nlink > 1 {
+            let entry = scanned.get(path).expect("checked above");
+            by_inode
+                .entry((want.dev, want.file_id))
+                .or_default()
+                .push((path, entry.hardlink_dup));
+        }
+    }
+    assert!(
+        !by_inode.is_empty(),
+        "the fixture must contain at least one hard-linked inode"
+    );
+    for ((dev, inode), names) in &by_inode {
+        assert!(
+            names.len() > 1,
+            "inode {inode} on device {dev} has a link count but one name"
+        );
+        let owners = names.iter().filter(|(_, duplicate)| !duplicate).count();
+        assert_eq!(
+            owners, 1,
+            "inode {inode} on device {dev} must be counted at exactly one path, got {names:?}"
+        );
+    }
+
+    // The fixture's three names for one inode are the acceptance criterion: they
+    // stay visible, but contribute one file and one allocation.
+    let hardlinks = &tree.manifest().paths.hardlinks;
+    let mut owners = 0;
+    for path in hardlinks {
+        let relative = path
+            .strip_prefix(root)
+            .expect("hard link is below the root");
+        let entry = scanned
+            .get(relative)
+            .unwrap_or_else(|| panic!("{} missing from the scan", path.display()));
+        assert_eq!(entry.kind, EntryKind::File);
+        assert_eq!(entry.size_alloc, expected[relative].size_alloc);
+        if !entry.hardlink_dup {
+            owners += 1;
+        }
+    }
+    assert_eq!(owners, 1, "exactly one hard-link name owns the inode");
+
+    // --- Symlinks ----------------------------------------------------------
+    // `FSOPT_NOFOLLOW` means the loop is reported as two links and never entered,
+    // and the link pointing outside the tree is not followed either.
+    if let Some(loop_links) = &tree.manifest().paths.symlink_loop {
+        for link in loop_links {
+            let relative = link.strip_prefix(root).expect("link is below the root");
+            assert_eq!(
+                scanned
+                    .get(relative)
+                    .unwrap_or_else(|| panic!("{} missing", link.display()))
+                    .kind,
+                EntryKind::Symlink,
+                "{} must stay a symlink",
+                link.display()
+            );
+        }
+    }
+    if let Some(outside) = &tree.manifest().paths.symlink_outside {
+        let relative = outside.strip_prefix(root).expect("link is below the root");
+        assert_eq!(
+            scanned
+                .get(relative)
+                .unwrap_or_else(|| panic!("{} missing", outside.display()))
+                .kind,
+            EntryKind::Symlink
+        );
     }
 
     // --- Totals ------------------------------------------------------------
-    let expected_files = expected
-        .values()
-        .filter(|entry| entry.kind == EntryKind::File)
-        .count() as u64;
+    // Count each inode once, at its first path, matching #9's rule.
+    let mut counted = BTreeSet::new();
+    let mut expected_files = 0u64;
+    let mut expected_alloc = 0u64;
+    let mut expected_logical = 0u64;
+    for entry in expected.values().filter(|e| e.kind == EntryKind::File) {
+        if counted.insert((entry.dev, entry.file_id)) {
+            expected_files += 1;
+            expected_alloc = expected_alloc.saturating_add(entry.size_alloc);
+            expected_logical = expected_logical.saturating_add(entry.size_logical);
+        }
+    }
     let expected_dirs = expected
         .values()
         .filter(|entry| entry.kind == EntryKind::Dir)
         .count() as u64;
-    // #9 adds dedupe; today every hard-link name is a separate row and a separate
-    // contribution, which is what the oracle does too.
-    let expected_alloc: u64 = expected
-        .values()
-        .filter(|entry| entry.kind == EntryKind::File)
-        .map(|entry| entry.size_alloc)
-        .sum();
-    let expected_logical: u64 = expected
-        .values()
-        .filter(|entry| entry.kind == EntryKind::File)
-        .map(|entry| entry.size_logical)
-        .sum();
 
     assert_eq!(result.files, expected_files, "file count");
     assert_eq!(result.dirs, expected_dirs, "directory count");
@@ -296,7 +378,24 @@ fn walker_matches_the_read_dir_oracle() {
         expected_logical,
         "logical bytes"
     );
+    // Every name is still a row.
     assert_eq!(sink.entries.len() as u64, expected_paths.len() as u64 + 1);
+
+    // The manifest folds hard links into one file; the scan must now agree with it
+    // exactly, not merely with the oracle.
+    let manifest = tree.manifest();
+    assert_eq!(result.files, manifest.files, "manifest file count");
+    assert_eq!(result.dirs, manifest.dirs, "manifest directory count");
+    assert_eq!(
+        result.bytes_alloc.get(),
+        manifest.bytes_alloc,
+        "manifest allocated bytes"
+    );
+    assert_eq!(
+        result.bytes_logical.get(),
+        manifest.bytes_logical,
+        "manifest logical bytes"
+    );
 
     // --- Skips and status --------------------------------------------------
     assert_eq!(result.status, ScanStatus::Partial);
@@ -314,6 +413,9 @@ fn walker_matches_the_read_dir_oracle() {
             reason: SkipReason::PermissionDenied,
         }]
     );
+    assert_eq!(result.skipped_by(SkipReason::PermissionDenied), 1);
+    assert_eq!(result.skipped_by(SkipReason::SystemPath), 0);
+    assert_eq!(result.skipped_by(SkipReason::MountPoint), 0);
 
     // --- Progress and flush ------------------------------------------------
     assert_eq!(sink.flush_count, 1, "flush runs exactly once");
@@ -340,6 +442,62 @@ fn walker_matches_the_read_dir_oracle() {
         );
         previous = event.clone();
     }
+}
+
+#[test]
+fn excluded_and_too_deep_directories_are_reported() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("skip")).expect("skip dir");
+    fs::create_dir_all(root.join("level1/level2")).expect("deep dirs");
+    fs::write(root.join("keep.txt"), b"keep\n").expect("keep");
+    fs::write(root.join("skip/secret.txt"), b"secret\n").expect("secret");
+    fs::write(root.join("level1/level2/deep.txt"), b"deep\n").expect("deep");
+
+    let options = ScanOptions {
+        exclude: vec![root.join("skip")],
+        max_depth: Some(1),
+        ..ScanOptions::default()
+    };
+
+    let mut sink = CollectSink::new(root);
+    let result = scan(
+        &MacScanner::new(options),
+        root,
+        &mut sink,
+        CancelToken::new(),
+        &|_| {},
+    )
+    .expect("scan");
+
+    let scanned = sink.relative();
+    for present in ["keep.txt", "skip", "level1", "level1/level2"] {
+        assert!(
+            scanned.contains_key(Path::new(present)),
+            "{present} should be a row"
+        );
+    }
+    // A skipped directory keeps its own row; nothing below it exists.
+    for absent in ["skip/secret.txt", "level1/level2/deep.txt"] {
+        assert!(
+            !scanned.contains_key(Path::new(absent)),
+            "{absent} must not be scanned"
+        );
+    }
+
+    assert_eq!(result.status, ScanStatus::Partial);
+    assert_eq!(result.skipped.len(), 2);
+    assert_eq!(result.skipped_by(SkipReason::Excluded), 1);
+    assert_eq!(result.skipped_by(SkipReason::Other), 1);
+    assert_eq!(result.files, 1);
+    assert_eq!(result.dirs, 3);
+
+    let excluded = result
+        .skipped
+        .iter()
+        .find(|skipped| skipped.reason == SkipReason::Excluded)
+        .expect("excluded skip");
+    assert_eq!(excluded.path, root.join("skip"));
 }
 
 #[test]

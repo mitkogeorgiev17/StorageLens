@@ -295,6 +295,7 @@ mod tests {
                     created: 0,
                     modified: 0,
                     accessed: 0,
+                    hardlink_dup: false,
                 })
                 .expect("accept");
             writer.flush_batch().expect("flush");
@@ -394,6 +395,7 @@ mod tests {
                 created: 0,
                 modified: 0,
                 accessed: 0,
+                hardlink_dup: false,
             })
             .expect("accept");
         writer.flush().expect("flush");

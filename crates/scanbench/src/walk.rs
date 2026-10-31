@@ -334,6 +334,7 @@ impl<S: EntrySink> Walker<'_, S> {
             created: created_of(metadata),
             modified: modified_of(metadata),
             accessed: accessed_of(metadata),
+            hardlink_dup: false,
         };
 
         // The sink assigns arena indices in acceptance order; mirror that here so

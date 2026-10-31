@@ -182,6 +182,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_storage_request_never_follows_symlinks() {
+        // #9's guarantee that a symlink loop cannot be walked depends on this flag,
+        // so pin it here instead of trusting the request to stay unchanged.
+        assert_ne!(Request::options() & FSOPT_NOFOLLOW, 0);
+        assert_ne!(Request::options() & FSOPT_PACK_INVAL_ATTRS, 0);
+        assert!(Request::storage().has_returned_attrs());
+    }
+
+    #[test]
     fn constants_match_the_system_headers() {
         assert_eq!(ATTR_CMN_RETURNED_ATTRS, libc::ATTR_CMN_RETURNED_ATTRS);
         assert_eq!(ATTR_CMN_NAME, libc::ATTR_CMN_NAME);

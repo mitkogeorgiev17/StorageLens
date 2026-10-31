@@ -14,10 +14,10 @@
 //!   entry at a time (macOS only).
 //! - [`volumes`] — mounted volumes, capacity, and the Full Disk Access probe
 //!   (macOS only).
-//! - [`walk`] / `writer` — the parallel walker behind [`MacScanner`] (macOS only).
+//! - [`walk`] / `writer` — the parallel walker behind [`MacScanner`] (macOS only),
+//!   with the hard-link accounting in `dedupe` and the directory rules in `skip`.
 //!
-//! Later issues add dedupe and the system-path skip list (#9), and the accuracy
-//! gate (#11).
+//! The accuracy gate (#11) is the last piece of M1.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
@@ -26,7 +26,11 @@ pub mod attrlist;
 pub mod parse;
 
 #[cfg(target_os = "macos")]
+mod dedupe;
+#[cfg(target_os = "macos")]
 mod ffi;
+#[cfg(target_os = "macos")]
+mod skip;
 #[cfg(target_os = "macos")]
 pub mod volumes;
 #[cfg(target_os = "macos")]
