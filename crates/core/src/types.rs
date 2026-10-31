@@ -365,6 +365,14 @@ pub struct ScanResult {
     pub elapsed_ms: u64,
     /// Every directory that was skipped, with a reason.
     pub skipped: Vec<SkippedDir>,
+    /// Whether the scan ran with administrator rights, where that matters.
+    ///
+    /// `Some(false)` on an unelevated Windows scan labels every
+    /// [`SkipReason::PermissionDenied`] entry in `skipped` as a gap an elevated
+    /// relaunch may fill (PLAN §7.3). `None` where the platform has no such
+    /// notion (macOS uses Full Disk Access instead) or the state is unknown.
+    #[serde(default)]
+    pub elevated: Option<bool>,
 }
 
 impl ScanResult {
@@ -378,6 +386,7 @@ impl ScanResult {
             bytes_logical: Bytes::ZERO,
             elapsed_ms: 0,
             skipped: Vec::new(),
+            elevated: None,
         }
     }
 

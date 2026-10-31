@@ -212,6 +212,7 @@ mod tests {
                 bytes_logical: Bytes::ZERO,
                 elapsed_ms: 0,
                 skipped: Vec::new(),
+                elevated: None,
             },
             links: 0,
             entries: 0,

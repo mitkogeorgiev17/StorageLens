@@ -158,6 +158,7 @@ impl<S: EntrySink> Walker<'_, S> {
                 bytes_logical: Bytes::new(self.bytes_logical),
                 elapsed_ms,
                 skipped: self.skipped,
+                elevated: None,
             },
             links: self.links,
             entries: self.entries,

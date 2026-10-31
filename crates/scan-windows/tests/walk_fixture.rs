@@ -487,6 +487,12 @@ fn an_unreadable_directory_is_reported_not_fatal() {
     .expect("an access-denied directory is a skip, not an error");
 
     assert_eq!(result.status, ScanStatus::Partial);
+    // The gap is labelled with the scan's elevation, so the UI can offer an
+    // elevated relaunch only when it might help.
+    assert_eq!(
+        result.elevated,
+        Some(storagelens_scan_windows::elevation::is_elevated())
+    );
     assert_eq!(
         result.skipped,
         vec![SkippedDir {
