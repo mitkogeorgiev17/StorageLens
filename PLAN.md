@@ -124,6 +124,7 @@ slog, the core can be ported to Go without touching the schema, the rules, or th
 | `d3-hierarchy` | Treemap layout |
 | `zustand` | UI state |
 | `react-window` | Virtualized tables |
+| `tauri-plugin-dialog` | Native folder chooser for the scan picker; only `dialog:allow-open` is granted |
 
 ---
 
