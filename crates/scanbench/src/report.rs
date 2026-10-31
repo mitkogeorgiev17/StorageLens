@@ -14,6 +14,7 @@ use storagelens_core::SkipReason;
 
 use crate::budget::BudgetReport;
 use crate::fixtures_check::FixtureCheck;
+use crate::platform::Backend;
 use crate::walk::ScanOutcome;
 
 /// Version of the `--json` document. Bump only on a breaking change.
@@ -35,6 +36,8 @@ pub struct Report {
     pub schema_version: u32,
     /// The scanned root, canonicalized.
     pub path: String,
+    /// Which walker ran: `"platform"` or `"reference"`.
+    pub backend: &'static str,
     /// How the walk ended.
     pub status: ScanStatus,
     /// Unique regular files (hard links counted once where the platform allows).
@@ -71,6 +74,7 @@ impl Report {
     /// Assemble a report from one walk.
     pub fn new(
         root: &Path,
+        backend: Backend,
         outcome: &ScanOutcome,
         db: &Path,
         fixture: Option<FixtureCheck>,
@@ -96,6 +100,7 @@ impl Report {
         Self {
             schema_version: SCHEMA_VERSION,
             path: root.display().to_string(),
+            backend: backend.as_str(),
             status: outcome.result.status,
             files: outcome.result.files,
             dirs: outcome.result.dirs,
@@ -117,6 +122,7 @@ impl Report {
     pub fn render_text(&self) -> String {
         let mut out = String::new();
         push_line(&mut out, "path", self.path.clone());
+        push_line(&mut out, "backend", self.backend.to_owned());
         push_line(&mut out, "files", group_thousands(self.files));
         push_line(&mut out, "dirs", group_thousands(self.dirs));
         push_line(&mut out, "allocated", human_bytes(self.allocated_bytes));
@@ -255,6 +261,7 @@ mod tests {
     fn the_text_table_matches_the_plan_example() {
         let report = Report::new(
             Path::new("/Users/me/Documents"),
+            Backend::Platform,
             &outcome(184_203, 12_884, Vec::new()),
             Path::new("/tmp/scanbench.db"),
             None,
@@ -265,6 +272,7 @@ mod tests {
             report.render_text(),
             "\
 path            /Users/me/Documents
+backend         platform
 files           184,203
 dirs            12,884
 allocated       48.21 GB
@@ -294,6 +302,7 @@ peak rss        212 MB
         ];
         let report = Report::new(
             Path::new("/tmp"),
+            Backend::Platform,
             &outcome(1, 1, skipped),
             Path::new("/tmp/scanbench.db"),
             None,
@@ -311,6 +320,7 @@ peak rss        212 MB
     fn fixture_and_budget_lines_only_appear_when_requested() {
         let report = Report::new(
             Path::new("/tmp"),
+            Backend::Platform,
             &outcome(1, 1, Vec::new()),
             Path::new("/tmp/scanbench.db"),
             None,
@@ -321,6 +331,7 @@ peak rss        212 MB
 
         let report = Report::new(
             Path::new("/tmp"),
+            Backend::Platform,
             &outcome(1, 1, Vec::new()),
             Path::new("/tmp/scanbench.db"),
             Some(FixtureCheck {
@@ -338,6 +349,7 @@ peak rss        212 MB
     fn json_is_versioned_and_omits_absent_checks() {
         let report = Report::new(
             Path::new("/tmp"),
+            Backend::Platform,
             &outcome(1, 1, Vec::new()),
             Path::new("/tmp/scanbench.db"),
             None,
@@ -348,6 +360,7 @@ peak rss        212 MB
 
         assert_eq!(value["schema_version"], 1);
         assert_eq!(value["path"], "/tmp");
+        assert_eq!(value["backend"], "platform");
         assert_eq!(value["files"], 1);
         assert_eq!(value["allocated_bytes"], 51_765_093_335_u64);
         assert!(value.get("fixture").is_none());

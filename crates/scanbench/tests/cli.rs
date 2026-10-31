@@ -30,6 +30,15 @@ fn the_fixture_run_passes_and_reports_json() {
 
     let report = json(&output);
     assert_eq!(report["schema_version"], 1);
+    assert_eq!(
+        report["backend"],
+        if cfg!(target_os = "macos") {
+            "platform"
+        } else {
+            "reference"
+        },
+        "the fixture run must exercise the shipped scanner on macOS"
+    );
     assert_eq!(report["fixture"]["ok"], true);
     assert!(report["files"].as_u64().expect("files") > 0);
     assert!(report["dirs"].as_u64().expect("dirs") > 0);
@@ -63,6 +72,7 @@ fn the_text_report_has_the_plan_labels_in_order() {
         labels,
         [
             "path",
+            "backend",
             "files",
             "dirs",
             "allocated",
