@@ -91,3 +91,9 @@ jobs:
 
       - name: Build app
         run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy (app)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test (app)
+        run: cargo test --manifest-path src-tauri/Cargo.toml
