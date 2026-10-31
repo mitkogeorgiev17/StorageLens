@@ -42,8 +42,8 @@ pub fn check(outcome: &ScanOutcome, manifest: &Manifest) -> FixtureCheck {
     compare(
         &mut mismatches,
         "files",
-        outcome.result.files + extra_files,
-        manifest.files,
+        outcome.result.files,
+        manifest.files + extra_files,
     );
     compare(&mut mismatches, "dirs", outcome.result.dirs, manifest.dirs);
     compare(
@@ -55,14 +55,14 @@ pub fn check(outcome: &ScanOutcome, manifest: &Manifest) -> FixtureCheck {
     compare(
         &mut mismatches,
         "allocated_bytes",
-        outcome.result.bytes_alloc.get() + extra_bytes,
-        manifest.bytes_alloc,
+        outcome.result.bytes_alloc.get(),
+        manifest.bytes_alloc + extra_bytes,
     );
     compare(
         &mut mismatches,
         "logical_bytes",
-        outcome.result.bytes_logical.get() + extra_bytes,
-        manifest.bytes_logical,
+        outcome.result.bytes_logical.get(),
+        manifest.bytes_logical + extra_bytes,
     );
 
     // Every skip must be one the fixture deliberately planted.
@@ -111,7 +111,8 @@ fn compare(mismatches: &mut Vec<String>, field: &str, actual: u64, expected: u64
 ///
 /// Zero on Unix, where the walker dedupes by inode. Stable `std` has no file
 /// identity on Windows, so the reference walker counts every name there and the
-/// comparison adds the extras back. The real Windows scanner dedupes.
+/// expected total adds the extra names and bytes back. The real Windows scanner
+/// dedupes and needs no compensation.
 #[cfg(unix)]
 fn hardlink_extras(_manifest: &Manifest) -> (u64, u64) {
     (0, 0)

@@ -571,6 +571,10 @@ mod tests {
     }
 
     /// Hard-link names the walker counts but the manifest folds into one file.
+    ///
+    /// Zero on Unix, where the walker dedupes by inode. On Windows stable `std`
+    /// has no file identity, so every name is counted and the expected total adds
+    /// the extra names and bytes back. The real Windows scanner dedupes.
     #[cfg(unix)]
     fn hardlink_extras(_manifest: &storagelens_core::Manifest) -> (u64, u64) {
         (0, 0)
@@ -591,7 +595,7 @@ mod tests {
         let manifest = tree.manifest();
         let (extra_files, extra_bytes) = hardlink_extras(manifest);
 
-        assert_eq!(outcome.result.files + extra_files, manifest.files, "files");
+        assert_eq!(outcome.result.files, manifest.files + extra_files, "files");
         assert_eq!(outcome.result.dirs, manifest.dirs, "dirs");
         assert_eq!(
             outcome.links,
@@ -599,13 +603,13 @@ mod tests {
             "links"
         );
         assert_eq!(
-            outcome.result.bytes_alloc.get() + extra_bytes,
-            manifest.bytes_alloc,
+            outcome.result.bytes_alloc.get(),
+            manifest.bytes_alloc + extra_bytes,
             "allocated"
         );
         assert_eq!(
-            outcome.result.bytes_logical.get() + extra_bytes,
-            manifest.bytes_logical,
+            outcome.result.bytes_logical.get(),
+            manifest.bytes_logical + extra_bytes,
             "logical"
         );
     }
