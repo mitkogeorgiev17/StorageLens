@@ -27,8 +27,8 @@ use std::sync::{Arc, Mutex};
 
 use storagelens_core::fixtures::FixtureTree;
 use storagelens_core::{
-    CancelToken, Entry, EntryKind, EntrySink, Progress, Result, ScanError, ScanOptions, ScanResult,
-    ScanStatus, SkipReason, SkippedDir, StorageScanner,
+    CancelToken, Entry, EntryKind, EntrySink, FileStamp, Progress, Result, ScanError, ScanOptions,
+    ScanResult, ScanStatus, SkipReason, SkippedDir, StorageScanner,
 };
 use storagelens_scan_windows::WinScanner;
 
@@ -735,4 +735,39 @@ fn sparse_and_compressed_files_report_bytes_on_disk() {
         result.bytes_alloc.get(),
         sparse_entry.size_alloc + compressed_entry.size_alloc
     );
+}
+
+/// The safety preflight (#29) re-stats a path right before deleting it and
+/// skips it unless the stamp still matches the scan, so `stamp` must read what
+/// the walker recorded. Directory times are not compared: NTFS updates a
+/// directory's entry in its parent's index lazily, so a listing can lag the
+/// directory's own record (the preflight then skips it, which is safe).
+#[test]
+fn stamp_matches_what_the_walker_recorded() {
+    let tree = FixtureTree::generate().expect("generate fixture tree");
+    let root = tree.root();
+    let mut sink = CollectSink::new(root);
+    scan(
+        ScanOptions::default(),
+        root,
+        &mut sink,
+        CancelToken::new(),
+        &|_| {},
+    )
+    .expect("scan");
+
+    let mut checked = 0;
+    for (path, entry) in sink.paths.iter().zip(&sink.entries).skip(1) {
+        let now = storagelens_scan_windows::stamp(path).expect("stamp");
+        let recorded = FileStamp::of(entry);
+        assert_eq!(now.kind, recorded.kind, "{path:?}");
+        assert_eq!(now.file_id, recorded.file_id, "{path:?}");
+        assert_eq!(now.dev, recorded.dev, "{path:?}");
+        if entry.kind == EntryKind::File {
+            assert_eq!(now.size_logical, recorded.size_logical, "{path:?}");
+            assert_eq!(now.modified, recorded.modified, "{path:?}");
+        }
+        checked += 1;
+    }
+    assert!(checked > 100, "only {checked} entries checked");
 }

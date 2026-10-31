@@ -190,6 +190,42 @@ impl Entry {
     }
 }
 
+/// What a scan recorded about one path — or what a fresh `lstat` sees now — in
+/// the scanner's units. The safety layer's preflight (#29) compares the two
+/// immediately before deleting: if they differ, the file was changed or
+/// replaced after the scan and is skipped.
+///
+/// Each platform crate provides `stamp(path)`, which reads it for a path
+/// without following a final symlink, exactly as its scanner does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileStamp {
+    pub kind: EntryKind,
+    /// Apparent size (`st_size` / end of file).
+    pub size_logical: u64,
+    /// Last modification, unix seconds, rounded down.
+    pub modified: i64,
+    /// Volume identity, as in [`Entry::dev`].
+    pub dev: u32,
+    /// Inode / NTFS file id, as in [`Entry::file_id`].
+    pub file_id: u64,
+    /// Raw platform attributes, as in [`Entry::attrs`].
+    pub attrs: u32,
+}
+
+impl FileStamp {
+    /// The stamp the scan recorded for `entry`.
+    pub fn of(entry: &Entry) -> Self {
+        Self {
+            kind: entry.kind,
+            size_logical: entry.size_logical,
+            modified: entry.modified,
+            dev: entry.dev,
+            file_id: entry.file_id,
+            attrs: entry.attrs,
+        }
+    }
+}
+
 /// A mounted filesystem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Volume {

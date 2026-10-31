@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex};
 
 use storagelens_core::fixtures::FixtureTree;
 use storagelens_core::{
-    CancelToken, Entry, EntryKind, EntrySink, Progress, Result, ScanError, ScanOptions, ScanStatus,
-    SkipReason, SkippedDir, StorageScanner,
+    CancelToken, Entry, EntryKind, EntrySink, FileStamp, Progress, Result, ScanError, ScanOptions,
+    ScanStatus, SkipReason, SkippedDir, StorageScanner,
 };
 use storagelens_scan_macos::MacScanner;
 
@@ -591,4 +591,39 @@ fn invalid_roots_are_rejected_before_the_sink_is_touched() {
         "no entry before the root is valid"
     );
     assert_eq!(sink.flush_count, 0, "an early error never flushes");
+}
+
+/// The safety preflight (#29) re-stats a path right before deleting it and
+/// skips it unless the stamp still matches the scan. A field the walker and
+/// `stamp` read differently would make every deletion a false skip — or,
+/// worse, hide a real change — so they must agree on every entry.
+#[test]
+fn stamp_matches_what_the_walker_recorded() {
+    let tree = FixtureTree::generate().expect("generate fixture tree");
+    let root = tree.root();
+    let mut sink = CollectSink::new(root);
+    scan(
+        &MacScanner::new(ScanOptions::default()),
+        root,
+        &mut sink,
+        CancelToken::new(),
+        &|_| {},
+    )
+    .expect("scan");
+
+    let mut checked = 0;
+    for (path, entry) in sink.paths.iter().zip(&sink.entries) {
+        let now = storagelens_scan_macos::stamp(path).expect("stamp");
+        let recorded = FileStamp::of(entry);
+        assert_eq!(now.kind, recorded.kind, "{path:?}");
+        assert_eq!(now.file_id, recorded.file_id, "{path:?}");
+        assert_eq!(now.dev, recorded.dev, "{path:?}");
+        assert_eq!(now.modified, recorded.modified, "{path:?}");
+        assert_eq!(now.attrs, recorded.attrs, "{path:?}");
+        if entry.kind == EntryKind::File {
+            assert_eq!(now.size_logical, recorded.size_logical, "{path:?}");
+        }
+        checked += 1;
+    }
+    assert!(checked > 100, "only {checked} entries checked");
 }

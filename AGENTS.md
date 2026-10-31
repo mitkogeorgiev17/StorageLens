@@ -221,6 +221,9 @@ adding complexity — and say so rather than quietly regressing.
   that catches it.
 - **Safety tests get 100% coverage:** symlink escape, TOCTOU, path traversal, bundle
   refusal, manifest write failure, undo with a missing Trash item.
+  Measure with `cargo +nightly llvm-cov -p storagelens-safety --branch --summary-only`
+  (needs `cargo install cargo-llvm-cov` and a nightly toolchain with `llvm-tools-preview`;
+  nightly is used only for this run).
 - **Accuracy gate:** `scanbench` within **2%** of `du -skx` (macOS) /
   `Get-ChildItem -Recurse` (Windows), excluding snapshots, purgeable, clones, pagefile.
 

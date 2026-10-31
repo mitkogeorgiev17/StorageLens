@@ -19,3 +19,10 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+# Tests re-stat real temp files with the platform's own `stamp`.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+storagelens-scan-macos = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+storagelens-scan-windows = { workspace = true }
