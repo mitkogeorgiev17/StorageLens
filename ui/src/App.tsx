@@ -18,11 +18,60 @@ import {
 
 import ScanPicker from "./components/ScanPicker";
 import SearchBar from "./components/SearchBar";
+import CollectionsScreen from "./routes/Collections";
 import LargeFilesScreen from "./routes/LargeFiles";
 import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
 import { formatBytes, formatCount, formatDuration } from "./lib/format";
+import { openCollection } from "./lib/collectionActions";
 import { ROUTE_IDS, type RouteId, type ScanState, useAppStore } from "./store";
+
+/** Collections listed in the sidebar before "N more". */
+const SIDEBAR_COLLECTIONS = 8;
+
+/** Saved collections under their nav item: one click opens one on the Map. */
+function SidebarCollections() {
+  const collections = useAppStore((state) => state.collections);
+  const scanId = useAppStore((state) =>
+    state.scan.kind === "done" ? state.scan.summary.scanId : null,
+  );
+  const navigate = useAppStore((state) => state.navigate);
+  if (collections === null || collections.length === 0) {
+    return null;
+  }
+  const shown = collections.slice(0, SIDEBAR_COLLECTIONS);
+  const more = collections.length - shown.length;
+  return (
+    <ul className="nav-sub" aria-label="Saved collections">
+      {shown.map((collection) => (
+        <li key={collection.id}>
+          <button
+            type="button"
+            className="nav-subitem"
+            title={collection.name}
+            onClick={() => {
+              if (scanId === null || collection.query === null) {
+                navigate("collections");
+                return;
+              }
+              // A collection that cannot open here explains why on its screen.
+              openCollection(collection, scanId).catch(() => navigate("collections"));
+            }}
+          >
+            {collection.name}
+          </button>
+        </li>
+      ))}
+      {more > 0 ? (
+        <li>
+          <button type="button" className="nav-subitem nav-more" onClick={() => navigate("collections")}>
+            {more} more…
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
 
 interface ScreenInfo {
   readonly label: string;
@@ -51,6 +100,12 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
     title: "Large files",
     purpose: "Every file, biggest first, filterable by type and age.",
     empty: "Large files are listed after the first scan. Start one from the Overview.",
+  },
+  collections: {
+    label: "Collections",
+    title: "Collections",
+    purpose: "Saved Map views that re-run on every scan.",
+    empty: "No collections yet. Save a view from the Map.",
   },
   apps: {
     label: "Apps",
@@ -141,6 +196,7 @@ function Sidebar() {
             >
               {SCREENS[id].label}
             </button>
+            {id === "collections" ? <SidebarCollections /> : null}
           </li>
         ))}
       </ul>
@@ -154,6 +210,7 @@ const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
   overview: OverviewScreen,
   map: MapScreen,
   "large-files": LargeFilesScreen,
+  collections: CollectionsScreen,
 };
 
 function Screen({ id }: { readonly id: RouteId }) {

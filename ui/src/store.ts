@@ -1,12 +1,14 @@
 /**
  * App state (AGENTS.md §8: zustand, no context spaghetti).
  *
- * Three things live here today:
+ * Four things live here today:
  *
  * - **The current route.** A desktop window has no address bar, so navigation is
  *   plain state rather than a router dependency. `lib/history.ts` mirrors it,
  *   and the Map's view, into the URL hash for back/forward.
  * - **The Map's view** (#26): grouping and filters, kept across screens.
+ * - **Saved smart collections** (#28), for the sidebar and the Collections
+ *   screen. Their results are not here: they belong to one scan each.
  * - **The scan session**, as an explicit state machine. The Tauri command
  *   surface (#18) drives it from backend events; screens only read it.
  *
@@ -16,6 +18,7 @@
 
 import { create } from "zustand";
 
+import type { CollectionDto } from "./lib/api";
 import { DEFAULT_VIEW, type MapView } from "./lib/mapView.ts";
 
 /** Every screen in the sidebar, in display order. */
@@ -23,6 +26,7 @@ export const ROUTE_IDS = [
   "overview",
   "map",
   "large-files",
+  "collections",
   "apps",
   "cleanup",
   "duplicates",
@@ -87,6 +91,8 @@ export interface AppState {
   readonly scan: ScanState;
   readonly mapFocus: MapFocus | null;
   readonly mapView: MapView;
+  /** Saved smart collections (#28); `null` until first loaded. */
+  readonly collections: readonly CollectionDto[] | null;
   navigate(route: RouteId): void;
   /**
    * Go to the Map, showing `entryId` (a folder opened, a file selected) in the
@@ -96,8 +102,11 @@ export interface AppState {
   showInMap(entryId: number, isDirectory: boolean): void;
   /** Change the Map's view; with `openFolder`, open that folder in it. */
   setMapView(view: MapView, openFolder?: number): void;
+  /** Go to the Map showing `view` (a collection opened); see `setMapView`. */
+  openMapView(view: MapView, openFolder?: number): void;
   /** Back/forward: the screen and view a history entry recorded. */
   restore(route: RouteId, view: MapView): void;
+  setCollections(collections: readonly CollectionDto[]): void;
   /** The Map applied a focus request; clear it if it is still the current one. */
   mapFocusHandled(nonce: number): void;
   scanStarted(scanId: number, root: string): void;
@@ -112,6 +121,7 @@ export const useAppStore = create<AppState>()((set) => ({
   scan: { kind: "idle" },
   mapFocus: null,
   mapView: DEFAULT_VIEW,
+  collections: null,
 
   navigate: (route) => set({ route }),
 
@@ -136,7 +146,19 @@ export const useAppStore = create<AppState>()((set) => ({
           },
     ),
 
+  openMapView: (view, openFolder) =>
+    set((state) => ({
+      route: "map",
+      mapView: view,
+      mapFocus:
+        openFolder === undefined
+          ? state.mapFocus
+          : { entryId: openFolder, isDirectory: true, nonce: (state.mapFocus?.nonce ?? 0) + 1 },
+    })),
+
   restore: (route, view) => set({ route, mapView: view }),
+
+  setCollections: (collections) => set({ collections }),
 
   mapFocusHandled: (nonce) =>
     set((state) => (state.mapFocus?.nonce === nonce ? { mapFocus: null } : state)),
