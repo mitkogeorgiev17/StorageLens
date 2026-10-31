@@ -727,6 +727,15 @@ fn build_grouping(arena: &Arena, by: Grouping) -> SyntheticTree;
 
 1M nodes → synthetic tree in well under 100 ms. No SQL, no rescans.
 
+Built in `crates/analysis/src/grouping.rs` rather than `core`, because it reads the
+catalog's arena. Measured on 1M nodes (release): Folder 19 ms, Type 62 ms, App 9 ms,
+Age 12 ms, Size 10 ms, Cleanliness 7 ms. App ownership is a path heuristic for now:
+`*.app` bundles, plus `~/Library/{Caches,Application Support,Containers,…}`,
+`Program Files`, `AppData` and `ProgramData` children, matched to a bundle by name
+(`com.google.Chrome` → Google Chrome). The app inventory (#36/#37) replaces it with
+real bundle ids. Until rules exist (#31), Cleanliness puts every file under
+Unclassified.
+
 Because the treemap, the breadcrumb, the hover tooltip, and the zoom interaction are all
 generic over "a tree of sized nodes," all six views are nearly free once the first one
 works. **This is the single highest-leverage design decision in the UI.**
@@ -1036,8 +1045,9 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
 
 #[tauri::command] async fn get_overview(scan_id: u32) -> Result<Overview, String>;
 #[tauri::command] async fn get_categories(scan_id: u32) -> Result<Vec<CategoryTotal>, String>;
-#[tauri::command] async fn get_grouping(scan_id: u32, by: Grouping, filter: Filter)
-    -> Result<SyntheticTree, String>;
+#[tauri::command] async fn get_grouping(scan_id: u32, by: Grouping, filter: Filter,
+    parent_id: Option<i64>, depth: Option<u32>) -> Result<TreeNode, String>;
+    // same shape as get_tree; groups that are not folders have negative ids
 #[tauri::command] async fn get_children(scan_id: u32, parent_id: u32) -> Result<Vec<Child>, String>;
 #[tauri::command] async fn get_tree(scan_id: u32, parent_id: u32, depth: Option<u32>)
     -> Result<TreeNode, String>;   // the treemap's subtree, node-budgeted

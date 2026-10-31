@@ -4,7 +4,7 @@
 //! `ui/src/lib/api.ts`; change both together. Byte counts are JSON numbers, exact
 //! up to 2^53 bytes (8 PiB), far beyond any single volume.
 //!
-//! Types for features that do not exist yet (grouping, rules, deletion, apps,
+//! Types for features that do not exist yet (rules, deletion, apps,
 //! duplicates) are declared with their final shape so the UI can be written
 //! against them; the commands that return them say which issue builds them.
 
@@ -204,7 +204,7 @@ pub struct Page<T, C> {
 }
 
 /// The six grouping views (PLAN §9.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Grouping {
     Folder,
@@ -216,22 +216,12 @@ pub enum Grouping {
 }
 
 /// Cross-filters applied to a grouping (PLAN §9.7).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FilterDto {
     pub categories: Vec<Category>,
     pub min_size: Option<u64>,
     pub older_than_days: Option<u32>,
-}
-
-/// A node of a synthetic grouping tree.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyntheticNodeDto {
-    pub label: String,
-    pub size_alloc: u64,
-    pub file_count: u64,
-    pub children: Vec<SyntheticNodeDto>,
 }
 
 /// A cleanup rule's findings.
