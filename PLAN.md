@@ -138,7 +138,7 @@ slog, the core can be ported to Go without touching the schema, the rules, or th
 │  │                           categories.rs (shared extension table), tags.rs, grouping.rs
 │  ├─ catalog/                 SQLite schema, migrations, queries, tree arena
 │  ├─ scan-macos/              getattrlistbulk FFI, FSEvents
-│  ├─ scan-windows/            FindFirstFileExW walk, USN journal, registry
+│  ├─ scan-windows/            bulk dir-query walk, USN journal, registry
 │  ├─ analysis/                Rollups, duplicates, app inventory, rules engine
 │  ├─ safety/                  Path guards, trash service, manifests, undo
 │  └─ scanbench/               CLI binary (no UI) — built first
@@ -182,7 +182,7 @@ uses. Same code path, no drift.
         ┌──────────────────┴──────────────────┐
 ┌───────▼─────────┐                  ┌────────▼────────┐
 │  macOS backend  │                  │ Windows backend │
-│  getattrlistbulk│                  │ FindFirstFileEx │
+│  getattrlistbulk│                  │ dir bulk query  │
 │  FSEvents       │                  │ USN journal     │
 │  NSWorkspace    │                  │ Registry/Win32  │
 └─────────────────┘                  └─────────────────┘
@@ -487,23 +487,35 @@ invalidation signal. Full rescan is the fallback, not the default.
 
 ## 7. Scanner — Windows
 
-### 7.1 v1 — `FindFirstFileExW` (no elevation)
+### 7.1 v1 — bulk directory query (no elevation)
 
-The pragmatic choice: returns name + size + timestamps + attributes per entry in one
-call, needs no admin rights.
+The pragmatic choice: one bulk call per directory batch, no admin rights.
 
 ```rust
-FindFirstFileExW(
-    &path,
-    FindExInfoBasic,            // omit short 8.3 names → noticeably faster
-    &mut data,
-    FindExSearchNameMatch,
-    None,
-    FIND_FIRST_EX_LARGE_FETCH,  // bigger kernel buffer
-)
+CreateFileW(dir, FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, None)
+
+GetFileInformationByHandleEx(handle, FileIdBothDirectoryInfo, &mut buf, 64 * 1024)
+// repeat until ERROR_NO_MORE_FILES
 ```
 
-`WIN32_FIND_DATAW` gives `nFileSizeHigh`/`nFileSizeLow` and the three `FILETIME`s.
+Each `FILE_ID_BOTH_DIR_INFO` record carries the name, attributes, the three timestamps,
+`EndOfFile` (logical size), `AllocationSize`, the 64-bit `FileId`, and the reparse tag
+(in `EaSize` when `FILE_ATTRIBUTE_REPARSE_POINT` is set).
+
+**Why not `FindFirstFileExW`** (the original plan, shipped in #12): `WIN32_FIND_DATAW`
+has no file id and no allocation size, so hard-link dedupe and bytes-on-disk would have
+needed a handle per file — a per-file syscall that invariant 5 forbids. The directory
+query returns both in the same single call (#13).
+
+**The one per-file call:** a record's `AllocationSize` overstates compressed and sparse
+files, so for files flagged `FILE_ATTRIBUTE_COMPRESSED` / `FILE_ATTRIBUTE_SPARSE_FILE`
+the walker asks `GetCompressedFileSizeW`. Only flagged files pay it; they are rare
+outside system folders.
+
+**No link count** is in the record, so the walker records every regular file's id
+(~16 MB per 1M files) and dedupes on it — on **NTFS only**, where the 64-bit id is
+unique. ReFS ids are 128-bit and FAT has none, so those volumes are not deduped.
 
 ### 7.2 v2 — MFT / USN journal (elevated, 10× faster)
 
@@ -530,19 +542,19 @@ lists, `$ATTRIBUTE_LIST` for fragmented records) with real payoff.
 
 | Trap | Handling |
 |---|---|
-| **Allocated size** | `GetCompressedFileSizeW` — accounts for NTFS compression and sparse files. Or `GetFileInformationByHandleEx(FileStandardInfo)` → `AllocationSize`. |
+| **Allocated size** | `AllocationSize` from the directory record; `GetCompressedFileSizeW` only for compressed and sparse files, whose record overstates it (§7.1). |
 | **Sparse files** | `hiberfil.sys`, `pagefile.sys`, VM disks. Same logical-vs-allocated split as Mac. |
 | **Junctions / reparse points** | Must skip or you loop forever. Check `FILE_ATTRIBUTE_REPARSE_POINT`. |
 | **Long paths** | Use `\\?\` prefixes throughout. |
 | **Permissions** | Unelevated, parts of `C:\` are unreadable. Report "not scanned" — never silently under-report. Offer a "relaunch elevated" button. |
 | **`$Recycle.Bin`, `System Volume Information`** | Skip; report separately. |
-| **Hard links** | Dedupe on `(volume serial, file index)` from `BY_HANDLE_FILE_INFORMATION`. |
+| **Hard links** | Dedupe on `(volume serial, FileId)` from the directory record, NTFS only (§7.1). |
 | **Case-insensitive paths** | Normalize comparisons; never dedupe paths by exact string. |
 | **UNC / mapped drives** | Skip by default; scanning `\\server\share` over SMB is pathologically slow. |
 
 ### 7.4 Speed
 
-`FindFirstFileExW` with 8 rayon workers: roughly 1M files in 30–90 s (vs 1–3 s for MFT).
+The bulk directory query (§7.1) with 8 rayon workers: roughly 1M files in 30–90 s (vs 1–3 s for MFT).
 Good enough for v1.
 
 ---
@@ -556,11 +568,11 @@ size).** Show both in the detail pane, labeled clearly.
 
 | Concept | macOS | Windows |
 |---|---|---|
-| Bytes on disk | `ATTR_FILE_ALLOCSIZE` | `GetCompressedFileSizeW` |
+| Bytes on disk | `ATTR_FILE_ALLOCSIZE` | `AllocationSize` (dir record); `GetCompressedFileSizeW` if compressed/sparse |
 | Apparent size | `ATTR_FILE_TOTALSIZE` | `nFileSizeHigh/Low` |
-| Identity | `(ATTR_CMN_DEVID, ATTR_CMN_FILEID)` | `(dwVolumeSerialNumber, nFileIndexHigh/Low)` |
-| Hard link count | `ATTR_FILE_LINKCOUNT` | `nNumberOfLinks` |
-| Compression | automatic in `ALLOCSIZE` | automatic in `GetCompressedFileSizeW` |
+| Identity | `(ATTR_CMN_DEVID, ATTR_CMN_FILEID)` | `(volume serial, FileId)` — same value as `nFileIndexHigh/Low` |
+| Hard link count | `ATTR_FILE_LINKCOUNT` | not in the bulk record; every file id is tracked instead |
+| Compression | automatic in `ALLOCSIZE` | `GetCompressedFileSizeW`, flagged files only |
 | Dedupe / clones | invisible → overcount | invisible → overcount |
 
 Both platforms overcount clones/reflinks. That is acceptable and documented.
@@ -1066,7 +1078,7 @@ Scanner first. If the numbers are wrong, nothing else matters.
 |---|---|---|---|
 | **M0** | Core + CLI | Cargo workspace, `Entry`, schema, migrations, `scanbench` | 3 days |
 | **M1** | macOS scanner | `getattrlistbulk` FFI, buffer parser, hard-link dedupe, firmlink skips, ≤2% vs `du -skx` | 1 wk |
-| **M2** | Windows scanner | `FindFirstFileExW` walk, junction skips, long paths, ≤2% vs `Get-ChildItem` | 1 wk |
+| **M2** | Windows scanner | Bulk directory-query walk, junction skips, long paths, ≤2% vs `Get-ChildItem` | 1 wk |
 | **M3** | Catalog + treemap | Tree arena, rollups, Tauri shell, React treemap, breadcrumb, search | 1.5 wk |
 | **M3b** | Grouping views | Shared category table, tags, synthetic trees, grouping selector, filter chips | 4 days |
 | **M4** | Cleanup | Rules engine, both catalogs, Cleanup UI, trash + undo + manifest | 1.5 wk |
@@ -1223,7 +1235,7 @@ These are cheap to assert and catch real bugs:
 | Delete something important | Critical | Trash-only, dry-run receipt, manifest, undo, preflight re-stat, bulk friction |
 | `getattrlistbulk` buffer offsets wrong | High | `stat(2)` cross-check test on every entry in the fixture tree |
 | Rust slower to write than expected | Medium | Fallback to Go core — schema, rules, and UI unchanged |
-| Windows MFT work is deep | Medium | Skip in v1; `FindFirstFileExW` is fast enough |
+| Windows MFT work is deep | Medium | Skip in v1; the bulk directory query (§7.1) is fast enough |
 | macOS FDA confusion | Medium | Poll + deep link + "scan anyway" degraded mode with visible gaps |
 | APFS/NTFS clone overcounting | Low | Documented; personal tool |
 | Two platforms drift | Low | One schema, one rules catalog, one UI; only `ScanKit` is per-platform |

@@ -1,6 +1,6 @@
 [package]
 name = "storagelens-scan-windows"
-description = "Windows storage scanner built on FindFirstFileExW."
+description = "Windows storage scanner built on bulk directory queries."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

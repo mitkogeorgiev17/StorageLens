@@ -22,7 +22,7 @@
 //! Stable `std` exposes neither the file index nor the link count on Windows
 //! (`file_index`/`number_of_links` are nightly-only), so the reference walker
 //! cannot dedupe hard links there. Every name is counted. The real Windows
-//! scanner (#12) uses `FindFirstFileExW`'s file index and does dedupe; the
+//! scanner (#13) dedupes on the `FileId` from its bulk directory query; the
 //! fixture check compensates for the difference explicitly.
 
 use std::collections::HashSet;
