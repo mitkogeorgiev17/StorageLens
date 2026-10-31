@@ -123,8 +123,28 @@ The root `cargo build --workspace` never touches it.
 Crate package names are prefixed (`storagelens-core`, `storagelens-scan-macos`, …) so
 they never collide with the standard `core` crate. The binary is plain `scanbench`.
 
-CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy -D warnings`, `test` on macOS and
-Windows, plus UI typecheck/build and a Tauri compile. Keep it green.
+### There is no CI — run the full suite locally before every merge
+
+GitHub Actions was removed on purpose (#64). Nothing checks a PR for you, so the
+author runs every gate below and states the result in the PR description:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+npm run typecheck && npm test && npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
+# Windows code, from macOS: type-check only (C dependencies cannot cross-build).
+cargo clippy -p storagelens-scan-windows --all-targets --all-features \
+  --target x86_64-pc-windows-msvc -- -D warnings
+```
+
+**What this cannot cover:** from macOS, Windows code is only *type-checked*. Its
+tests (`scan-windows`, `scanbench/tests/accuracy_windows.rs`, the app's command
+tests) run only on a Windows machine. A change to Windows behaviour must say in its
+PR whether it was run on Windows — never imply it was tested when it was not.
 
 ---
 
@@ -256,7 +276,8 @@ adding complexity — and say so rather than quietly regressing.
 
 - Title mirrors the eventual squash commit: `<type>(<scope>): <what changed>`
 - Body must contain `Closes #<issue>` so the issue closes on merge.
-- CI must be green (`fmt`, `clippy -D warnings`, `test`, `ui typecheck`).
+- The full local suite (§4) passes; the PR description says so, and says which
+  platforms the tests actually ran on.
 - **Squash merge** into `main`, then delete the branch. No merge commits.
 - If `main` moved ahead, rebase — do not merge `main` into your branch.
 
@@ -302,7 +323,7 @@ One logical change per commit. No `--no-verify`, no force-push to `main`.
 4. Implement, with tests.
 5. `cargo fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features`
 6. Open a PR with `Closes #N` and a short summary of decisions made.
-7. Squash merge once CI is green.
+7. Squash merge once the full local suite (§4) passes.
 8. If the work changed a design decision, update `PLAN.md` in the same PR.
 
 ---
@@ -328,7 +349,7 @@ Do not rediscover these the hard way:
 
 A change is done when:
 
-- [ ] `cargo fmt`, `cargo clippy -D warnings`, `cargo test` pass
+- [ ] The full local suite in §4 passes, and the PR names the platforms it ran on
 - [ ] New filesystem logic has a fixture-tree test
 - [ ] Any size-affecting change was checked with `scanbench`
 - [ ] No new network code, no new telemetry
