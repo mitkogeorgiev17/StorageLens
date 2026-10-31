@@ -265,7 +265,9 @@ CREATE TABLE entries (
   created      INTEGER,
   modified     INTEGER,
   accessed     INTEGER,
-  category     TEXT,                  -- app|photo|video|audio|doc|code|cache|log|vm|system|other
+  category     TEXT,                  -- one of PLAN §9.5: images|video|audio|documents|
+                                      -- spreadsheets|presentations|archives|code|data|
+                                      -- fonts|3d|apps|disk-images|other
   tags         INTEGER NOT NULL DEFAULT 0,   -- u64 bitmask, see §9.2
   hardlink_dup INTEGER NOT NULL DEFAULT 0
 );
@@ -602,8 +604,8 @@ Both work, and both are the wrong default:
 
 ```
 core/src/categories.rs
-  ~400 entries: "mp4" => Video, "heic" => Image, "ts" => Code,
-                "psd" => Image, "dmg" => Installer, "epub" => Document, ...
+  ~600 entries: "mp4" => Video, "heic" => Image, "ts" => Code,
+                "psd" => Image, "dmg" => Disk image, "epub" => Document, ...
 ```
 
 - Deterministic, identical on both OSes, no syscalls, ~50 ns per lookup.
