@@ -26,3 +26,7 @@ storagelens-scan-macos = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]
 storagelens-scan-windows = { workspace = true }
+
+[lints.rust]
+# Set by cargo-llvm-cov on nightly, to exclude the real-Trash call.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

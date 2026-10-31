@@ -1199,6 +1199,43 @@ mistake is my own data, so the mechanics stay.
 - **Coverage.** `cargo +nightly llvm-cov -p storagelens-safety --branch --summary-only`
   gives 100% of lines and branches.
 
+**Built (#30).** `safety::{trash, manifest, undo, bin}`.
+
+- **`execute`.** `execute(guard, items, manifest_dir, bin, stamp, now)`:
+  1. writes `trash-<UTC>.json` with every item `planned`. If that write fails, it returns
+     the error and nothing has moved;
+  2. per item, immediately before its move, runs the guard and then the preflight.
+     Failures are recorded as `refused` or `skipped` with the reason;
+  3. moves the item to the Trash (`failed` if the move errors);
+  4. rewrites the manifest with every outcome.
+- **Manifest writes.** Both writes are atomic: temp file, `sync_all`, rename. A failed
+  final write is returned as a warning: the moves happened, and undo works from the first
+  write.
+- **Crash recovery.** Each item records its scan stamp. Undo finds trashed items by
+  volume + file id, which a move into the Trash preserves. So items moved before a crash
+  are restored even though the manifest still says `planned`.
+- **`undo`.** `undo(manifest, bin, now)` restores each trashed item, and each `planned`
+  item that is gone, to its original path. It recreates missing parent folders and never
+  overwrites anything.
+  - Per item it reports one of `Restored`, `AlreadyRestored`, `NotTrashed`, `NotInTrash`,
+    `Occupied` or `Failed(reason)`.
+  - Restored items are stamped in the manifest, so a second undo moves nothing.
+- **macOS Trash.** `bin::SystemBin`:
+  - moves items with `NSFileManager.trashItemAtURL` (no Automation prompt, no Finder
+    "Put Back");
+  - finds them in one pass over `~/.Trash` and `<volume>/.Trashes/<uid>`, by inode;
+  - restores by rename.
+  - Reading `~/.Trash` needs Full Disk Access; without it, undo reports that the Trash
+    could not be searched.
+- **Windows Recycle Bin.** It uses the `trash` crate's listing (original path + deletion
+  time) and `restore_all`.
+- **Tests.** They use a Trash folder inside a temp dir. The one real-Trash round trip is
+  an ignored test that you run by hand:
+  `cargo test -p storagelens-safety --test system_bin -- --ignored`.
+- **Coverage.** That real-Trash call is the only code excluded from coverage.
+- **Not built yet.** The `trash_log` table, the audit log (§15.9), and the Tauri commands
+  are wired in with the Cleanup screen (#34).
+
 ---
 
 ## 16. Build schedule
