@@ -6,12 +6,28 @@
  * - Frames are drawn on `requestAnimationFrame`, at most one per display frame,
  *   and only when something changed.
  * - The backing store follows `devicePixelRatio`, so the map is sharp at 2×.
- * - Wheel zooms around the cursor, drag pans, click selects. Click-to-zoom,
- *   breadcrumbs, and the tooltip belong to the Map screen (#21), which drives
- *   this component through `onSelect` / `onHover`.
+ * - Wheel zooms around the cursor, drag pans. Clicks, double-clicks, and keys
+ *   are reported, not acted on: the Map screen decides what they mean.
+ * - Keyboard: arrows move the selection between top-level rects, Enter
+ *   activates it, ⌘/Ctrl+Enter reveals it — the same actions as click and
+ *   double-click.
+ * - Transitions: {@link TreemapHandle.zoomTo} animates into a rect before the
+ *   screen swaps in that folder's own layout; `enterFrom` animates out of the
+ *   folder just left. Both are skipped under `prefers-reduced-motion`.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type Ref,
+} from "react";
 
 import { formatBytes, formatCount } from "../lib/format";
 import {
@@ -21,11 +37,17 @@ import {
   clampView,
   colorOf,
   computeFrame,
+  easeInOut,
   fitLabel,
+  fitView,
   hitTest,
+  indexOfId,
+  interpolateView,
   layoutTreemap,
+  neighbor,
   screenRect,
   zoomAt,
+  type Direction,
   type Frame,
   type Layout,
   type TreemapInput,
@@ -42,18 +64,56 @@ export interface TreemapHit {
   readonly isDirectory: boolean;
 }
 
+/** How an activation happened: pointer clicks may still become double-clicks. */
+export type ActivationSource = "pointer" | "keyboard";
+
+export interface TreemapHandle {
+  /** Animate the view into rect `id`; resolves when done (at once if absent). */
+  zoomTo(id: number): Promise<void>;
+}
+
 export interface TreemapProps {
   readonly root: TreemapInput | null;
-  readonly onSelect?: (hit: TreemapHit) => void;
+  /** Outlined, and the starting point for arrow keys. */
+  readonly selectedId?: number | null;
+  /** Click (pointer) or Enter (keyboard). */
+  readonly onActivate?: (hit: TreemapHit, source: ActivationSource) => void;
+  /** Double-click or ⌘/Ctrl+Enter. */
+  readonly onReveal?: (hit: TreemapHit) => void;
+  /** Arrow keys moved the selection. */
+  readonly onSelectionChange?: (hit: TreemapHit) => void;
   readonly onHover?: (hit: TreemapHit | null) => void;
+  /** On a new layout, animate out of this rect (the folder just left). */
+  readonly enterFrom?: number | null;
   /** Accessible summary of what the map shows. */
   readonly label: string;
+  readonly ref?: Ref<TreemapHandle>;
 }
 
 const LABEL_FONT_SIZE = 11;
 const WHEEL_ZOOM_PER_PIXEL = 0.0015;
 /** Pointer travel, px, that turns a click into a drag. */
 const DRAG_THRESHOLD = 4;
+const TRANSITION_MS = 320;
+
+const ARROWS: Readonly<Record<string, Direction>> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "up",
+  ArrowDown: "down",
+};
+
+function reducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+interface Transition {
+  readonly from: View;
+  readonly to: View;
+  readonly start: number;
+  readonly duration: number;
+  readonly done: () => void;
+}
 
 interface Theme {
   readonly background: string;
@@ -100,6 +160,7 @@ function draw(
   height: number,
   theme: Theme,
   hovered: number | null,
+  selected: number | null,
 ): void {
   context.fillStyle = theme.background;
   context.fillRect(0, 0, width, height);
@@ -123,11 +184,23 @@ function draw(
     }
   }
 
-  if (hovered !== null) {
-    const rect = screenRect(layout, hovered, view);
-    context.strokeStyle = theme.highlight;
-    context.lineWidth = 2;
-    context.strokeRect(rect.x + 1, rect.y + 1, Math.max(0, rect.width - 2), Math.max(0, rect.height - 2));
+  const outline = (index: number, color: string, lineWidth: number) => {
+    const rect = screenRect(layout, index, view);
+    const inset = lineWidth / 2;
+    context.strokeStyle = color;
+    context.lineWidth = lineWidth;
+    context.strokeRect(
+      rect.x + inset,
+      rect.y + inset,
+      Math.max(0, rect.width - lineWidth),
+      Math.max(0, rect.height - lineWidth),
+    );
+  };
+  if (selected !== null) {
+    outline(selected, theme.highlight, 3);
+  }
+  if (hovered !== null && hovered !== selected) {
+    outline(hovered, theme.directoryText, 1.5);
   }
 
   if (frame.hiddenCount > 0) {
@@ -145,7 +218,17 @@ function draw(
   }
 }
 
-export default function Treemap({ root, onSelect, onHover, label }: TreemapProps) {
+export default function Treemap({
+  root,
+  selectedId = null,
+  onActivate,
+  onReveal,
+  onSelectionChange,
+  onHover,
+  enterFrom = null,
+  label,
+  ref,
+}: TreemapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0, dpr: 1 });
@@ -154,7 +237,10 @@ export default function Treemap({ root, onSelect, onHover, label }: TreemapProps
   const frameRef = useRef<Frame | null>(null);
   const hoveredRef = useRef<number | null>(null);
   const pendingRef = useRef<number | null>(null);
+  const transitionRef = useRef<Transition | null>(null);
   const dragRef = useRef<{ x: number; y: number; view: View; moved: boolean } | null>(null);
+  /** Whether the last pointer-down turned into a drag; suppresses its click. */
+  const draggedRef = useRef(false);
 
   // Track the container's CSS size and the display's pixel ratio. A window
   // moving to another monitor fires `resize`, which re-reads the ratio.
@@ -197,51 +283,142 @@ export default function Treemap({ root, onSelect, onHover, label }: TreemapProps
     [root, size.width, size.height],
   );
 
-  const render = useCallback(() => {
-    pendingRef.current = null;
-    const canvas = canvasRef.current;
-    const context = canvas?.getContext("2d");
-    if (canvas === null || canvas === undefined || context === null || context === undefined) {
-      return;
-    }
-    const store = backingStore(size.width, size.height, size.dpr);
-    if (canvas.width !== store.width || canvas.height !== store.height) {
-      canvas.width = store.width;
-      canvas.height = store.height;
-    }
-    context.setTransform(store.scale, 0, 0, store.scale, 0, 0);
+  const selected = layout === null || selectedId === null ? null : indexOfId(layout, selectedId);
+  const selectedRef = useRef<number | null>(selected);
+  selectedRef.current = selected;
 
-    const theme = readTheme(canvas);
-    if (layout === null) {
-      context.fillStyle = theme.background;
-      context.fillRect(0, 0, size.width, size.height);
-      frameRef.current = null;
-      return;
-    }
-    const view = viewRef.current;
-    const frame = computeFrame(layout, view, size.width, size.height);
-    frameRef.current = frame;
-    draw(context, layout, frame, view, size.width, size.height, theme, hoveredRef.current);
-  }, [layout, size]);
+  const scheduleRef = useRef<() => void>(() => undefined);
+
+  const render = useCallback(
+    (now: number) => {
+      pendingRef.current = null;
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext("2d");
+      if (canvas === null || canvas === undefined || context === null || context === undefined) {
+        return;
+      }
+      const store = backingStore(size.width, size.height, size.dpr);
+      if (canvas.width !== store.width || canvas.height !== store.height) {
+        canvas.width = store.width;
+        canvas.height = store.height;
+      }
+      context.setTransform(store.scale, 0, 0, store.scale, 0, 0);
+
+      const theme = readTheme(canvas);
+      if (layout === null) {
+        context.fillStyle = theme.background;
+        context.fillRect(0, 0, size.width, size.height);
+        frameRef.current = null;
+        return;
+      }
+
+      const transition = transitionRef.current;
+      if (transition !== null) {
+        const t = transition.duration <= 0 ? 1 : (now - transition.start) / transition.duration;
+        viewRef.current = interpolateView(transition.from, transition.to, easeInOut(t), size.width);
+        if (t >= 1) {
+          transitionRef.current = null;
+          transition.done();
+        } else {
+          scheduleRef.current();
+        }
+      }
+
+      const view = viewRef.current;
+      const frame = computeFrame(layout, view, size.width, size.height);
+      frameRef.current = frame;
+      draw(
+        context,
+        layout,
+        frame,
+        view,
+        size.width,
+        size.height,
+        theme,
+        hoveredRef.current,
+        selectedRef.current,
+      );
+    },
+    [layout, size],
+  );
 
   const schedule = useCallback(() => {
     if (pendingRef.current === null) {
       pendingRef.current = requestAnimationFrame(render);
     }
   }, [render]);
+  scheduleRef.current = schedule;
 
-  // New layout: start from the whole map.
+  /** End any running transition where it is, settling its promise. */
+  const stopTransition = useCallback(() => {
+    const transition = transitionRef.current;
+    transitionRef.current = null;
+    transition?.done();
+  }, []);
+
+  const animate = useCallback(
+    (from: View, to: View): Promise<void> => {
+      stopTransition();
+      return new Promise((resolve) => {
+        transitionRef.current = {
+          from,
+          to,
+          start: performance.now(),
+          duration: reducedMotion() ? 0 : TRANSITION_MS,
+          done: resolve,
+        };
+        schedule();
+      });
+    },
+    [schedule, stopTransition],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      zoomTo: (id: number) => {
+        const index = layout === null ? null : indexOfId(layout, id);
+        if (layout === null || index === null) {
+          return Promise.resolve();
+        }
+        return animate(viewRef.current, fitView(layout, index, size.width, size.height));
+      },
+    }),
+    [animate, layout, size.width, size.height],
+  );
+
+  // New layout: start from the whole map — or, going up, from the folder just
+  // left, zooming out so it is clear where that folder sits.
+  const enterFromRef = useRef(enterFrom);
+  enterFromRef.current = enterFrom;
   useEffect(() => {
-    viewRef.current = IDENTITY_VIEW;
+    stopTransition();
     hoveredRef.current = null;
+    viewRef.current = IDENTITY_VIEW;
+    const from = enterFromRef.current;
+    const index = layout === null || from === null ? null : indexOfId(layout, from);
+    if (layout !== null && index !== null && !reducedMotion()) {
+      viewRef.current = fitView(layout, index, size.width, size.height);
+      void animate(viewRef.current, IDENTITY_VIEW);
+    }
     schedule();
-  }, [layout, schedule]);
+  }, [layout, schedule, animate, stopTransition, size.width, size.height]);
 
+  // Selection changes redraw the outline.
+  useEffect(() => {
+    schedule();
+  }, [selected, schedule]);
+
+  // Unmount: no frame or transition outlives the component.
   useEffect(
     () => () => {
       if (pendingRef.current !== null) {
         cancelAnimationFrame(pendingRef.current);
+        pendingRef.current = null;
       }
+      const transition = transitionRef.current;
+      transitionRef.current = null;
+      transition?.done();
     },
     [],
   );
@@ -261,6 +438,7 @@ export default function Treemap({ root, onSelect, onHover, label }: TreemapProps
     }
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
+      stopTransition();
       const box = canvas.getBoundingClientRect();
       const factor = Math.exp(-event.deltaY * WHEEL_ZOOM_PER_PIXEL);
       viewRef.current = clampView(
@@ -272,9 +450,9 @@ export default function Treemap({ root, onSelect, onHover, label }: TreemapProps
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
-  }, [schedule, size.width, size.height]);
+  }, [schedule, stopTransition, size.width, size.height]);
 
-  const pointAt = (event: React.PointerEvent<HTMLCanvasElement>) => {
+  const pointAt = (event: PointerEvent<HTMLCanvasElement> | MouseEvent<HTMLCanvasElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
     return { x: event.clientX - box.left, y: event.clientY - box.top };
   };
@@ -284,20 +462,31 @@ export default function Treemap({ root, onSelect, onHover, label }: TreemapProps
     return layout === null || frame === null ? null : hitTest(layout, frame, viewRef.current, x, y);
   };
 
-  const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+  const hitUnder = (event: MouseEvent<HTMLCanvasElement>): TreemapHit | null => {
+    const point = pointAt(event);
+    const index = hitAt(point.x, point.y);
+    return index === null || layout === null ? null : hitOf(layout, index);
+  };
+
+  const onPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     const point = pointAt(event);
     dragRef.current = { ...point, view: viewRef.current, moved: false };
+    draggedRef.current = false;
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
-  const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+  const onPointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     const point = pointAt(event);
     const drag = dragRef.current;
     if (drag !== null) {
       const dx = point.x - drag.x;
       const dy = point.y - drag.y;
       if (drag.moved || Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        if (!drag.moved) {
+          stopTransition();
+        }
         drag.moved = true;
+        draggedRef.current = true;
         viewRef.current = clampView(
           {
             scale: drag.view.scale,
@@ -316,22 +505,32 @@ export default function Treemap({ root, onSelect, onHover, label }: TreemapProps
     if (hovered !== hoveredRef.current) {
       hoveredRef.current = hovered;
       schedule();
-      if (onHover !== undefined) {
-        onHover(hovered === null || layout === null ? null : hitOf(layout, hovered));
-      }
+      onHover?.(hovered === null || layout === null ? null : hitOf(layout, hovered));
     }
   };
 
-  const onPointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    const drag = dragRef.current;
+  const onPointerUp = () => {
     dragRef.current = null;
-    if (drag === null || drag.moved || layout === null || onSelect === undefined) {
+  };
+
+  const onClick = (event: MouseEvent<HTMLCanvasElement>) => {
+    // The second click of a double-click is the double-click's business.
+    if (draggedRef.current || event.detail > 1) {
       return;
     }
-    const point = pointAt(event);
-    const hit = hitAt(point.x, point.y);
+    const hit = hitUnder(event);
     if (hit !== null) {
-      onSelect(hitOf(layout, hit));
+      onActivate?.(hit, "pointer");
+    }
+  };
+
+  const onDoubleClick = (event: MouseEvent<HTMLCanvasElement>) => {
+    if (draggedRef.current) {
+      return;
+    }
+    const hit = hitUnder(event);
+    if (hit !== null) {
+      onReveal?.(hit);
     }
   };
 
@@ -343,18 +542,50 @@ export default function Treemap({ root, onSelect, onHover, label }: TreemapProps
     }
   };
 
+  const onKeyDown = (event: KeyboardEvent<HTMLCanvasElement>) => {
+    if (layout === null) {
+      return;
+    }
+    const direction = ARROWS[event.key];
+    const modified = event.metaKey || event.ctrlKey || event.altKey;
+    if (direction !== undefined && !modified) {
+      event.preventDefault();
+      const next = neighbor(layout, selectedRef.current, direction);
+      if (next !== null && next !== selectedRef.current) {
+        onSelectionChange?.(hitOf(layout, next));
+      }
+      return;
+    }
+    if (event.key === "Enter" && selectedRef.current !== null) {
+      event.preventDefault();
+      const hit = hitOf(layout, selectedRef.current);
+      if (event.metaKey || event.ctrlKey) {
+        onReveal?.(hit);
+      } else {
+        onActivate?.(hit, "keyboard");
+      }
+    }
+  };
+
   return (
     <div ref={containerRef} className="treemap">
       <canvas
         ref={canvasRef}
         className="treemap-canvas"
-        role="img"
+        // Arrow keys belong to the map, so screen readers must pass them through.
+        role="application"
+        aria-roledescription="storage map"
+        tabIndex={0}
         aria-label={label}
         style={{ width: size.width, height: size.height }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
         onPointerLeave={onPointerLeave}
+        onClick={onClick}
+        onDoubleClick={onDoubleClick}
+        onKeyDown={onKeyDown}
       />
     </div>
   );

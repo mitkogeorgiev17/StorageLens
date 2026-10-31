@@ -1026,6 +1026,10 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
 #[tauri::command] async fn get_grouping(scan_id: u32, by: Grouping, filter: Filter)
     -> Result<SyntheticTree, String>;
 #[tauri::command] async fn get_children(scan_id: u32, parent_id: u32) -> Result<Vec<Child>, String>;
+#[tauri::command] async fn get_tree(scan_id: u32, parent_id: u32, depth: Option<u32>)
+    -> Result<TreeNode, String>;   // the treemap's subtree, node-budgeted
+#[tauri::command] async fn reveal_entry(scan_id: u32, entry_id: u32) -> Result<(), String>;
+#[tauri::command] async fn preview_entry(scan_id: u32, entry_id: u32) -> Result<(), String>;
 #[tauri::command] async fn get_largest(scan_id: u32, min_size: u64, cursor: Option<u64>)
     -> Result<Page<FileRow>, String>;
 #[tauri::command] async fn search(scan_id: u32, query: String, cursor: Option<u32>)
@@ -1052,6 +1056,10 @@ scan://done       { scan_id, status, duration_ms }
 scan://error      { scan_id, message }
 dupes://progress  { scan_id, hashed, total }
 ```
+
+`reveal_entry` and `preview_entry` take catalog ids, never paths, so the UI can only hand
+the OS what the scan saw. Reveal is Finder (`open -R`) or Explorer (`/select,`); preview
+is Quick Look on macOS and falls back to reveal on Windows, which has no system preview.
 
 `preview_deletion` is mandatory before `execute_deletion` — the UI can never skip the
 dry-run receipt.

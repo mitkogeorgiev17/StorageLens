@@ -11,6 +11,11 @@ import {
   backingStore,
   clampView,
   computeFrame,
+  easeInOut,
+  fitView,
+  indexOfId,
+  interpolateView,
+  neighbor,
   hitTest,
   layoutTreemap,
   screenRect,
@@ -224,4 +229,69 @@ test("1M nodes: layout once, then frames well inside the 16 ms budget", () => {
     `1M nodes: layout ${layoutMs.toFixed(0)} ms, frame avg ${average.toFixed(2)} ms, worst ${worst.toFixed(2)} ms`,
   );
   assert.ok(worst < 16, `worst frame ${worst.toFixed(2)} ms`);
+});
+
+test("fitView fills the viewport with the target rect, centred", () => {
+  const target = dir([file(1000), file(500)]);
+  const siblings = Array.from({ length: 8 }, () => file(1500));
+  const root = dir([target, ...siblings]);
+  const layout = layoutTreemap(root, 800, 600);
+  const index = indexOfId(layout, target.id);
+  assert.ok(index !== null);
+  const view = fitView(layout, index, 800, 600);
+  const rect = screenRect(layout, index, view);
+  assert.ok(view.scale > 1);
+  // One dimension fills the viewport; the other fits inside it.
+  const fills =
+    Math.abs(rect.width - 800) < 1e-6 || Math.abs(rect.height - 600) < 1e-6;
+  assert.ok(fills, `rect ${rect.width}×${rect.height} does not fill 800×600`);
+  assert.ok(rect.x >= -1e-6 && rect.y >= -1e-6);
+  assert.ok(rect.x + rect.width <= 800 + 1e-6 && rect.y + rect.height <= 600 + 1e-6);
+  assert.equal(indexOfId(layout, -42), null);
+});
+
+test("interpolateView starts and ends exactly and stays in between", () => {
+  const from = IDENTITY_VIEW;
+  const to = { scale: 4, translateX: -1200, translateY: -900 };
+  assert.deepEqual(interpolateView(from, to, 0, 800), from);
+  assert.deepEqual(interpolateView(from, to, 1, 800), to);
+  const middle = interpolateView(from, to, 0.5, 800);
+  assert.ok(Math.abs(middle.scale - 2) < 1e-9, "geometric in window size");
+  assert.ok(middle.translateX < 0 && middle.translateX > to.translateX);
+  assert.equal(easeInOut(0), 0);
+  assert.equal(easeInOut(1), 1);
+  assert.equal(easeInOut(0.5), 0.5);
+});
+
+test("arrow-key navigation moves to the nearest rect in that direction", () => {
+  // Squarify lays four equal files out as three stacked on the left and one
+  // tall one on the right:  [a|d] / [b|d] / [c|d].
+  const [a, b, c, d] = [file(100), file(100), file(100), file(100)];
+  const layout = layoutTreemap(dir([a, b, c, d]), 400, 400);
+  const at = (node: TreemapInput) => {
+    const index = indexOfId(layout, node.id);
+    assert.ok(index !== null);
+    return index;
+  };
+  assert.ok((layout.x0[at(d)] ?? 0) > (layout.x1[at(a)] ?? 0), "d is the right column");
+  assert.equal(neighbor(layout, at(a), "right"), at(d));
+  assert.equal(neighbor(layout, at(a), "down"), at(b));
+  assert.equal(neighbor(layout, at(c), "up"), at(b));
+  assert.equal(neighbor(layout, at(d), "left"), at(b), "the one level with d's centre");
+  // At an edge, the selection stays put.
+  assert.equal(neighbor(layout, at(a), "up"), at(a));
+  assert.equal(neighbor(layout, at(d), "right"), at(d));
+  // With nothing selected, start on the largest.
+  assert.notEqual(neighbor(layout, null, "right"), null);
+});
+
+test("keyboard navigation skips nested rects", () => {
+  const inner = dir([file(10), file(10)]);
+  const root = dir([inner, file(5)]);
+  const layout = layoutTreemap(root, 300, 200);
+  let index = neighbor(layout, null, "right");
+  for (let step = 0; step < 6 && index !== null; step += 1) {
+    assert.equal(layout.depth[index], 1);
+    index = neighbor(layout, index, step % 2 === 0 ? "right" : "down");
+  }
 });

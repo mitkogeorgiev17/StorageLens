@@ -246,3 +246,139 @@ body {
   cursor: pointer;
   touch-action: none;
 }
+
+/* --- Map screen ---------------------------------------------------------------- */
+
+.content[data-route="map"] {
+  overflow: hidden;
+  padding: var(--space-4) var(--space-6);
+}
+
+.map-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
+  min-height: 0;
+}
+
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+}
+
+.map-loading {
+  color: var(--text-muted);
+}
+
+.breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.breadcrumb li + li::before {
+  content: "›";
+  margin: 0 var(--space-1);
+  color: var(--text-muted);
+}
+
+.breadcrumb-link {
+  padding: 2px var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.breadcrumb-link:hover {
+  background: var(--nav-active-bg);
+}
+
+.breadcrumb-link:focus-visible,
+.treemap-canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.breadcrumb-current {
+  padding: 2px var(--space-1);
+  font-weight: 600;
+}
+
+.map-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.map-tooltip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 360px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-sm);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
+  pointer-events: none;
+}
+
+.map-tooltip[hidden] {
+  display: none;
+}
+
+.map-tooltip-name {
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.map-tooltip-path {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.map-details {
+  display: flex;
+  gap: var(--space-3);
+  min-width: 0;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.map-details-name {
+  font-weight: 600;
+}
+
+.map-details-path {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+}
+
+.map-hints {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.map-notice {
+  color: var(--danger);
+}
