@@ -27,5 +27,5 @@ pub use scanner::{CancelToken, EntrySink, StorageScanner};
 pub use tags::Tags;
 pub use types::{
     AppInfo, AppStatus, Bytes, Entry, EntryKind, FileStamp, NodeId, PlatformTarget, Progress,
-    ScanOptions, ScanResult, ScanStatus, SkipReason, SkippedDir, Volume,
+    Satellite, ScanOptions, ScanResult, ScanStatus, Signature, SkipReason, SkippedDir, Volume,
 };

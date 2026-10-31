@@ -3126,6 +3126,7 @@ dependencies = [
  "libc",
  "rayon",
  "serde",
+ "serde_json",
  "storagelens-core",
  "thiserror 2.0.21",
  "tracing",

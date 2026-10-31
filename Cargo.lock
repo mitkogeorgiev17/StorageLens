@@ -762,6 +762,7 @@ dependencies = [
  "libc",
  "rayon",
  "serde",
+ "serde_json",
  "storagelens-core",
  "tempfile",
  "thiserror",
