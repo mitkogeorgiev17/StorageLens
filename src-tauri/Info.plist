@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>StorageLens indexes your Desktop so it can show where disk space is used.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>StorageLens indexes your Documents folder so it can show where disk space is used.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>StorageLens indexes your Downloads folder so it can show where disk space is used.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>StorageLens reads removable volumes you choose to scan so it can show what they contain.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>StorageLens reads network volumes you choose to scan so it can show what they contain.</string>
+</dict>
+</plist>
