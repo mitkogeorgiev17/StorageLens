@@ -32,6 +32,8 @@ mod ffi;
 #[cfg(target_os = "macos")]
 mod skip;
 #[cfg(target_os = "macos")]
+mod stamp;
+#[cfg(target_os = "macos")]
 pub mod volumes;
 #[cfg(target_os = "macos")]
 pub mod walk;
@@ -43,6 +45,8 @@ pub use parse::{ObjType, ParseError, RawEntry};
 
 #[cfg(target_os = "macos")]
 pub use ffi::{DirReader, BUFFER_BYTES};
+#[cfg(target_os = "macos")]
+pub use stamp::stamp;
 #[cfg(target_os = "macos")]
 pub use volumes::{full_disk_access, open_full_disk_access_settings, volumes};
 #[cfg(target_os = "macos")]

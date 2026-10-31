@@ -26,6 +26,6 @@ pub use fixtures::{
 pub use scanner::{CancelToken, EntrySink, StorageScanner};
 pub use tags::Tags;
 pub use types::{
-    AppInfo, AppStatus, Bytes, Entry, EntryKind, NodeId, PlatformTarget, Progress, ScanOptions,
-    ScanResult, ScanStatus, SkipReason, SkippedDir, Volume,
+    AppInfo, AppStatus, Bytes, Entry, EntryKind, FileStamp, NodeId, PlatformTarget, Progress,
+    ScanOptions, ScanResult, ScanStatus, SkipReason, SkippedDir, Volume,
 };

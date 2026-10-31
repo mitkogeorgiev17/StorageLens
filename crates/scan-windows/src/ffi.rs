@@ -379,7 +379,7 @@ pub fn drive_name(label: &str, letter: char) -> String {
 }
 
 #[cfg(windows)]
-pub use sys::{compressed_size, drives, throttle_current_thread, volume_info, DirReader};
+pub use sys::{compressed_size, drives, stamp, throttle_current_thread, volume_info, DirReader};
 
 #[cfg(windows)]
 mod sys {
@@ -387,13 +387,15 @@ mod sys {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
-    use storagelens_core::{Bytes, Volume};
+    use storagelens_core::{Bytes, FileStamp, Volume};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FileIdBothDirectoryInfo, GetCompressedFileSizeW, GetDiskFreeSpaceExW,
-        GetDriveTypeW, GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW,
-        GetVolumePathNameW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
+        CreateFileW, FileAttributeTagInfo, FileIdBothDirectoryInfo, GetCompressedFileSizeW,
+        GetDiskFreeSpaceExW, GetDriveTypeW, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW, GetVolumePathNameW,
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_SIZE, OPEN_EXISTING,
     };
     use windows::Win32::System::Threading::{
@@ -401,8 +403,9 @@ mod sys {
     };
 
     use super::{
-        drive_letters, drive_name, is_ntfs, join_u32, parse_dir_info, verbatim_c, win32_code,
-        RawEntry, VolumeInfo, DIR_INFO_BUFFER_BYTES, DRIVE_FIXED, DRIVE_REMOVABLE,
+        drive_letters, drive_name, filetime_to_unix, is_ntfs, join_u32, kind_of, parse_dir_info,
+        verbatim_c, win32_code, RawEntry, VolumeInfo, DIR_INFO_BUFFER_BYTES, DRIVE_FIXED,
+        DRIVE_REMOVABLE,
     };
 
     fn wide(path: &Path) -> Vec<u16> {
@@ -526,6 +529,67 @@ mod sys {
             // recover.
             let _ = unsafe { CloseHandle(self.handle) };
         }
+    }
+
+    /// What the walker would record for `path` now, for the safety layer's
+    /// preflight re-stat (#29). A final symlink or junction is described, not
+    /// followed. The file id is the same 64-bit NTFS reference number the
+    /// directory listing reports.
+    pub fn stamp(path: &Path) -> io::Result<FileStamp> {
+        let path = verbatim_c(&wide(path));
+        // SAFETY: `path` is NUL-terminated and outlives the call. Reading
+        // attributes needs only FILE_READ_ATTRIBUTES; BACKUP_SEMANTICS allows
+        // directories and OPEN_REPARSE_POINT opens a link rather than its target.
+        // Full sharing never blocks other processes.
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(path.as_ptr()),
+                FILE_READ_ATTRIBUTES.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+        }
+        .map_err(|error| io_error(&error))?;
+        let result = stamp_handle(handle);
+        // SAFETY: the handle came from `CreateFileW` above, is closed exactly
+        // once, and is not used afterwards.
+        let _ = unsafe { CloseHandle(handle) };
+        result
+    }
+
+    fn stamp_handle(handle: HANDLE) -> io::Result<FileStamp> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `handle` is live and `info` is a writable struct of the type
+        // the call fills.
+        unsafe { GetFileInformationByHandle(handle, &mut info) }
+            .map_err(|error| io_error(&error))?;
+        let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+        // SAFETY: `tag` is a writable FILE_ATTRIBUTE_TAG_INFO and its exact
+        // size is passed, as FileAttributeTagInfo requires.
+        unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileAttributeTagInfo,
+                (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+                std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        }
+        .map_err(|error| io_error(&error))?;
+        let written = join_u32(
+            info.ftLastWriteTime.dwHighDateTime,
+            info.ftLastWriteTime.dwLowDateTime,
+        );
+        Ok(FileStamp {
+            kind: kind_of(info.dwFileAttributes, tag.ReparseTag),
+            size_logical: join_u32(info.nFileSizeHigh, info.nFileSizeLow),
+            modified: filetime_to_unix(written),
+            dev: info.dwVolumeSerialNumber,
+            file_id: join_u32(info.nFileIndexHigh, info.nFileIndexLow),
+            attrs: info.dwFileAttributes,
+        })
     }
 
     /// Bytes on disk for a compressed or sparse file, or `None` if the query fails.

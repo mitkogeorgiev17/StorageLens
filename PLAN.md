@@ -1153,6 +1153,52 @@ mistake is my own data, so the mechanics stay.
 8. **No background deletion.** Ever. Every removal is a click I made, in this session.
 9. **Local audit log.** Every action appended to a text log. No network.
 
+**Built (#29).** `safety::guard` and `safety::preflight`.
+
+- **Guard.** A `Guard` is built per cleanup from the resolved scan root and the home
+  folder. `Guard::check(path)` refuses:
+  - a relative path, or one with a `.`/`..` component (checked before resolving);
+  - a path that, once every link and junction is resolved, is not strictly inside the
+    root. A symlink target is checked twice: as the link (what the Trash moves) and as
+    what it points to, unless it dangles;
+  - a path that is, is inside, or *contains* a system location. On macOS: `/System`,
+    `/usr`, `/bin`, `/sbin`, `/private/etc`, `/private/var/{db,vm}`, `/cores`,
+    `/.DocumentRevisions-V100`, `/.Spotlight-V100`, `/.fseventsd`. On Windows, on any
+    drive: `Windows`, `Program Files`, `Program Files (x86)`, `Recovery`,
+    `System Volume Information`, `$Recycle.Bin`;
+  - the home itself, or any folder containing it;
+  - the home's `Pictures` and `Music` folders themselves (files in them may go);
+  - `~/.ssh`, `~/.gnupg`, `~/Library/Keychains` and `~/Library/Mail`, including
+    everything inside them;
+  - §15.6 names, anywhere in the path: `.ssh`, `.gnupg`, `*.keychain[-db]`,
+    `*.photoslibrary`, `*.musiclibrary`, `Backups.backupdb`, `*.backupbundle`,
+    `Library/{Keychains,Mail}`, `pagefile.sys`, `hiberfil.sys`, `swapfile.sys`;
+  - anything below a bundle (`.app`, `.framework`, `.bundle`, `.plugin`, `.kext`, …).
+    The bundle itself may go (M5).
+- **Case rules.** Deny rules ignore ASCII case on both platforms. Containment is exact on
+  macOS (`realpath` returns the on-disk case) and ignores case on Windows.
+  `check_resolved` (the rules on an already-resolved path) allocates nothing and makes
+  no syscalls.
+- **Preflight.** `preflight(path, scanned, stamp)` re-stats the path and compares it with
+  the scan. Any of these is a reported `Skip`:
+  - the kind changed;
+  - the volume or file id changed (replaced);
+  - a file's logical size changed;
+  - the mtime changed (seconds), for files, folders and links;
+  - the item is gone or unreadable;
+  - the item is now locked: `UF/SF_IMMUTABLE`, `*_APPEND`, `SF_RESTRICTED` or
+    `SF_NOUNLINK` on macOS; `FILE_ATTRIBUTE_SYSTEM` on Windows.
+- **Stamps.** `stamp(path)` comes from the platform crate
+  (`storagelens_scan_macos::stamp`: `lstat`; `storagelens_scan_windows::stamp`:
+  `GetFileInformationByHandle` on a reparse-point handle). It reads exactly what that
+  scanner records; each crate's `walk_fixture` test checks this on every fixture entry.
+  `core::FileStamp` is the shared shape, and `safety` stays free of `unsafe`.
+- **Not covered by the guard.** A folder whose *descendants* include something protected
+  (e.g. an ancestor of a `.photoslibrary` elsewhere) cannot be seen from its path alone.
+  The plan builder (#31/#34) checks the arena below each folder it offers.
+- **Coverage.** `cargo +nightly llvm-cov -p storagelens-safety --branch --summary-only`
+  gives 100% of lines and branches.
+
 ---
 
 ## 16. Build schedule

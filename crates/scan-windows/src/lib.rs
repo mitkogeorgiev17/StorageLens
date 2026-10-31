@@ -39,4 +39,6 @@ pub mod walk;
 mod writer;
 
 #[cfg(windows)]
+pub use ffi::stamp;
+#[cfg(windows)]
 pub use walk::{WinScanner, MAX_THREADS};
