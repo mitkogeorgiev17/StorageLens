@@ -314,11 +314,31 @@ export interface CleanupProgressEvent {
   readonly total: number;
 }
 
-export interface AppRowDto {
-  readonly name: string;
+export type AppStatus = "in_use" | "likely_unused" | "unused" | "unknown";
+
+export interface SatelliteDto {
   readonly path: string;
-  readonly bytesAlloc: number;
+  readonly bytes: number;
+}
+
+/** One installed app. System apps never reach the UI. */
+export interface AppRowDto {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string | null;
+  /** Empty when Windows recorded no install directory: not removable. */
+  readonly path: string;
+  readonly appBytes: number;
+  /** Associated data: a heuristic, always labelled "estimated". */
+  readonly satelliteBytes: number;
+  readonly totalBytes: number;
   readonly lastUsed: number | null;
+  readonly useCount: number | null;
+  readonly status: AppStatus;
+  readonly running: boolean;
+  readonly autostart: boolean;
+  readonly defaultHandler: boolean;
+  readonly satellites: readonly SatelliteDto[];
 }
 
 export interface DupGroupDto {
@@ -463,8 +483,25 @@ export const api = {
   undoDeletion: (manifestId: string) =>
     call<UndoResultDto>("undo_deletion", { manifestId }),
 
-  listApps: (scanId: number) =>
-    call<readonly AppRowDto[]>("list_apps", { scanId }),
+  /** Installed apps; `refresh` re-reads the machine, which takes seconds. */
+  listApps: (refresh: boolean) =>
+    call<readonly AppRowDto[]>("list_apps", { refresh }),
+  /**
+   * Receipt for removing an app (and, with `includeData`, its associated
+   * data). Executed by {@link api.executeDeletion} like any cleanup plan.
+   */
+  previewAppRemoval: (
+    scanId: number,
+    path: string,
+    includeData: boolean,
+    allowRunning: boolean,
+  ) =>
+    call<DeletionPlanDto>("preview_app_removal", {
+      scanId,
+      path,
+      includeData,
+      allowRunning,
+    }),
   findDuplicates: (scanId: number, minSize: number) =>
     call<readonly DupGroupDto[]>("find_duplicates", { scanId, minSize }),
 

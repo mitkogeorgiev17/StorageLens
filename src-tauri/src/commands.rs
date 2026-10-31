@@ -47,8 +47,8 @@ use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CollectionDto,
     CollectionResultDto, CrumbDto, DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRangeDto,
     FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page, PlanItemDto, ResultItemDto,
-    RuleGroupDto, RuleItemDto, ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto,
-    SizeCursorDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
+    RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind,
+    SearchCursorDto, SizeCursorDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
 };
 use crate::events::{
     self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
@@ -165,6 +165,8 @@ pub struct AppState {
     listing: Mutex<Option<Listing>>,
     grouping: Mutex<Option<GroupingCache>>,
     rules: Mutex<Option<RulesCache>>,
+    /// The last app inventory, classified. Reading it takes seconds.
+    apps: Mutex<Option<Vec<storagelens_core::AppInfo>>>,
     next_plan: AtomicU64,
 }
 
@@ -184,6 +186,7 @@ impl AppState {
             listing: Mutex::new(None),
             grouping: Mutex::new(None),
             rules: Mutex::new(None),
+            apps: Mutex::new(None),
             next_plan: AtomicU64::new(1),
         })
     }
@@ -1840,7 +1843,16 @@ pub fn preview_deletion(
         });
     }
     drop(catalog);
+    store_plan(state, scan_id, items, lines)
+}
 
+/// Record a dry-run receipt: the only thing `execute_deletion` accepts.
+fn store_plan(
+    state: &AppState,
+    scan_id: i64,
+    items: Vec<storagelens_safety::Item>,
+    lines: Vec<PlanItemDto>,
+) -> CommandResult<DeletionPlanDto> {
     let total_bytes = lines.iter().map(|line| line.bytes).sum();
     let number = state.next_plan.fetch_add(1, Ordering::Relaxed);
     let dto = DeletionPlanDto {
@@ -1859,6 +1871,157 @@ pub fn preview_deletion(
         },
     );
     Ok(dto)
+}
+
+/// Installed apps, classified, without system apps or anything already moved
+/// to the Trash. `refresh` re-reads the machine (seconds); otherwise the last
+/// inventory is reused.
+pub fn list_apps(
+    state: &AppState,
+    refresh: bool,
+    inventory: &dyn Fn() -> Vec<storagelens_core::AppInfo>,
+) -> CommandResult<Vec<AppRowDto>> {
+    let cached = lock(&state.apps)?.clone();
+    let apps = match cached {
+        Some(apps) if !refresh => apps,
+        _ => {
+            // Not under the lock: the inventory takes seconds.
+            let mut apps = inventory();
+            storagelens_analysis::apps::assess(&mut apps, now_unix());
+            *lock(&state.apps)? = Some(apps.clone());
+            apps
+        }
+    };
+    let removed = lock(&state.removed)?.clone();
+    Ok(apps
+        .iter()
+        .filter(|app| !app.system && !removed.contains(&app.path.display().to_string()))
+        .map(|app| {
+            let satellites: Vec<SatelliteDto> = app
+                .satellites
+                .iter()
+                .map(|satellite| SatelliteDto {
+                    path: satellite.path.display().to_string(),
+                    bytes: satellite.bytes.get(),
+                })
+                .filter(|satellite| !removed.contains(&satellite.path))
+                .collect();
+            let satellite_bytes = satellites.iter().map(|s| s.bytes).sum();
+            AppRowDto {
+                id: app.id.clone(),
+                name: app.name.clone(),
+                version: app.version.clone(),
+                path: app.path.display().to_string(),
+                app_bytes: app.bytes.get(),
+                satellite_bytes,
+                total_bytes: app.bytes.get().saturating_add(satellite_bytes),
+                last_used: app.last_used,
+                use_count: app.use_count,
+                status: app.status,
+                running: app.running,
+                autostart: app.autostart,
+                default_handler: app.default_handler,
+                satellites,
+            }
+        })
+        .collect())
+}
+
+/// Dry-run receipt for removing one app: the bundle / install directory, and
+/// with `include_data` its associated data. Executed by `execute_deletion`,
+/// so the guard, preflight re-stat, Trash and undo are the cleanup ones.
+///
+/// A running app is refused unless `allow_running` (the UI's explicit
+/// "remove anyway"); a system app is always refused.
+pub fn preview_app_removal(
+    state: &AppState,
+    scan_id: i64,
+    path: &str,
+    include_data: bool,
+    allow_running: bool,
+    stamp: &dyn Fn(&Path) -> std::io::Result<storagelens_core::FileStamp>,
+) -> CommandResult<DeletionPlanDto> {
+    let app = lock(&state.apps)?
+        .as_ref()
+        .and_then(|apps| {
+            apps.iter()
+                .find(|app| !path.is_empty() && app.path.display().to_string() == path)
+                .cloned()
+        })
+        .ok_or_else(|| format!("{path} is not in the app list; reload it"))?;
+    if app.system {
+        return Err(format!(
+            "{} ships with the system and is never removed",
+            app.name
+        ));
+    }
+    if app.running && !allow_running {
+        return Err(format!(
+            "{} is running; quit it first, or confirm removing it anyway",
+            app.name
+        ));
+    }
+
+    let removed = lock(&state.removed)?.clone();
+    let mut targets = vec![(
+        app.path.clone(),
+        app.bytes.get(),
+        "app.bundle",
+        app.name.clone(),
+    )];
+    if include_data {
+        let title = format!("{} — associated data (estimated)", app.name);
+        targets.extend(
+            app.satellites
+                .iter()
+                .map(|s| (s.path.clone(), s.bytes.get(), "app.data", title.clone())),
+        );
+    }
+
+    let mut items = Vec::new();
+    let mut lines = Vec::new();
+    for (target, bytes, rule_id, title) in targets {
+        let shown = target.display().to_string();
+        if removed.contains(&shown) {
+            continue;
+        }
+        let stamped = stamp(&target).map_err(|error| format!("cannot read {shown}: {error}"))?;
+        items.push(storagelens_safety::Item {
+            path: target,
+            bytes,
+            rule_id: Some(rule_id.to_owned()),
+            stamp: stamped,
+        });
+        lines.push(PlanItemDto {
+            path: shown,
+            bytes,
+            rule_id: rule_id.to_owned(),
+            title,
+            risk: "review".to_owned(),
+        });
+    }
+    if items.is_empty() {
+        return Err(format!("{} was already moved to the Trash", app.name));
+    }
+    store_plan(state, scan_id, items, lines)
+}
+
+/// Installed apps on this platform.
+fn platform_apps() -> Vec<storagelens_core::AppInfo> {
+    #[cfg(any(target_os = "macos", windows))]
+    use storagelens_core::StorageScanner as _;
+    #[cfg(target_os = "macos")]
+    {
+        storagelens_scan_macos::MacScanner::default().installed_apps()
+    }
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::WinScanner::default().installed_apps()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Vec::new()
+    }
 }
 
 /// The platform's Trash, for the user whose home is `home`.
@@ -2361,9 +2524,31 @@ pub mod ipc {
     }
 
     #[tauri::command]
-    pub async fn list_apps(scan_id: i64) -> CommandResult<Vec<AppRowDto>> {
-        let _ = scan_id;
-        Err(not_built("App inventory", "#36"))
+    pub async fn list_apps(state: AppStateRef<'_>, refresh: bool) -> CommandResult<Vec<AppRowDto>> {
+        let state = Arc::clone(state.inner());
+        tauri::async_runtime::spawn_blocking(move || {
+            super::list_apps(&state, refresh, &super::platform_apps)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    pub async fn preview_app_removal(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        path: String,
+        include_data: bool,
+        allow_running: bool,
+    ) -> CommandResult<DeletionPlanDto> {
+        super::preview_app_removal(
+            state.inner(),
+            scan_id,
+            &path,
+            include_data,
+            allow_running,
+            &super::platform_stamp,
+        )
     }
 
     #[tauri::command]
@@ -2617,6 +2802,118 @@ mod tests {
             .filter(|group| group.deletable)
             .flat_map(|group| group.items.into_iter().map(|item| item.path))
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apps_list_preview_trash_and_undo_through_the_cleanup_path() {
+        use storagelens_core::{AppInfo, AppStatus, Bytes, Satellite, Signature};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let bundle = root.join("Foo.app");
+        let data = root.join("Support/com.example.foo");
+        fs::create_dir_all(bundle.join("Contents")).expect("bundle");
+        fs::write(bundle.join("Contents/Info.plist"), b"x").expect("plist");
+        fs::create_dir_all(&data).expect("data");
+        fs::write(data.join("db"), vec![0u8; 10_000]).expect("db");
+        let (scan_id, _) = scan(&state, &root);
+        let bin = FolderBin::new(&dir);
+        let recorder = Recorder::default();
+
+        let app = |name: &str, path: PathBuf| AppInfo {
+            id: format!("com.example.{name}"),
+            name: name.to_owned(),
+            version: None,
+            path,
+            bytes: Bytes::new(4_096),
+            last_used: Some(0),
+            status: AppStatus::Unknown,
+            use_count: Some(1),
+            signature: Signature::Valid,
+            running: false,
+            autostart: false,
+            default_handler: false,
+            system: false,
+            satellites: Vec::new(),
+        };
+        let inventory = || {
+            let mut foo = app("Foo", bundle.clone());
+            foo.satellites = vec![Satellite {
+                path: data.clone(),
+                bytes: Bytes::new(12_288),
+            }];
+            let mut busy = app("Busy", root.join("Busy.app"));
+            busy.running = true;
+            let mut mail = app("Mail", PathBuf::from("/System/Applications/Mail.app"));
+            mail.system = true;
+            vec![foo, busy, mail]
+        };
+
+        let rows = list_apps(&state, false, &inventory).expect("list");
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["Foo", "Busy"], "system apps are excluded entirely");
+        let foo = &rows[0];
+        assert_eq!(foo.status, AppStatus::Unused, "classified on the way out");
+        assert_eq!(foo.total_bytes, 4_096 + 12_288);
+
+        let busy = root.join("Busy.app").display().to_string();
+        let error = preview_app_removal(&state, scan_id, &busy, false, false, &platform_stamp)
+            .expect_err("running");
+        assert!(error.contains("running"), "{error}");
+        let error = preview_app_removal(
+            &state,
+            scan_id,
+            "/System/Applications/Mail.app",
+            false,
+            true,
+            &platform_stamp,
+        )
+        .expect_err("system");
+        assert!(
+            error.contains("not in the app list") || error.contains("system"),
+            "{error}"
+        );
+
+        let shown = bundle.display().to_string();
+        let app_only = preview_app_removal(&state, scan_id, &shown, false, false, &platform_stamp)
+            .expect("app");
+        assert_eq!(app_only.items.len(), 1);
+        let plan = preview_app_removal(&state, scan_id, &shown, true, false, &platform_stamp)
+            .expect("all");
+        assert_eq!(plan.items.len(), 2);
+        assert!(
+            plan.items[1].title.contains("estimated"),
+            "{:?}",
+            plan.items[1]
+        );
+
+        let result = execute_deletion(
+            &state,
+            &recorder,
+            &plan.plan_id,
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect("execute");
+        assert_eq!(result.trashed, 2, "{:?}", result.items);
+        assert!(!bundle.exists() && !data.exists());
+        let rows = list_apps(&state, false, &|| unreachable!("cached")).expect("list");
+        assert!(
+            rows.iter().all(|row| row.name != "Foo"),
+            "removed apps are hidden"
+        );
+
+        let undone = undo_deletion(&state, &result.manifest_id, &bin).expect("undo");
+        assert_eq!(undone.restored, 2);
+        assert!(bundle.exists() && data.exists());
+        let rows = list_apps(&state, false, &|| unreachable!("cached")).expect("list");
+        assert!(
+            rows.iter().any(|row| row.name == "Foo"),
+            "restored apps come back"
+        );
     }
 
     #[cfg(unix)]

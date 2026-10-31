@@ -18,6 +18,7 @@ import {
 
 import ScanPicker from "./components/ScanPicker";
 import SearchBar from "./components/SearchBar";
+import AppsScreen from "./routes/Apps";
 import CleanupScreen from "./routes/Cleanup";
 import CollectionsScreen from "./routes/Collections";
 import LargeFilesScreen from "./routes/LargeFiles";
@@ -112,7 +113,7 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
     label: "Apps",
     title: "Apps",
     purpose: "Installed apps with their full footprint and when they were last used.",
-    empty: "App inventory is not built yet.",
+    empty: "Installed apps are listed here.",
   },
   cleanup: {
     label: "Cleanup",
@@ -212,6 +213,7 @@ const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
   map: MapScreen,
   "large-files": LargeFilesScreen,
   collections: CollectionsScreen,
+  apps: AppsScreen,
   cleanup: CleanupScreen,
 };
 
