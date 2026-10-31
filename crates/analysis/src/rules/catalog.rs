@@ -22,6 +22,7 @@ use super::{Rule, RulePlatform};
 pub const BUILTIN: &[(&str, &str)] = &[
     ("shared.json", include_str!("../../rules/shared.json")),
     ("macos.json", include_str!("../../rules/macos.json")),
+    ("windows.json", include_str!("../../rules/windows.json")),
 ];
 
 /// What variables in a glob expand to, and which platform's rules apply.

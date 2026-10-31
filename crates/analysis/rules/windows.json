@@ -1,0 +1,207 @@
+[
+  {
+    "id": "windows.user_temp",
+    "platform": "windows",
+    "title": "Temporary files older than a week",
+    "glob": ["%TEMP%\\*", "%LOCALAPPDATA%\\Temp\\*"],
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.9,
+    "stale_days": 7,
+    "explain": "Files programs left in your temporary folder and have not touched for a week. Programs that still need theirs keep them in use, and those are skipped."
+  },
+  {
+    "id": "windows.browser_caches",
+    "platform": "windows",
+    "title": "Browser caches",
+    "glob": [
+      "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\*\\{Cache,Code Cache,GPUCache}",
+      "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\*\\{Cache,Code Cache,GPUCache}",
+      "%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\cache2"
+    ],
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.95,
+    "explain": "Copies of web pages and scripts Chrome, Edge or Firefox saved to load sites faster. The browser downloads them again as you browse; close it first so nothing is in use."
+  },
+  {
+    "id": "windows.downloads.installers",
+    "platform": "windows",
+    "title": "Old installers in Downloads",
+    "glob": "~\\Downloads\\*.{exe,msi}",
+    "match": "file",
+    "kind": "stale",
+    "risk": "review",
+    "confidence": 0.85,
+    "stale_days": 90,
+    "explain": "Setup programs downloaded more than 90 days ago. Once a program is installed its installer is usually not needed, and most can be downloaded again."
+  },
+  {
+    "id": "windows.crash_dumps",
+    "platform": "windows",
+    "title": "Crash dumps",
+    "glob": "%LOCALAPPDATA%\\CrashDumps\\*",
+    "match": "file",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.95,
+    "explain": "Memory snapshots Windows saved when a program crashed. They only help a developer investigating that crash."
+  },
+  {
+    "id": "windows.error_reports",
+    "platform": "windows",
+    "title": "Windows error reports",
+    "glob": "%LOCALAPPDATA%\\Microsoft\\Windows\\WER\\*",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.95,
+    "explain": "Problem reports Windows collected about crashed programs, already sent or queued. Windows creates new ones if a program crashes again."
+  },
+  {
+    "id": "windows.thumbnail_cache",
+    "platform": "windows",
+    "title": "Thumbnail cache",
+    "glob": "%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db",
+    "match": "file",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.95,
+    "explain": "Picture previews File Explorer saved. Explorer redraws them as you browse folders; files it is using right now are skipped."
+  },
+  {
+    "id": "windows.npm_cache",
+    "platform": "windows",
+    "title": "npm package cache",
+    "glob": "%LOCALAPPDATA%\\npm-cache",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.95,
+    "explain": "Every package npm has downloaded. npm fetches what a project needs again on its next install."
+  },
+  {
+    "id": "windows.pip_cache",
+    "platform": "windows",
+    "title": "pip download cache",
+    "glob": "%LOCALAPPDATA%\\pip\\Cache",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.95,
+    "explain": "Python packages pip downloaded or built. pip downloads them again when they are next installed."
+  },
+  {
+    "id": "windows.cargo_registry",
+    "platform": "windows",
+    "title": "Cargo registry cache",
+    "glob": "~\\.cargo\\registry",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.9,
+    "explain": "Rust crates Cargo downloaded, with their index. Cargo downloads what a project needs on its next build."
+  },
+  {
+    "id": "windows.nuget_packages",
+    "platform": "windows",
+    "title": "NuGet package folder",
+    "glob": "~\\.nuget\\packages",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "confidence": 0.9,
+    "explain": "Every .NET package NuGet has restored. dotnet restore downloads what a project needs again."
+  },
+  {
+    "id": "windows.system_temp",
+    "platform": "windows",
+    "title": "Windows temporary files",
+    "glob": "%SystemRoot%\\Temp",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "action": "report",
+    "command": "cleanmgr /d C:",
+    "explain": "Temporary files Windows itself keeps. StorageLens does not change anything inside the Windows folder; Disk Cleanup removes these safely as an administrator."
+  },
+  {
+    "id": "windows.update_cache",
+    "platform": "windows",
+    "title": "Windows Update downloads",
+    "glob": "%SystemRoot%\\SoftwareDistribution\\Download",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "action": "report",
+    "command": "cleanmgr /d C:",
+    "explain": "Update files Windows downloaded and has usually already installed. In Disk Cleanup, choose Clean up system files and then Windows Update Cleanup."
+  },
+  {
+    "id": "windows.delivery_optimization",
+    "platform": "windows",
+    "title": "Delivery Optimization cache",
+    "glob": "%SystemRoot%\\ServiceProfiles\\NetworkService\\AppData\\Local\\Microsoft\\Windows\\DeliveryOptimization",
+    "match": "dir",
+    "kind": "regenerable",
+    "risk": "safe",
+    "action": "report",
+    "command": "Delete-DeliveryOptimizationCache -Force",
+    "explain": "Update pieces Windows keeps to share with other PCs. Run the command in PowerShell as an administrator to clear it; Windows downloads again what it needs."
+  },
+  {
+    "id": "windows.old",
+    "platform": "windows",
+    "title": "Previous Windows installation",
+    "glob": "%SystemDrive%\\Windows.old",
+    "match": "dir",
+    "kind": "leftover",
+    "risk": "review",
+    "action": "report",
+    "command": "cleanmgr /d C:",
+    "explain": "The previous version of Windows, kept after an upgrade so you can go back. In Disk Cleanup, choose Clean up system files and then Previous Windows installation; after that you can no longer roll back."
+  },
+  {
+    "id": "windows.recycle_bin",
+    "platform": "windows",
+    "title": "Items in the Recycle Bin",
+    "glob": "%SystemDrive%\\$Recycle.Bin",
+    "match": "dir",
+    "kind": "stale",
+    "risk": "review",
+    "action": "report",
+    "command": "Clear-RecycleBin",
+    "explain": "Files already in the Recycle Bin still take space until it is emptied. Empty it when you are sure; StorageLens never does, because that is what makes its own deletions undoable."
+  },
+  {
+    "id": "windows.hibernation_file",
+    "platform": "windows",
+    "title": "Hibernation file",
+    "glob": "%SystemDrive%\\hiberfil.sys",
+    "match": "file",
+    "kind": "system",
+    "command": "powercfg /h off",
+    "explain": "Where Windows saves memory to hibernate and to start up faster. Turning hibernation off in an administrator prompt removes it; Fast Startup stops working too."
+  },
+  {
+    "id": "windows.pagefile",
+    "platform": "windows",
+    "title": "Page file",
+    "glob": "%SystemDrive%\\pagefile.sys",
+    "match": "file",
+    "kind": "system",
+    "command": "SystemPropertiesPerformance",
+    "explain": "Virtual memory, managed by Windows. Its size can be changed under Advanced, then Virtual memory, in the window this command opens; removing it can make programs fail."
+  },
+  {
+    "id": "windows.component_store",
+    "platform": "windows",
+    "title": "Windows component store",
+    "glob": "%SystemRoot%\\WinSxS",
+    "match": "dir",
+    "kind": "system",
+    "command": "DISM /Online /Cleanup-Image /StartComponentCleanup",
+    "explain": "Windows' own components and the earlier versions updates replaced. Much of its apparent size is shared with the Windows folder; running the command as an administrator removes superseded versions."
+  }
+]

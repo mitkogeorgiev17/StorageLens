@@ -210,6 +210,10 @@ pub struct Rule {
     /// rule that is not deletable.
     #[serde(default)]
     pub selected: Option<bool>,
+    /// For a report-only rule: what the user can run or open to reclaim the
+    /// space themselves (`powercfg /h off`).
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 impl Rule {
