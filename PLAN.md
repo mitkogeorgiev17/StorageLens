@@ -335,23 +335,30 @@ from `MAX(id) + 1`); scans are serialized by the app.
 
 ```rust
 #[repr(C)]
-struct Node {          // 40 bytes
-    parent: i32,
-    first_child: i32,
-    next_sibling: i32,
-    size_alloc: i64,
-    name_offset: i32,  // into a shared string blob
-    flags: u16,        // kind | category | risk bits
+struct Node {             // 40 bytes, asserted at compile time
+    parent: u32,          // NIL (u32::MAX) for the root
+    first_child: u32,
+    next_sibling: u32,
+    name_offset: u32,     // into a shared string blob
+    size_alloc: u64,      // own bytes
+    total_alloc: u64,     // subtree bytes, filled by the rollup
+    kind: u8,
+    category: u8,         // index into Category::ALL
+    flags: u8,            // hard-link duplicate, later risk bits
+    _reserved: [u8; 5],
 }
 ```
 
-1M nodes ≈ 40 MB + ~30 MB string blob. The treemap lays out against this arena, never
-against SQLite, so zooming is instant.
+1M nodes ≈ 40 MB + ~30 MB string blob (measured: 76 MB including the logical-size and
+rollup arrays, loaded in 0.75 s). The treemap lays out against this arena, never
+against SQLite, so zooming is instant. Node `i` is SQL row `base_id + i`: the writer
+assigns one scan's ids contiguously in pre-order, which `Arena::load` verifies.
 
 ### Rollups
 
 Post-order DFS after the scan completes, writing `dir_rollup` in one transaction.
-1M rows in ~2–4 seconds. Recompute only for dirty subtrees on incremental refresh.
+Because ids are pre-order, one reverse pass over the arena is that post-order — no
+recursion. 1M rows: 0.13 s to write (release build). Recompute only for dirty subtrees on incremental refresh.
 
 ---
 
