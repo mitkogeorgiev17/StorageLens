@@ -32,12 +32,12 @@ fn the_fixture_run_passes_and_reports_json() {
     assert_eq!(report["schema_version"], 1);
     assert_eq!(
         report["backend"],
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", windows)) {
             "platform"
         } else {
             "reference"
         },
-        "the fixture run must exercise the shipped scanner on macOS"
+        "the fixture run must exercise the shipped scanner on macOS and Windows"
     );
     assert_eq!(report["fixture"]["ok"], true);
     assert!(report["files"].as_u64().expect("files") > 0);
