@@ -1078,6 +1078,16 @@ C:\Program Files\Foo\                          ← Windows
 Satellite matching is a **heuristic** (bundle-id / name substring). Label it
 "associated data (estimated)" and always require confirmation.
 
+**macOS implementation notes (#36).** `mdls` prints a `kMDItemLastUsedDate` even for
+a bundle Spotlight never saw launch — it falls back to the bundle's file dates — while
+`kMDItemUseCount` stays `(null)`. A date without a use count is discarded (→ `unknown`),
+or every old install would read as "unused". Satellites match on exact bundle id (plus
+the app name for Application Support and Caches); a group container matches when its
+name after the team prefix is the bundle id or below it; a path claimed by two apps goes
+to neither. Default handlers count only for content types, extensions and
+`http`/`https`/`mailto`, not an app's own URL scheme. Login items in
+`backgrounditems.btm` are not read.
+
 ### Never suggest removing
 
 - Anything in `/System/Applications` or with a `com.apple.` bundle id

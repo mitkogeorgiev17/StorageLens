@@ -27,6 +27,8 @@ pub mod parse;
 pub mod snapshots;
 
 #[cfg(target_os = "macos")]
+pub mod apps;
+#[cfg(target_os = "macos")]
 mod dedupe;
 #[cfg(target_os = "macos")]
 mod ffi;

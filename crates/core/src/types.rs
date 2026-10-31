@@ -463,20 +463,47 @@ pub struct PlatformTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppStatus {
-    /// Running now, or used within the last 30 days.
+    /// Used within 90 days, or protected by running / autostart / default-handler
+    /// / system evidence (PLAN §11).
     InUse,
-    /// Has usage signals, but old ones.
+    /// Last used 90–180 days ago, with no supporting evidence of use.
     LikelyUnused,
-    /// No usage signal at all, and metadata was readable.
+    /// Last used more than 180 days ago, and nothing else says it is in use.
     Unused,
     /// Metadata was missing or unreadable. Never treated as unused.
     Unknown,
 }
 
-/// An installed application, with its own footprint.
+/// What the platform says about an app's code signature.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Signature {
+    /// Signed, and the signature verifies.
+    Valid,
+    /// Signed, but verification failed (modified or damaged bundle).
+    Invalid,
+    /// Not signed at all.
+    Unsigned,
+    /// Could not be checked.
+    #[default]
+    Unknown,
+}
+
+/// Data an app left outside its bundle, matched by heuristic (PLAN §11).
 ///
-/// Satellite data (caches, containers, preferences) is added in M5; this is the
-/// minimum the `StorageScanner` trait needs.
+/// Always presented as "associated data (estimated)".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Satellite {
+    /// The satellite directory or file.
+    pub path: PathBuf,
+    /// Allocated bytes below `path`.
+    pub bytes: Bytes,
+}
+
+/// An installed application: its footprint and the raw usage evidence.
+///
+/// Scanners fill the evidence and leave `status` as [`AppStatus::Unknown`];
+/// `storagelens-analysis` classifies it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppInfo {
     /// Bundle identifier on macOS, uninstall key name on Windows.
@@ -493,6 +520,20 @@ pub struct AppInfo {
     pub last_used: Option<i64>,
     /// Usage classification.
     pub status: AppStatus,
+    /// Launch count, where the platform records one.
+    pub use_count: Option<u64>,
+    /// Code signature state.
+    pub signature: Signature,
+    /// A process is running from inside the app right now.
+    pub running: bool,
+    /// Referenced by a launch agent / daemon / autostart entry.
+    pub autostart: bool,
+    /// The current default handler for a file type or web/mail scheme.
+    pub default_handler: bool,
+    /// Ships with the OS (`/System/Applications`, `com.apple.*`). Never flagged.
+    pub system: bool,
+    /// Associated data outside the bundle.
+    pub satellites: Vec<Satellite>,
 }
 
 #[cfg(test)]

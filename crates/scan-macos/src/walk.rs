@@ -108,8 +108,10 @@ impl StorageScanner for MacScanner {
     }
 
     fn installed_apps(&self) -> Vec<AppInfo> {
-        // Discovered by the app-inventory work in M4 (#29+).
-        Vec::new()
+        match std::env::var_os("HOME") {
+            Some(home) => crate::apps::inventory(&crate::apps::Sources::for_home(home.as_ref())),
+            None => Vec::new(),
+        }
     }
 }
 
