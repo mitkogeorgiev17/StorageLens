@@ -226,6 +226,10 @@ Scanners do not return a `Vec<Entry>`. They stream entries into an `EntrySink`
 whole tree in memory before the first row reaches SQLite. `ScanResult` carries only the
 summary and the list of skipped directories.
 
+`Entry` carries only `parent`, not its own arena index, so the sink assigns indices in
+acceptance order. **Entries must therefore arrive in pre-order** — a parent before its
+children, root first — which is the order a depth-first walk already produces.
+
 ---
 
 ## 5. Data model
@@ -311,6 +315,11 @@ CREATE TABLE trash_log (
   restored_at   INTEGER
 );
 ```
+
+The catalog keeps one **read** connection. A scan writes through a second connection
+with its own batch transaction, so WAL keeps the UI reading the previous scan while the
+next one is being written. Only one writer may exist at a time (row ids are allocated
+from `MAX(id) + 1`); scans are serialized by the app.
 
 ### In-memory tree for rendering
 

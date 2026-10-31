@@ -277,6 +277,17 @@ impl ScanStatus {
             Self::Partial => "partial",
         }
     }
+
+    /// Parse a value read from SQLite.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "running" => Self::Running,
+            "complete" => Self::Complete,
+            "cancelled" => Self::Cancelled,
+            "partial" => Self::Partial,
+            _ => return None,
+        })
+    }
 }
 
 /// Why a directory was not descended into.
@@ -521,6 +532,15 @@ mod tests {
 
     #[test]
     fn status_and_skip_reasons_have_stable_names() {
+        for status in [
+            ScanStatus::Running,
+            ScanStatus::Complete,
+            ScanStatus::Cancelled,
+            ScanStatus::Partial,
+        ] {
+            assert_eq!(ScanStatus::from_name(status.as_str()), Some(status));
+        }
+        assert_eq!(ScanStatus::from_name("nope"), None);
         assert_eq!(ScanStatus::Partial.as_str(), "partial");
         assert_eq!(SkipReason::PermissionDenied.as_str(), "permission_denied");
         assert_eq!(SkipReason::SystemPath.as_str(), "system_path");

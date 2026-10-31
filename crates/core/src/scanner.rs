@@ -48,8 +48,18 @@ impl CancelToken {
 /// Scanners stream into a sink instead of returning a `Vec<Entry>`: a million
 /// entries would otherwise sit in RAM before the first row reached SQLite. The
 /// catalog crate implements this over a batched writer.
-pub trait EntrySink: Send {
+///
+/// Deliberately **not** `Send`: the sink lives on the scanner's single writer
+/// thread, and a `rusqlite::Connection` is `!Sync`, so requiring `Send` would make
+/// it impossible to implement this over a borrowed connection.
+pub trait EntrySink {
     /// Accept one entry. Called once per filesystem object.
+    ///
+    /// Entries must arrive in **pre-order**: a parent is accepted before its
+    /// children, and acceptance order is the arena order. `Entry` carries only
+    /// [`Entry::parent`], not its own index, so a sink that persists to SQLite
+    /// assigns indices sequentially and relies on this contract. The first entry
+    /// of a scan is its root, with `parent == 0`.
     fn accept(&mut self, entry: Entry) -> Result<()>;
 
     /// Flush anything buffered. Called once at the end of a scan, including a
