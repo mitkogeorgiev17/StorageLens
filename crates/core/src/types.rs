@@ -199,6 +199,9 @@ pub struct Volume {
     pub available: Bytes,
     /// macOS purgeable space (0 on Windows). Part of `available` in the Finder's
     /// arithmetic, which is why capacity gauges can disagree.
+    ///
+    /// 0 on macOS until the Foundation bridge in the app layer lands; `available`
+    /// from statfs already includes purgeable space as the OS reports it.
     pub purgeable: Bytes,
     /// Removable media.
     pub removable: bool,
