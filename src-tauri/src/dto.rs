@@ -17,7 +17,7 @@ use storagelens_core::{Category, EntryKind, ScanStatus};
 pub struct ScanStatusDto {
     pub scan_id: i64,
     pub status: ScanStatus,
-    /// The scanned path, when this app run started the scan.
+    /// The scanned path. `None` only for scans recorded before schema v2.
     pub root: Option<String>,
     pub files: u64,
     pub dirs: u64,
@@ -88,7 +88,8 @@ pub struct OverviewDto {
 pub struct FileRowDto {
     pub id: i64,
     pub name: String,
-    /// Full path when the root is known, otherwise relative to the root's name.
+    /// Full path. Relative to the root's name only for scans recorded before
+    /// schema v2, which stored no root.
     pub path: String,
     pub category: Category,
     pub size_alloc: u64,

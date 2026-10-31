@@ -92,9 +92,6 @@ pub struct AppState {
     catalog_path: PathBuf,
     catalog: Mutex<Catalog>,
     running: Mutex<Option<RunningScan>>,
-    /// Scanned paths, for scans started by this app run. The catalog stores only
-    /// the root's name, so older scans report paths relative to it.
-    roots: Mutex<HashMap<i64, PathBuf>>,
     /// The most recently used arena.
     arena: Mutex<Option<Arc<Arena>>>,
     /// Final results of scans finished in this run, for `elevated` and skips.
@@ -112,7 +109,6 @@ impl AppState {
             catalog_path,
             catalog: Mutex::new(catalog),
             running: Mutex::new(None),
-            roots: Mutex::new(HashMap::new()),
             arena: Mutex::new(None),
             results: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
@@ -149,8 +145,10 @@ impl AppState {
         Ok(lock(&self.running)?.as_ref().map(|running| running.scan_id))
     }
 
+    /// The scanned path, from the catalog. `None` only for sessions recorded
+    /// before schema v2 (#61).
     fn root_of(&self, scan_id: i64) -> Option<PathBuf> {
-        lock(&self.roots).ok()?.get(&scan_id).cloned()
+        self.session(scan_id).ok()?.root
     }
 }
 
@@ -242,7 +240,7 @@ pub fn start_scan(
     }
 
     let scan_id = lock(&state.catalog)?
-        .begin_session(platform, elevated_now())
+        .begin_session(platform, elevated_now(), &root)
         .map_err(|error| error.to_string())?;
     let cancel = CancelToken::new();
     let progress = Arc::new(Mutex::new(Progress::default()));
@@ -253,7 +251,6 @@ pub fn start_scan(
         progress: Arc::clone(&progress),
     });
     drop(running);
-    lock(&state.roots)?.insert(scan_id, root.clone());
 
     let thread_state = Arc::clone(state);
     let spawned = std::thread::Builder::new()
@@ -426,9 +423,7 @@ pub fn scan_status(state: &AppState, scan_id: i64) -> CommandResult<ScanStatusDt
     Ok(ScanStatusDto {
         scan_id,
         status: session.status,
-        root: state
-            .root_of(scan_id)
-            .map(|root| root.display().to_string()),
+        root: session.root.as_ref().map(|root| root.display().to_string()),
         files: session.files_seen,
         dirs: result.as_ref().map_or(0, |result| result.dirs),
         bytes_alloc: session.bytes_seen,
@@ -565,10 +560,13 @@ pub fn get_overview(state: &AppState, scan_id: i64) -> CommandResult<OverviewDto
     })
 }
 
-fn path_of(state: &AppState, arena: &Arena, scan_id: i64, index: NodeIndex) -> String {
-    let mut path = state
-        .root_of(scan_id)
-        .unwrap_or_else(|| PathBuf::from(arena.name(arena.root()).unwrap_or_default()));
+/// A node's full path under `root`, or under the root's name when the session
+/// predates schema v2 and has no recorded root.
+fn path_of(root: Option<&Path>, arena: &Arena, index: NodeIndex) -> String {
+    let mut path = root.map_or_else(
+        || PathBuf::from(arena.name(arena.root()).unwrap_or_default()),
+        Path::to_path_buf,
+    );
     for name in arena.path_names(index) {
         path.push(name);
     }
@@ -582,6 +580,8 @@ pub fn get_largest(
     cursor: Option<SizeCursorDto>,
 ) -> CommandResult<Page<FileRowDto, SizeCursorDto>> {
     let arena = state.arena(scan_id)?;
+    // One session read per page, not per row.
+    let root = state.root_of(scan_id);
     let rows = lock(&state.catalog)?
         .largest(
             scan_id,
@@ -606,7 +606,7 @@ pub fn get_largest(
         .map(|row| FileRowDto {
             path: arena
                 .index_of(row.id)
-                .map(|index| path_of(state, &arena, scan_id, index))
+                .map(|index| path_of(root.as_deref(), &arena, index))
                 .unwrap_or_else(|| row.name.clone()),
             id: row.id,
             name: row.name,
@@ -1064,6 +1064,35 @@ mod tests {
         );
         assert!(cancel_scan(&state, 41).is_ok());
         assert!(get_overview(&state, 41).is_err(), "no arena while running");
+    }
+
+    #[test]
+    fn paths_stay_absolute_after_a_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = tree(&dir);
+        let scan_id = {
+            let state = state(&dir);
+            scan(&state, &root).0
+        };
+
+        // A fresh state over the same catalog: nothing carried over in memory.
+        let reopened = state(&dir);
+        let status = scan_status(&reopened, scan_id).expect("status");
+        assert_eq!(
+            status.root.as_deref(),
+            Some(root.display().to_string().as_str())
+        );
+
+        let page = get_largest(&reopened, scan_id, 0, None).expect("largest");
+        assert_eq!(
+            page.items[0].path,
+            root.join("photos")
+                .join("2024")
+                .join("a.jpg")
+                .display()
+                .to_string(),
+            "the root comes from the catalog, not this run's memory"
+        );
     }
 
     #[test]
