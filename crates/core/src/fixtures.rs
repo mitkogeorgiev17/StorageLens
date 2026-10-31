@@ -534,10 +534,15 @@ impl Builder {
         let link = dir.join("loop");
 
         // `mklink /J` creates a junction without needing SeCreateSymbolicLink.
+        // Silence it: `cmd` prints "Junction created for ..." on stdout, which
+        // would corrupt `scanbench --json` when the harness generates fixtures.
         let status = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
             .arg(&link)
             .arg(&self.root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status();
 
         if let Ok(status) = status {
