@@ -1065,7 +1065,7 @@ Scanner first. If the numbers are wrong, nothing else matters.
 | # | Milestone | Deliverable | Est. |
 |---|---|---|---|
 | **M0** | Core + CLI | Cargo workspace, `Entry`, schema, migrations, `scanbench` | 3 days |
-| **M1** | macOS scanner | `getattrlistbulk` FFI, buffer parser, hard-link dedupe, firmlink skips, ≤2% vs `du -sxd` | 1 wk |
+| **M1** | macOS scanner | `getattrlistbulk` FFI, buffer parser, hard-link dedupe, firmlink skips, ≤2% vs `du -skx` | 1 wk |
 | **M2** | Windows scanner | `FindFirstFileExW` walk, junction skips, long paths, ≤2% vs `Get-ChildItem` | 1 wk |
 | **M3** | Catalog + treemap | Tree arena, rollups, Tauri shell, React treemap, breadcrumb, search | 1.5 wk |
 | **M3b** | Grouping views | Shared category table, tags, synthetic trees, grouping selector, filter chips | 4 days |
@@ -1081,7 +1081,7 @@ Scanner first. If the numbers are wrong, nothing else matters.
 - Day 2: `getattrlistbulk` FFI, open a directory, get raw bytes back.
 - Day 3: buffer parser + `stat(2)` cross-check test.
 - Day 4: `scanbench` walks `~/Documents`, prints count/size/time.
-- Day 5: compare against `du -sxd`, fix drift to ≤2%.
+- Day 5: compare against `du -skx`, fix drift to ≤2%.
 
 If week 1 ends with `scanbench` agreeing with `du` within 2%, the project is real.
 
@@ -1165,7 +1165,7 @@ The elapsed-time budget applies only to scans large enough to compare: `≤ 90 s
 
 | Platform | Compare against | Tolerance |
 |---|---|---|
-| macOS | `du -sxd`, `df -k` | ≤ 2% |
+| macOS | `du -skx`, `df -k` | ≤ 2% |
 | Windows | `Get-ChildItem -Recurse \| Measure-Object Length -Sum` | ≤ 2% |
 
 Exclusions from the comparison: snapshots, purgeable, clones/reflinks, pagefile, hiberfil,

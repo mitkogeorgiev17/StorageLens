@@ -201,7 +201,7 @@ adding complexity — and say so rather than quietly regressing.
   that catches it.
 - **Safety tests get 100% coverage:** symlink escape, TOCTOU, path traversal, bundle
   refusal, manifest write failure, undo with a missing Trash item.
-- **Accuracy gate:** `scanbench` within **2%** of `du -sxd` (macOS) /
+- **Accuracy gate:** `scanbench` within **2%** of `du -skx` (macOS) /
   `Get-ChildItem -Recurse` (Windows), excluding snapshots, purgeable, clones, pagefile.
 
 ---

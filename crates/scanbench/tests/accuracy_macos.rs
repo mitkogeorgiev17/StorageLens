@@ -8,7 +8,7 @@
 //!
 //! 1. The generated fixture tree must match its manifest **exactly** — file and
 //!    directory counts, symlinks, allocated bytes, logical bytes.
-//! 2. A generated 100k-file tree must match `du -sx` within **2%**.
+//! 2. A generated 100k-file tree must match `du -skx` within **2%**.
 //!
 //! `--reference` is also exercised, because a disagreement between the two
 //! backends is easier to bisect than a disagreement with `du`.
@@ -29,10 +29,9 @@
 //!
 //! macOS `du` reports 512-byte blocks by default; `-k` makes it 1024-byte blocks,
 //! and `-x` stops at filesystem boundaries. (BSD `du` treats `-s` and `-d depth`
-//! as mutually exclusive, so the `du -sxd` spelling in AGENTS.md exits 64;
-//! `-s` is `-d 0`.) `du` counts each hard-linked inode once,
-//! which is exactly the scanner's rule, and uses the same `st_blocks`/allocated
-//! size the scanner displays.
+//! as mutually exclusive, so `du -sxd` exits 64; `-s` already means `-d 0`.)
+//! `du` counts each hard-linked inode once, which is exactly the scanner's rule,
+//! and uses the same `st_blocks`/allocated size the scanner displays.
 //!
 //! `df -k` describes the whole volume, not the scanned subtree, so it is only used
 //! as an upper bound (a subtree cannot occupy more than its volume) and to fail
@@ -84,13 +83,13 @@ fn scan_bytes(path: &Path) -> u64 {
         .expect("allocated_bytes")
 }
 
-/// `du -sk PATH` in bytes.
+/// `du -skx PATH` in bytes.
 ///
 /// `-s` summarises, `-k` prints 1024-byte blocks, `-x` stays on one filesystem.
 /// A failure is a test bug, not a scanner result, so it panics with stderr.
 fn du_bytes(path: &Path) -> u64 {
     let output = Command::new("du")
-        .args(["-s", "-k", path.to_str().expect("utf-8 path")])
+        .args(["-s", "-k", "-x", path.to_str().expect("utf-8 path")])
         .output()
         .expect("run du");
     assert!(
