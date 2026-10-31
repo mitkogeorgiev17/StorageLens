@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 storagelens-core = { workspace = true }
 serde = { workspace = true }
+# Carries ScanOptions across the elevated relaunch (`elevation.rs`).
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

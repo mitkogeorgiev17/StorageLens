@@ -10,6 +10,9 @@
 //!   around it: the `FILE_ID_BOTH_DIR_INFO` record parser, `\\?\` path prefixes,
 //!   `FILETIME` conversion, and the attribute/reparse-tag rules.
 //! - `dedupe` — hard-link accounting on the NTFS file id. Pure.
+//! - [`registry`] — one startup pass over `HKEY_CLASSES_ROOT` that fills gaps
+//!   in the shared category table. Never called during a scan.
+//! - [`elevation`] — elevation state and the "relaunch elevated" flow.
 //! - `skip` — which directories the walker refuses to enter. Pure, so it is
 //!   tested on every runner.
 //! - [`walk`] / `writer` — the parallel walker behind [`WinScanner`] (Windows
@@ -28,6 +31,8 @@ mod skip;
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod dedupe;
+pub mod elevation;
+pub mod registry;
 #[cfg(windows)]
 pub mod walk;
 #[cfg(windows)]
