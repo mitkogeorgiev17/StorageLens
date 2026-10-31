@@ -175,6 +175,8 @@ export interface Filter {
   readonly categories?: readonly Category[];
   readonly minSize?: number;
   readonly olderThanDays?: number;
+  /** Only files inside this folder (an entry id). */
+  readonly within?: number;
 }
 
 export interface RuleGroupDto {

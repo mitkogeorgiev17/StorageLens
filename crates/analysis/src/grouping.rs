@@ -74,6 +74,8 @@ pub struct FileFilter {
     pub min_size: u64,
     /// Modified at or before this unix time. Files with no known time fail.
     pub modified_before: Option<i64>,
+    /// Only files inside this folder; `None` means the whole scan.
+    pub within: Option<NodeIndex>,
 }
 
 /// Everything a build reads. Only `arena` is required.
@@ -170,6 +172,13 @@ pub fn build(grouping: Grouping, input: &GroupingInput<'_>) -> SyntheticTree {
 fn admitted(input: &GroupingInput<'_>, index: NodeIndex) -> bool {
     let node = &input.arena.nodes()[index as usize];
     if !node.counts() || node.size_alloc < input.filter.min_size {
+        return false;
+    }
+    if input
+        .filter
+        .within
+        .is_some_and(|top| !input.arena.is_within(index, top))
+    {
         return false;
     }
     if !input.filter.categories.is_empty() && !input.filter.categories.contains(&node.category()) {

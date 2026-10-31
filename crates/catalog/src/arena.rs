@@ -333,6 +333,19 @@ impl Arena {
             .then_some(index as NodeIndex)
     }
 
+    /// Whether `index` is `top` or inside its subtree.
+    ///
+    /// Walks up from `index` and stops as soon as an ancestor's index drops
+    /// below `top`: parents always precede their children (see the module
+    /// docs), so nothing above that point can be `top`.
+    pub fn is_within(&self, index: NodeIndex, top: NodeIndex) -> bool {
+        let mut current = index;
+        while current != NIL && current > top {
+            current = self.node(current).map_or(NIL, |node| node.parent);
+        }
+        current == top
+    }
+
     /// Children of a node, in arena link order (see the module docs).
     pub fn children(&self, index: NodeIndex) -> Children<'_> {
         Children {

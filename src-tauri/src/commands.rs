@@ -687,7 +687,21 @@ fn grouping_tree(
     let times = cached_times(state, arena, scan_id)?;
     let root = state.root_of(scan_id);
     let now = now_unix();
+    let within = match filter.within {
+        None => None,
+        Some(id) => Some(
+            arena
+                .index_of(id)
+                .filter(|&index| {
+                    arena
+                        .node(index)
+                        .is_some_and(|node| node.kind() == EntryKind::Dir)
+                })
+                .ok_or_else(|| format!("folder {id} is not part of this scan"))?,
+        ),
+    };
     let file_filter = FileFilter {
+        within,
         categories: filter.categories.clone(),
         min_size: filter.min_size.unwrap_or(0),
         modified_before: filter
@@ -2150,6 +2164,30 @@ mod tests {
         )
         .expect("filtered");
         assert!(filtered.size_alloc >= 300_000 && filtered.size_alloc < total);
+
+        // "Within" a folder keeps only that folder's files, in any view.
+        let within = |id: i64| FilterDto {
+            within: Some(id),
+            ..FilterDto::default()
+        };
+        let in_photos = get_grouping(
+            &state,
+            scan_id,
+            Grouping::Type,
+            within(photos.id),
+            None,
+            None,
+        )
+        .expect("within photos");
+        assert_eq!(in_photos.size_alloc, photos.size_alloc);
+        let root_id = folders.id;
+        let everywhere = get_grouping(&state, scan_id, Grouping::Age, within(root_id), None, None)
+            .expect("within root");
+        assert_eq!(everywhere.size_alloc, total);
+        assert!(
+            get_grouping(&state, scan_id, Grouping::Type, within(-1), None, None).is_err(),
+            "a group id is not a folder"
+        );
 
         assert!(get_grouping(
             &state,

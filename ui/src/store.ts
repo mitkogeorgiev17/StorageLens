@@ -1,10 +1,12 @@
 /**
  * App state (AGENTS.md §8: zustand, no context spaghetti).
  *
- * Two things live here today:
+ * Three things live here today:
  *
  * - **The current route.** A desktop window has no address bar, so navigation is
- *   plain state rather than a router dependency.
+ *   plain state rather than a router dependency. `lib/history.ts` mirrors it,
+ *   and the Map's view, into the URL hash for back/forward.
+ * - **The Map's view** (#26): grouping and filters, kept across screens.
  * - **The scan session**, as an explicit state machine. The Tauri command
  *   surface (#18) drives it from backend events; screens only read it.
  *
@@ -13,6 +15,8 @@
  */
 
 import { create } from "zustand";
+
+import { DEFAULT_VIEW, type MapView } from "./lib/mapView.ts";
 
 /** Every screen in the sidebar, in display order. */
 export const ROUTE_IDS = [
@@ -82,9 +86,17 @@ export interface AppState {
   readonly route: RouteId;
   readonly scan: ScanState;
   readonly mapFocus: MapFocus | null;
+  readonly mapView: MapView;
   navigate(route: RouteId): void;
-  /** Go to the Map, showing `entryId` (a folder opened, a file selected). */
+  /**
+   * Go to the Map, showing `entryId` (a folder opened, a file selected) in the
+   * plain folder view: a filtered or grouped view might not contain it.
+   */
   showInMap(entryId: number, isDirectory: boolean): void;
+  /** Change the Map's view; with `openFolder`, open that folder in it. */
+  setMapView(view: MapView, openFolder?: number): void;
+  /** Back/forward: the screen and view a history entry recorded. */
+  restore(route: RouteId, view: MapView): void;
   /** The Map applied a focus request; clear it if it is still the current one. */
   mapFocusHandled(nonce: number): void;
   scanStarted(scanId: number, root: string): void;
@@ -98,14 +110,32 @@ export const useAppStore = create<AppState>()((set) => ({
   route: "overview",
   scan: { kind: "idle" },
   mapFocus: null,
+  mapView: DEFAULT_VIEW,
 
   navigate: (route) => set({ route }),
 
   showInMap: (entryId, isDirectory) =>
     set((state) => ({
       route: "map",
+      mapView: DEFAULT_VIEW,
       mapFocus: { entryId, isDirectory, nonce: (state.mapFocus?.nonce ?? 0) + 1 },
     })),
+
+  setMapView: (view, openFolder) =>
+    set((state) =>
+      openFolder === undefined
+        ? { mapView: view }
+        : {
+            mapView: view,
+            mapFocus: {
+              entryId: openFolder,
+              isDirectory: true,
+              nonce: (state.mapFocus?.nonce ?? 0) + 1,
+            },
+          },
+    ),
+
+  restore: (route, view) => set({ route, mapView: view }),
 
   mapFocusHandled: (nonce) =>
     set((state) => (state.mapFocus?.nonce === nonce ? { mapFocus: null } : state)),
@@ -117,7 +147,12 @@ export const useAppStore = create<AppState>()((set) => ({
     set((state) =>
       state.scan.kind === "done" && state.scan.summary.scanId === scanId
         ? state
-        : { scan: { kind: "scanning", scanId, root, progress: EMPTY_PROGRESS }, mapFocus: null },
+        : {
+            scan: { kind: "scanning", scanId, root, progress: EMPTY_PROGRESS },
+            mapFocus: null,
+            // A folder of the old scan means nothing in the new one.
+            mapView: { ...state.mapView, within: null },
+          },
     ),
 
   // Progress for a scan that is no longer running (a late event after
@@ -140,7 +175,7 @@ export const useAppStore = create<AppState>()((set) => ({
       },
     })),
 
-  reset: () => set({ scan: { kind: "idle" }, mapFocus: null }),
+  reset: () => set({ scan: { kind: "idle" }, mapFocus: null, mapView: DEFAULT_VIEW }),
 }));
 
 /** Whether a finished scan exists for screens to show. */

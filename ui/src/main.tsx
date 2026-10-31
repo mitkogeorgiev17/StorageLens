@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import App from "./App";
 import { api, bridgeScanEvents, toSummary } from "./lib/api";
+import { installHistory } from "./lib/history";
 import { useAppStore } from "./store";
 import "./styles.css";
 
@@ -34,6 +35,9 @@ connectBackend().catch((error: unknown) => {
   // Local console only — there is no telemetry (AGENTS.md §2.2).
   console.error("could not connect to the backend", error);
 });
+
+// Back/forward over screens and the Map's view (#26).
+installHistory();
 
 createRoot(container).render(
   <StrictMode>

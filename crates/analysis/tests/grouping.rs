@@ -457,6 +457,39 @@ fn filters_drop_files_from_every_grouping() {
     }
 }
 
+#[test]
+fn within_keeps_one_folders_files_and_composes_with_the_rest() {
+    let scan = volume();
+    // `Library` (8) holds 9..=18: the caches, the plist, and state.json.
+    let arena = &scan.arena;
+    assert!(arena.is_within(8, 8) && arena.is_within(18, 8) && arena.is_within(11, 8));
+    assert!(!arena.is_within(19, 8) && !arena.is_within(3, 8) && !arena.is_within(7, 8));
+    assert!((0..arena.len() as NodeIndex).all(|index| arena.is_within(index, 0)));
+
+    let only_library = FileFilter {
+        within: Some(8),
+        ..FileFilter::default()
+    };
+    for grouping in Grouping::ALL {
+        let tree = build(grouping, &input(&scan, &only_library, Path::new("/")));
+        let mut files: Vec<NodeIndex> = membership(&tree).into_keys().collect();
+        files.sort_unstable();
+        assert_eq!(files, vec![11, 13, 15, 18], "{grouping:?}");
+    }
+
+    let big_in_library = FileFilter {
+        within: Some(8),
+        min_size: GIB,
+        ..FileFilter::default()
+    };
+    let tree = build(
+        Grouping::Type,
+        &input(&scan, &big_in_library, Path::new("/")),
+    );
+    let files: Vec<NodeIndex> = membership(&tree).into_keys().collect();
+    assert_eq!(files, vec![11], "within AND size");
+}
+
 /// `cargo test --release -p storagelens-analysis --test grouping -- --ignored --nocapture`
 #[test]
 #[ignore = "benchmark: 1M nodes"]
@@ -505,15 +538,23 @@ fn one_million_nodes_group_in_under_100_ms_each() {
         ));
     }
     let scan = write(&rows);
-    let filter = FileFilter::default();
-    for grouping in Grouping::ALL {
-        let started = Instant::now();
-        let tree = build(grouping, &input(&scan, &filter, Path::new("/")));
-        let elapsed = started.elapsed();
-        println!(
-            "{grouping:?}: {} groups, {} files in {elapsed:?}",
-            tree.groups.len(),
-            tree.root().file_count
-        );
+    // `Library` (2): the worst case for `within`, since every file after it
+    // walks up until it passes the folder.
+    let whole = FileFilter::default();
+    let library = FileFilter {
+        within: Some(2),
+        ..FileFilter::default()
+    };
+    for (label, filter) in [("whole scan", &whole), ("within Library", &library)] {
+        for grouping in Grouping::ALL {
+            let started = Instant::now();
+            let tree = build(grouping, &input(&scan, filter, Path::new("/")));
+            let elapsed = started.elapsed();
+            println!(
+                "{label}, {grouping:?}: {} groups, {} files in {elapsed:?}",
+                tree.groups.len(),
+                tree.root().file_count
+            );
+        }
     }
 }
