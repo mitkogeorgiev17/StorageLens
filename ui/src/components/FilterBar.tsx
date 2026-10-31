@@ -8,8 +8,8 @@
  *   (switching away from the Folder view inside a folder does that); its ×
  *   widens the view to the whole scan.
  *
- * A cleanliness filter follows the cleanup rules (#31): until rules give files
- * a verdict, every file would be "Unclassified".
+ * There is no cleanliness chip: the Cleanliness grouping (#31) already splits
+ * files by the cleanup rules' verdict.
  */
 
 import { useEffect, useRef } from "react";

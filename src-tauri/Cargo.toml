@@ -27,6 +27,7 @@ serde_json = "=1.0.154"
 storagelens-core = { path = "../crates/core" }
 storagelens-catalog = { path = "../crates/catalog" }
 storagelens-analysis = { path = "../crates/analysis" }
+storagelens-safety = { path = "../crates/safety" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 storagelens-scan-macos = { path = "../crates/scan-macos" }

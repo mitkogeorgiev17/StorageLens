@@ -310,7 +310,7 @@ CREATE TABLE rule_hit (
   path       TEXT    NOT NULL,
   entry_id   INTEGER,
   bytes      INTEGER NOT NULL,
-  risk       TEXT    NOT NULL,        -- safe | review | never
+  risk       TEXT    NOT NULL,        -- safe | review | keep | never
   confidence REAL    NOT NULL,
   selected   INTEGER NOT NULL DEFAULT 0,
   UNIQUE(scan_id, rule_id, path)
@@ -901,6 +901,79 @@ risk_weight:  safe = 1.0   review = 0.5   never = 0
 
 Surfaced as one headline on the Overview: **"You can safely free ~X GB"**, split into
 *safe* and *needs review*. That number is the entire product.
+
+### Built (#31)
+
+The engine is in `storagelens_analysis::rules`, and the catalogs are in
+`crates/analysis/rules/*.json`, compiled in.
+
+**Schema additions** (all optional):
+- `glob` may be a list.
+- `match` is `dir`, `file` or `any`.
+- `when_sibling` / `when_child`: names that must sit beside / inside the match (e.g.
+  `Cargo.toml` beside `target`, `pyvenv.cfg` inside a venv), so a folder that only shares
+  the name never hits.
+- `risk` and `confidence` default from `kind`:
+
+  | kind | risk | confidence | selected |
+  |---|---|---|---|
+  | regenerable | safe | 0.95 | yes |
+  | stale | review | 0.8 | yes |
+  | duplicate | review | 0.9 | no |
+  | leftover | review | 0.6 | no |
+  | valuable | keep | 0.5 | no |
+  | system | never | 0 | never |
+
+- `action` defaults to `report` for `never`, otherwise `trash`.
+
+**Validation.** A rule is refused, with a reason, if:
+- it is `system` without `never`;
+- it is `never` with `trash`;
+- its confidence is outside 0–1;
+- a glob is relative (it must be absolute or start with `**/`);
+- a variable (`~`, `%NAME%`) is unset.
+
+The rest of the catalog still loads.
+
+**Globs.** `**`, `*`, `?` and `{a,b}` are supported, matched per component and ignoring
+ASCII case.
+
+**Staleness.** It uses the newest file mtime inside the match. With no known time,
+nothing is stale.
+
+**Safety, by construction:**
+- Every deletable hit passes `safety::Guard`. A deletable rule can never match a system
+  location, a protected home folder, or a bundle's insides; refused matches are listed,
+  not hit.
+- Hits reach deletion only as a `Candidate`, which a `never` or report-only rule cannot
+  produce.
+- **Consequence for #32/#33:** rules for places the guard protects must be report-only.
+  That covers Mail attachments (`~/Library/Mail`) and `$Recycle.Bin`.
+
+**Overlaps and the Reclaim score.**
+- A node hit by several rules takes the most cautious verdict.
+- A file's verdict is that of its nearest hit, which is what the Cleanliness view shows.
+- The score counts every byte once, at that hit, with `keep` weighted 0 like `never`.
+  Report-only hits count for nothing.
+
+**Hot reload.** `<catalog dir>/rules/*.json` is read on top of the built-ins; a rule with
+the same id replaces the built-in one. A fingerprint of that folder (names, sizes,
+mtimes) triggers re-evaluation on the next Cleanliness request. Each evaluation replaces
+the scan's `rule_hit` rows.
+
+**Speed.** One walk, with no path strings until a match: about 220 ms over 1M nodes with
+the built-in catalog.
+
+**Shared catalog (#31):**
+- `node_modules` (stale 90 d, beside `package.json`);
+- `__pycache__`;
+- `.venv`/`venv` (review, stale 90 d, containing `pyvenv.cfg`);
+- Rust `target` (stale 30 d, beside `Cargo.toml`);
+- `.next`;
+- `dist` (review, stale 90 d, beside `package.json`);
+- `~/.gradle/caches`.
+
+Duplicates and "files > 1 GB" are not glob rules; they come with the duplicate finder (M5).
 
 ---
 

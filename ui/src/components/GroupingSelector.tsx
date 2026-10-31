@@ -9,10 +9,9 @@
 import type { Grouping } from "../lib/api";
 import { GROUPINGS } from "../lib/mapView";
 
-/** Groupings that cannot show anything useful yet, and why. */
-const UNAVAILABLE: Partial<Record<Grouping, string>> = {
-  cleanliness: "Available once cleanup rules are built",
-};
+/** Groupings that cannot show anything useful yet, and why. Cleanliness
+ * became available with the cleanup rules (#31). */
+const UNAVAILABLE: Partial<Record<Grouping, string>> = {};
 
 export default function GroupingSelector({
   value,
