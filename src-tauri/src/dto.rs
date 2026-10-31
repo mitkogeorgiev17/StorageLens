@@ -388,10 +388,32 @@ pub struct CleanupProgressDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppRowDto {
+    /// Bundle id (macOS) or uninstall key (Windows).
+    pub id: String,
     pub name: String,
+    pub version: Option<String>,
+    /// Empty when Windows recorded no install directory.
     pub path: String,
-    pub bytes_alloc: u64,
+    pub app_bytes: u64,
+    /// Associated data: a heuristic, always shown as "estimated".
+    pub satellite_bytes: u64,
+    pub total_bytes: u64,
     pub last_used: Option<i64>,
+    pub use_count: Option<u64>,
+    /// `in_use` | `likely_unused` | `unused` | `unknown`.
+    pub status: storagelens_core::AppStatus,
+    pub running: bool,
+    pub autostart: bool,
+    pub default_handler: bool,
+    pub satellites: Vec<SatelliteDto>,
+}
+
+/// One associated-data path of an app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SatelliteDto {
+    pub path: String,
+    pub bytes: u64,
 }
 
 /// A set of identical files.

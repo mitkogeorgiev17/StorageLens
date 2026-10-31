@@ -53,6 +53,7 @@ fn main() {
             ipc::cancel_deletion,
             ipc::undo_deletion,
             ipc::list_apps,
+            ipc::preview_app_removal,
             ipc::find_duplicates,
             ipc::check_full_disk_access,
             ipc::open_full_disk_access_settings,

@@ -243,7 +243,8 @@ export default function CleanupScreen() {
   );
 }
 
-function ResultPanel({
+/** What a move did, with undo. Shared with the Apps screen. */
+export function ResultPanel({
   result,
   undone,
   busy,
