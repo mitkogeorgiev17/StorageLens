@@ -912,6 +912,34 @@ an exact byte total in `tests/rules_macos.rs`. Where it differs from the table a
 | WinSxS | `C:\Windows\WinSxS` | report (`DISM /Online /Cleanup-Image /StartComponentCleanup`) |
 | Windows Error Reporting | `%LOCALAPPDATA%\Microsoft\Windows\WER` | safe |
 
+**Built (#33).** `crates/analysis/rules/windows.json` has 18 rules, each with a fixture and
+an exact byte total in `tests/rules_windows.rs`. Where it differs from the table above:
+
+- **Report-only.** The path guard refuses everything inside `X:\Windows` (§15.4), and
+  these locations also need an administrator. So they are report-only, each with the
+  command that cleans it properly. Every report-only Windows rule carries a `command`
+  (new optional field):
+  - Windows temp, Update downloads and `Windows.old`: `cleanmgr /d C:` (Disk Cleanup;
+    for Windows.old, Clean up system files);
+  - Delivery Optimization: `Delete-DeliveryOptimizationCache -Force`;
+  - WinSxS: `DISM /Online /Cleanup-Image /StartComponentCleanup`;
+  - `hiberfil.sys`: `powercfg /h off`;
+  - `pagefile.sys`: `SystemPropertiesPerformance`;
+  - Recycle Bin: `Clear-RecycleBin`. StorageLens never empties the Recycle Bin, as
+    with the macOS Trash, because undo relies on it.
+- **Deletable rules** all live in the user's profile:
+  - temp (7 days);
+  - Chrome/Edge `Cache`, `Code Cache`, `GPUCache`, and Firefox `cache2`;
+  - old `exe`/`msi` downloads (review);
+  - crash dumps, WER reports, `thumbcache_*.db`;
+  - npm, pip, Cargo registry, NuGet packages.
+- **System32 safety.** Nothing inside `C:\Windows\System32` ever matches. A test runs
+  the catalog with `%TEMP%` pointing into System32 (as it does for the SYSTEM account):
+  the guard refuses the match.
+- **To verify on a real Windows machine:** the `trash` crate's Recycle Bin call passes
+  `FOF_WANTNUKEWARNING`, which should make Windows ask before permanently deleting an
+  item too large for the Recycle Bin.
+
 ### Shared catalog
 
 `node_modules`, `__pycache__`, `.venv`, `target/`, `.next/`, `dist/`, `.gradle/caches`,

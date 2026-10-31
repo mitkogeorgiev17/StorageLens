@@ -183,6 +183,7 @@
     "kind": "regenerable",
     "risk": "review",
     "action": "report",
+    "command": "docker system prune",
     "explain": "One sparse file holding every Docker image, container and volume; its real size on disk is usually far below its apparent size. Removing it would delete all of them, so StorageLens never offers to. Run docker system prune (see docker system df) to reclaim space inside it."
   },
   {
