@@ -13,17 +13,18 @@ name = "scanbench"
 path = "src/main.rs"
 
 [dependencies]
-storagelens-core = { workspace = true }
+# The fixture generator is part of `scanbench --fixtures`, so it is a real
+# (not dev-only) dependency of this binary.
+storagelens-core = { workspace = true, features = ["fixtures"] }
 storagelens-catalog = { workspace = true }
 storagelens-scan-macos = { workspace = true }
 storagelens-scan-windows = { workspace = true }
 storagelens-analysis = { workspace = true }
 storagelens-safety = { workspace = true }
 clap = { workspace = true }
+memory-stats = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

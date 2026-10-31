@@ -102,6 +102,8 @@ cargo test -p storagelens-core --features fixtures
 
 # Scanner validation (no UI) — the important one
 cargo run -p storagelens-scanbench --release -- ~/Documents
+cargo run -p storagelens-scanbench --release -- --fixtures   # exact counts + bytes
+cargo run -p storagelens-scanbench --release -- ~/Documents --budget  # exit 1 on a miss
 
 # UI only
 npm run typecheck
