@@ -124,8 +124,10 @@ pub fn largest(
 /// Allocated bytes and file counts per primary category.
 pub fn category_totals(conn: &Connection, scan_id: i64) -> Result<Vec<CategoryTotal>> {
     let mut statement = conn.prepare_cached(
+        // Hard-link duplicates keep their row (and their true size) so the path
+        // stays browsable, but they were already counted at their first path.
         "SELECT category, SUM(size_alloc), COUNT(*) FROM entries \
-         WHERE scan_id = ?1 AND kind = 1 \
+         WHERE scan_id = ?1 AND kind = 1 AND hardlink_dup = 0 \
          GROUP BY category",
     )?;
     let rows = statement.query_map(params![scan_id], |row| {

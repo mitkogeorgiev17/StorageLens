@@ -18,12 +18,15 @@
 //! does not depend on the size of the disk. When SQLite falls behind, workers block
 //! on `send` instead of growing the queue.
 //!
-//! # Known M1 gaps
+//! # Accounting
 //!
-//! Hard-link dedupe and the system-path skip list are issue #9. Directory rows have
-//! `size_alloc == 0` because `getattrlistbulk` has no directory-size attribute and
-//! APFS reports zero blocks for directories (`du` agrees), so no per-directory
-//! `stat` is needed.
+//! Directory rows have `size_alloc == 0` because `getattrlistbulk` has no
+//! directory-size attribute and APFS reports zero blocks for directories (`du`
+//! agrees), so no per-directory `stat` is needed.
+//!
+//! Hard links are deduped in the writer (see `dedupe.rs`), and directories are
+//! refused according to `skip.rs` before they are opened, so a skipped subtree
+//! costs no syscalls.
 
 use std::fs;
 use std::io;
@@ -41,6 +44,7 @@ use storagelens_core::{
 
 use crate::ffi::{throttle_current_thread, DirReader};
 use crate::parse::{ObjType, RawEntry};
+use crate::skip;
 use crate::writer::{self, Batch, Message};
 
 /// Upper bound on scan threads, per PLAN §6.5.
@@ -116,6 +120,8 @@ pub(crate) struct Shared {
     pub sender: SyncSender<Message>,
     /// Tasks spawned but not yet finished. Reaching zero means the walk is done.
     pub pending: AtomicUsize,
+    /// Device of the scan root, for the cross-filesystem rule.
+    pub root_dev: u32,
 }
 
 /// One directory for a worker to enumerate.
@@ -125,6 +131,8 @@ pub(crate) struct Task {
     pub id: u32,
     /// Depth below the scan root. The root is `0`.
     pub depth: u32,
+    /// Device the directory lives on, from the listing that produced it.
+    pub dev: u32,
 }
 
 /// Decrements the pending count even if a worker unwinds.
@@ -163,6 +171,7 @@ fn scan_root(
     })?;
     let kind = entry_kind(&metadata);
     let root_entry = entry_from_metadata(root, kind, &metadata);
+    let root_dev = root_entry.dev;
 
     let pool = ThreadPoolBuilder::new()
         .num_threads(pool_threads(options.threads))
@@ -176,6 +185,7 @@ fn scan_root(
         cancel: cancel.clone(),
         sender,
         pending: AtomicUsize::new(0),
+        root_dev,
     });
 
     let mut writer = writer::Writer::new(sink);
@@ -189,6 +199,7 @@ fn scan_root(
                 path: Arc::new(root.to_path_buf()),
                 id: 0,
                 depth: 0,
+                dev: root_dev,
             },
         );
     }
@@ -213,11 +224,15 @@ fn run_task(task: Task, shared: Arc<Shared>) {
     }
     throttle_current_thread();
 
-    if task.depth > 0 {
-        if let Some(reason) = skip_before_open(&task, &shared.options) {
-            report_skip(&shared, &task, reason);
-            return;
-        }
+    if let Some(reason) = skip::skip_reason(
+        &task.path,
+        task.depth,
+        task.dev,
+        shared.root_dev,
+        &shared.options,
+    ) {
+        report_skip(&shared, &task, reason);
+        return;
     }
 
     let reader = match DirReader::open(&*task.path) {
@@ -251,28 +266,6 @@ fn run_task(task: Task, shared: Arc<Shared>) {
     }
 
     send_batch(&shared, &task, &mut entries);
-}
-
-/// Apply the parts of [`ScanOptions`] that need no platform knowledge.
-///
-/// `skip_system` and the cross-filesystem rule are added by #9; the platform skip
-/// list lives there too so both can be tested together.
-fn skip_before_open(task: &Task, options: &ScanOptions) -> Option<SkipReason> {
-    if let Some(max_depth) = options.max_depth {
-        if task.depth > max_depth {
-            return Some(SkipReason::Other);
-        }
-    }
-
-    if options
-        .exclude
-        .iter()
-        .any(|excluded| task.path.starts_with(excluded))
-    {
-        return Some(SkipReason::Excluded);
-    }
-
-    None
 }
 
 fn send_batch(shared: &Shared, task: &Task, entries: &mut Vec<Entry>) {
@@ -328,6 +321,7 @@ fn entry_from_raw(task: &Task, raw: RawEntry) -> Entry {
         created: raw.created,
         modified: raw.modified,
         accessed: raw.accessed,
+        hardlink_dup: false,
     }
 }
 
@@ -348,6 +342,7 @@ fn entry_from_metadata(root: &Path, kind: EntryKind, metadata: &fs::Metadata) ->
         created: metadata.st_birthtime(),
         modified: metadata.mtime(),
         accessed: metadata.atime(),
+        hardlink_dup: false,
     }
 }
 

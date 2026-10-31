@@ -49,6 +49,7 @@ struct PendingRow {
     accessed: i64,
     category: &'static str,
     tags: i64,
+    hardlink_dup: bool,
 }
 
 /// A streaming [`EntrySink`] over a scan's `entries` table.
@@ -133,7 +134,7 @@ impl EntryWriter {
                     row.accessed,
                     row.category,
                     row.tags,
-                    0_i64,
+                    i64::from(row.hardlink_dup),
                 ])?;
             }
         }
@@ -192,6 +193,7 @@ impl EntryWriter {
             accessed: entry.accessed,
             category: category.as_str(),
             tags: Tags::from_category(category).bits() as i64,
+            hardlink_dup: entry.hardlink_dup,
         });
 
         if self.pending.len() >= self.batch_size {
@@ -249,6 +251,7 @@ mod tests {
             created: 1_700_000_000,
             modified: 1_700_000_100,
             accessed: 1_700_000_200,
+            hardlink_dup: false,
         }
     }
 
@@ -467,6 +470,49 @@ mod tests {
 
         let none = catalog.largest(scan_id, 1_000, None, 10).expect("filtered");
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn hardlink_duplicates_are_stored_but_excluded_from_totals() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (catalog, scan_id) = catalog_with_session(&dir);
+
+        let mut writer = catalog.writer(scan_id).expect("writer");
+        writer
+            .push(entry(0, "root", EntryKind::Dir, 0))
+            .expect("root");
+
+        let owner = entry(0, "photo.jpg", EntryKind::File, 300);
+        let mut duplicate = entry(0, "photo-copy.jpg", EntryKind::File, 300);
+        duplicate.dev = owner.dev;
+        duplicate.file_id = owner.file_id;
+        duplicate.nlink = 2;
+        duplicate.hardlink_dup = true;
+
+        writer.push(owner).expect("owner");
+        writer.push(duplicate).expect("duplicate");
+        writer.flush_batch().expect("flush");
+
+        let totals = catalog.category_totals(scan_id).expect("totals");
+        let images = totals
+            .iter()
+            .find(|total| total.category == Category::Images)
+            .expect("images");
+        assert_eq!(images.bytes_alloc, 300, "only the first name is counted");
+        assert_eq!(images.file_count, 1);
+
+        let children = catalog.children(scan_id, 1).expect("children");
+        let stored = children
+            .iter()
+            .find(|row| row.name == "photo-copy.jpg")
+            .expect("duplicate row is kept for browsing");
+        assert!(stored.hardlink_dup);
+        assert_eq!(stored.size_alloc, 300, "the row keeps its true size");
+        let owner_row = children
+            .iter()
+            .find(|row| row.name == "photo.jpg")
+            .expect("owner");
+        assert!(!owner_row.hardlink_dup);
     }
 
     #[test]

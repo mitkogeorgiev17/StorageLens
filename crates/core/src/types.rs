@@ -158,6 +158,14 @@ pub struct Entry {
     pub modified: i64,
     /// Last access time, unix seconds. Not a usage signal on Windows.
     pub accessed: i64,
+    /// True when this path is an additional hard link to an inode the scan already
+    /// counted. The row is kept — the path is real and browsable — but it must not
+    /// contribute to rollups or to [`ScanResult`](crate::ScanResult) totals.
+    ///
+    /// Scanners set this only for regular files with `nlink > 1`; "first path seen"
+    /// owns the bytes.
+    #[serde(default)]
+    pub hardlink_dup: bool,
 }
 
 impl Entry {
@@ -377,6 +385,17 @@ impl ScanResult {
     pub fn skipped_count(&self) -> usize {
         self.skipped.len()
     }
+
+    /// Number of skipped directories with `reason`.
+    ///
+    /// The UI groups skips by reason ("12 permission denied, 3 mount points"), so
+    /// the count is exposed here instead of making every caller re-implement it.
+    pub fn skipped_by(&self, reason: SkipReason) -> usize {
+        self.skipped
+            .iter()
+            .filter(|skipped| skipped.reason == reason)
+            .count()
+    }
 }
 
 /// A platform-specific cleanup location reported by the scanner.
@@ -449,6 +468,7 @@ mod tests {
             created: 1_700_000_000,
             modified: 1_700_000_100,
             accessed: 1_700_000_200,
+            hardlink_dup: false,
         }
     }
 

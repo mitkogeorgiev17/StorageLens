@@ -22,6 +22,7 @@ use storagelens_core::{
     ScanStatus, SkippedDir,
 };
 
+use crate::dedupe::Dedupe;
 use crate::walk::{self, Shared, Task};
 
 /// Entries accumulated by one worker before it hands them to the writer.
@@ -74,6 +75,7 @@ pub(crate) struct Writer<'a> {
     bytes_alloc: u64,
     bytes_logical: u64,
     skipped: Vec<SkippedDir>,
+    dedupe: Dedupe,
     last_dir: Option<Arc<PathBuf>>,
     last_progress: Instant,
 }
@@ -89,6 +91,7 @@ impl<'a> Writer<'a> {
             bytes_alloc: 0,
             bytes_logical: 0,
             skipped: Vec::new(),
+            dedupe: Dedupe::new(),
             last_dir: None,
             last_progress: Instant::now(),
         }
@@ -101,6 +104,10 @@ impl<'a> Writer<'a> {
     /// A file root is counted exactly like any other regular file.
     pub(crate) fn accept_root(&mut self, entry: Entry) -> Result<()> {
         debug_assert_eq!(entry.parent, 0, "the root is its own parent");
+        debug_assert!(
+            !entry.hardlink_dup,
+            "the scanner never marks the root as a hard-link duplicate"
+        );
         self.next_index = 1;
         if entry.kind == EntryKind::File {
             self.count(&entry);
@@ -240,16 +247,21 @@ impl<'a> Writer<'a> {
 
         self.last_dir = Some(Arc::clone(&dir));
 
-        for entry in entries {
+        for mut entry in entries {
             let index = self.next_index;
             self.next_index = self.next_index.checked_add(1).ok_or_else(|| {
                 ScanError::Other("more than u32::MAX entries in one scan".to_owned())
             })?;
 
+            // The first name accepted for an inode owns its bytes; later names keep
+            // their row and true size but are flagged.
+            entry.hardlink_dup = self.dedupe.is_duplicate(&entry);
+
             // Build the child path before the entry is moved into the sink, but only
             // for directories: files never need their path on this thread.
             let child_path =
                 (entry.kind == EntryKind::Dir && dispatch).then(|| Arc::new(dir.join(&entry.name)));
+            let child_dev = entry.dev;
 
             self.count(&entry);
             self.sink.accept(entry)?;
@@ -264,6 +276,7 @@ impl<'a> Writer<'a> {
                         path,
                         id: index,
                         depth: depth.saturating_add(1),
+                        dev: child_dev,
                     },
                 );
             }
@@ -277,8 +290,13 @@ impl<'a> Writer<'a> {
     ///
     /// Only regular files contribute bytes, matching the reference walker and the
     /// fixture manifest. Directories, links, and other objects are rows but not
-    /// disk usage. Hard-link dedupe lands in #9; until then every link name counts.
+    /// disk usage. A hard-link duplicate is skipped entirely: its inode was already
+    /// counted at the first path.
     fn count(&mut self, entry: &Entry) {
+        if entry.hardlink_dup {
+            return;
+        }
+
         match entry.kind {
             EntryKind::File => {
                 self.files = self.files.saturating_add(1);
