@@ -711,6 +711,7 @@ dependencies = [
  "serde_json",
  "storagelens-catalog",
  "storagelens-core",
+ "storagelens-safety",
  "tempfile",
  "thiserror",
  "tracing",

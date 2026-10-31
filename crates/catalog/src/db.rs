@@ -87,6 +87,16 @@ impl Catalog {
         collections::delete(&self.conn, id)
     }
 
+    /// Replace the cleanup-rule hits of `scan_id` (#31).
+    pub fn replace_rule_hits(&self, scan_id: i64, rows: &[crate::RuleHitRow]) -> Result<()> {
+        crate::rule_hits::replace(&self.conn, scan_id, rows)
+    }
+
+    /// The cleanup-rule hits of `scan_id`, biggest first.
+    pub fn rule_hits(&self, scan_id: i64) -> Result<Vec<crate::RuleHitRow>> {
+        crate::rule_hits::list(&self.conn, scan_id)
+    }
+
     /// Start a scan session and return its id.
     ///
     /// The session is created in `running` state with zero counters; call

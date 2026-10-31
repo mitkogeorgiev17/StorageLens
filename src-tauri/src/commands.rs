@@ -31,7 +31,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use storagelens_analysis::{FileFilter, SyntheticTree};
+use storagelens_analysis::rules::{evaluate, fingerprint, Context, Evaluation, RuleSet};
+use storagelens_analysis::{FileFilter, Risk, SyntheticTree};
 use storagelens_catalog::{
     file_order, modified_times, rollup, slice, Arena, Catalog, Collection, CollectionQuery,
     EntryWriter, FileSort, NodeIndex, Platform, ScanSession, SearchCursor, SizeCursor,
@@ -105,7 +106,17 @@ struct GroupingCache {
     scan_id: i64,
     by: Grouping,
     filter: FilterDto,
+    /// The rules evaluation a Cleanliness tree was built from.
+    rules: Option<u64>,
     tree: Arc<SyntheticTree>,
+}
+
+/// The cleanup rules' verdicts on one scan (#31), kept until the scan or the
+/// rules folder changes.
+struct RulesCache {
+    scan_id: i64,
+    fingerprint: u64,
+    evaluation: Arc<Evaluation>,
 }
 
 /// The scan currently running.
@@ -130,6 +141,7 @@ pub struct AppState {
     plans: Mutex<HashMap<String, DeletionPlanDto>>,
     listing: Mutex<Option<Listing>>,
     grouping: Mutex<Option<GroupingCache>>,
+    rules: Mutex<Option<RulesCache>>,
     next_plan: AtomicU64,
 }
 
@@ -146,6 +158,7 @@ impl AppState {
             plans: Mutex::new(HashMap::new()),
             listing: Mutex::new(None),
             grouping: Mutex::new(None),
+            rules: Mutex::new(None),
             next_plan: AtomicU64::new(1),
         })
     }
@@ -183,6 +196,15 @@ impl AppState {
     /// before schema v2 (#61).
     fn root_of(&self, scan_id: i64) -> Option<PathBuf> {
         self.session(scan_id).ok()?.root
+    }
+
+    /// User and developer rule catalogs, read beside the catalog database;
+    /// edited files are picked up on the next evaluation.
+    fn rules_dir(&self) -> PathBuf {
+        self.catalog_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("rules")
     }
 }
 
@@ -680,13 +702,22 @@ fn grouping_tree(
     by: Grouping,
     filter: &FilterDto,
 ) -> CommandResult<Arc<SyntheticTree>> {
+    let times = cached_times(state, arena, scan_id)?;
+    let root = state.root_of(scan_id);
+    let rules = match by {
+        Grouping::Cleanliness => rule_evaluation(state, arena, scan_id, root.as_deref(), &times)?,
+        _ => None,
+    };
+    let rules_key = rules.as_ref().map(|(key, _)| *key);
     if let Some(cached) = lock(&state.grouping)?.as_ref() {
-        if cached.scan_id == scan_id && cached.by == by && &cached.filter == filter {
+        if cached.scan_id == scan_id
+            && cached.by == by
+            && &cached.filter == filter
+            && cached.rules == rules_key
+        {
             return Ok(Arc::clone(&cached.tree));
         }
     }
-    let times = cached_times(state, arena, scan_id)?;
-    let root = state.root_of(scan_id);
     let now = now_unix();
     let within = match filter.within {
         None => None,
@@ -709,13 +740,17 @@ fn grouping_tree(
             .older_than_days
             .map(|days| now - i64::from(days) * DAY_SECONDS),
     };
+    let risk = rules
+        .as_ref()
+        .map(|(_, evaluation)| |index: NodeIndex| evaluation.risk_of(index));
     let input = storagelens_analysis::GroupingInput {
         arena,
         root_path: root.as_deref(),
         modified: Some(&times),
         now,
-        // Rule verdicts arrive with the rules engine (#31).
-        risk: None,
+        risk: risk
+            .as_ref()
+            .map(|risk| risk as &dyn Fn(NodeIndex) -> Option<Risk>),
         filter: &file_filter,
     };
     let kind = match by {
@@ -731,9 +766,86 @@ fn grouping_tree(
         scan_id,
         by,
         filter: filter.clone(),
+        rules: rules_key,
         tree: Arc::clone(&tree),
     });
     Ok(tree)
+}
+
+/// The user's home folder, from the environment.
+fn home_dir() -> Option<String> {
+    std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .ok()
+        .filter(|home| !home.is_empty())
+}
+
+/// What rule globs may name: `~`, and on Windows the usual folders.
+fn rules_context() -> Context {
+    let mut context = Context::new(storagelens_safety::Platform::CURRENT, home_dir().as_deref());
+    if cfg!(windows) {
+        for name in [
+            "LOCALAPPDATA",
+            "APPDATA",
+            "TEMP",
+            "USERPROFILE",
+            "SystemRoot",
+            "SystemDrive",
+            "ProgramData",
+        ] {
+            if let Ok(value) = std::env::var(name) {
+                context = context.with_var(name, &value);
+            }
+        }
+    }
+    context
+}
+
+/// The cleanup rules' verdicts on `scan_id`, with a key that changes when
+/// they are re-run. Re-run when the scan or the rules folder changes; each
+/// run replaces the scan's `rule_hit` rows. `None` for a scan with no
+/// recorded root (the engine matches absolute paths).
+fn rule_evaluation(
+    state: &AppState,
+    arena: &Arena,
+    scan_id: i64,
+    root: Option<&Path>,
+    times: &[i64],
+) -> CommandResult<Option<(u64, Arc<Evaluation>)>> {
+    let Some(root) = root.and_then(Path::to_str) else {
+        return Ok(None);
+    };
+    let dir = state.rules_dir();
+    let print = fingerprint(&dir);
+    if let Some(cached) = lock(&state.rules)?.as_ref() {
+        if cached.scan_id == scan_id && cached.fingerprint == print {
+            return Ok(Some((print, Arc::clone(&cached.evaluation))));
+        }
+    }
+    let context = rules_context();
+    let rules = RuleSet::load(&context, &dir);
+    for problem in &rules.problems {
+        eprintln!("cleanup rule skipped: {problem}");
+    }
+    let guard =
+        storagelens_safety::Guard::from_resolved(context.platform, root, context.home.as_deref())
+            .map_err(|refusal| format!("the scanned folder {root} cannot be cleaned: {refusal}"))?;
+    let evaluation = Arc::new(evaluate(
+        &rules,
+        arena,
+        root,
+        Some(times),
+        now_unix(),
+        &guard,
+    ));
+    lock(&state.catalog)?
+        .replace_rule_hits(scan_id, &evaluation.rows(arena))
+        .map_err(|error| error.to_string())?;
+    *lock(&state.rules)? = Some(RulesCache {
+        scan_id,
+        fingerprint: print,
+        evaluation: Arc::clone(&evaluation),
+    });
+    Ok(Some((print, evaluation)))
 }
 
 /// The id a group goes by: its folder's entry id when it stands for one
@@ -2493,5 +2605,71 @@ mod tests {
             not_built("Search", "#24"),
             "Search is not available yet (built in #24)"
         );
+    }
+
+    /// Bytes per Cleanliness bucket of `scan_id`.
+    fn cleanliness(state: &AppState, scan_id: i64) -> Vec<(String, u64)> {
+        let view = get_grouping(
+            state,
+            scan_id,
+            Grouping::Cleanliness,
+            FilterDto::default(),
+            None,
+            Some(1),
+        )
+        .expect("cleanliness");
+        view.children
+            .expect("expanded")
+            .into_iter()
+            .map(|child| (child.name, child.size_alloc))
+            .collect()
+    }
+
+    #[test]
+    fn cleanliness_follows_the_rules_and_reloads_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        fs::create_dir_all(root.join("tool/__pycache__")).expect("dirs");
+        fs::write(root.join("tool/__pycache__/m.pyc"), vec![4u8; 40_000]).expect("file");
+        let (scan_id, _) = scan(&state, &root);
+        let total = scan_status(&state, scan_id).expect("status").bytes_alloc;
+
+        let buckets = cleanliness(&state, scan_id);
+        let safe = buckets
+            .iter()
+            .find(|(name, _)| name == "Safe to remove")
+            .expect("safe")
+            .1;
+        assert!(safe >= 40_000, "{buckets:?}");
+        assert_eq!(buckets.iter().map(|(_, bytes)| bytes).sum::<u64>(), total);
+        let hits = lock(&state.catalog)
+            .expect("catalog")
+            .rule_hits(scan_id)
+            .expect("hits");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].rule_id, "dev.python_bytecode");
+        assert!(hits[0].path.ends_with("__pycache__"));
+
+        // A rule added to the rules folder applies on the next request.
+        fs::create_dir_all(state.rules_dir()).expect("rules dir");
+        fs::write(
+            state.rules_dir().join("mine.json"),
+            r#"[{"id": "mine.photos", "platform": "any", "title": "Photos", "glob": "**/photos",
+                 "kind": "valuable", "explain": "Test rule."}]"#,
+        )
+        .expect("rule");
+        let buckets = cleanliness(&state, scan_id);
+        assert!(
+            buckets
+                .iter()
+                .any(|(name, bytes)| name == "Keep" && *bytes >= 320_000),
+            "{buckets:?}"
+        );
+        let hits = lock(&state.catalog)
+            .expect("catalog")
+            .rule_hits(scan_id)
+            .expect("hits");
+        assert_eq!(hits.len(), 2, "re-running replaced the rows: {hits:?}");
     }
 }
