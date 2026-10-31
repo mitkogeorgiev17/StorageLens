@@ -1,8 +1,9 @@
 //! Safety-critical deletion machinery: path guards, Trash, manifests, undo.
 //!
 //! Every public function here is covered by a test (#35). The only code
-//! excluded from the coverage run is the one call that moves a real item to
-//! the real Trash ([`bin::SystemBin`]'s `trash`); tests never touch it.
+//! excluded from the coverage run is the OS glue no test may reach: the call
+//! that moves a real item to the real Trash, and the real volume lookup
+//! behind [`bin::SystemBin::new`]. Tests never touch either.
 //!
 //! - [`guard`] — may this path be touched at all? (#29)
 //! - [`preflight`] — is it still exactly what the scan saw? (#29)

@@ -7,10 +7,17 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use storagelens_safety::bin::SystemBin;
 use storagelens_safety::{Bin, Wanted};
 use storagelens_scan_macos::stamp;
+
+/// One made-up volume: everything under `base` is device 1; nothing else exists.
+fn temp_volume(base: &Path) -> storagelens_safety::bin::DeviceOf {
+    let base = base.to_path_buf();
+    Arc::new(move |path: &Path| path.starts_with(&base).then_some(1))
+}
 
 #[test]
 fn a_renamed_item_is_found_in_the_home_trash_and_put_back() {
@@ -25,7 +32,7 @@ fn a_renamed_item_is_found_in_the_home_trash_and_put_back() {
     // What the Trash does on a name collision.
     fs::rename(&original, trash.join("report 14-25-01.pdf")).expect("move");
 
-    let bin = SystemBin::new(&home);
+    let bin = SystemBin::with_devices(&home, temp_volume(&base));
     let wanted = [Wanted {
         original: &original,
         stamp: &scanned,
@@ -53,7 +60,7 @@ fn a_renamed_item_is_found_in_the_home_trash_and_put_back() {
 #[test]
 fn an_item_with_no_existing_folder_only_searches_the_home_trash() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let bin = SystemBin::new(dir.path());
+    let bin = SystemBin::with_devices(dir.path(), temp_volume(dir.path()));
     let scanned = stamp(dir.path()).expect("stamp");
     let original = Path::new("nowhere/at/all");
     let wanted = [Wanted {
@@ -95,18 +102,40 @@ fn the_real_trash_round_trips_a_temp_file() {
 
 #[test]
 fn the_volume_trash_is_at_the_top_of_the_item_volume() {
-    // `/dev` is its own filesystem: the climb stops below `/`. Read-only.
+    // Two made-up volumes inside a temp dir: `outer` holds `outer/Volume`,
+    // a separate device. Nothing outside the temp dir is looked at.
     let dir = tempfile::tempdir().expect("tempdir");
-    let bin = SystemBin::new(dir.path());
+    let outer = fs::canonicalize(dir.path()).expect("canonical");
+    let volume = outer.join("Volume");
+    let (outer_c, volume_c) = (outer.clone(), volume.clone());
+    let devices: storagelens_safety::bin::DeviceOf = Arc::new(move |path: &Path| {
+        if path.starts_with(&volume_c) {
+            Some(2)
+        } else if path.starts_with(&outer_c) {
+            Some(1)
+        } else {
+            None
+        }
+    });
+    let bin = SystemBin::with_devices(&outer, devices);
     let scanned = stamp(dir.path()).expect("stamp");
+    let original = volume.join("Projects/old/cache");
     let wanted = [Wanted {
-        original: Path::new("/dev/fd/storagelens-test"),
+        original: &original,
         stamp: &scanned,
         trashed_after: 0,
     }];
     let folders = bin.trash_folders(&wanted);
-    assert!(
-        folders.iter().any(|folder| folder.starts_with("/dev")),
-        "{folders:?}"
+    let uid = std::os::unix::fs::MetadataExt::uid(&fs::metadata(&outer).expect("meta"));
+    assert_eq!(
+        folders,
+        [
+            outer.join(".Trash"),
+            volume.join(".Trashes").join(uid.to_string())
+        ],
+        "the climb stops at the volume's top, not at the folder holding it"
     );
+    assert!(format!("{bin:?}").contains("SystemBin"));
+    // The real constructor builds the same thing, looking volumes up itself.
+    assert!(format!("{:?}", SystemBin::new(&outer)).contains(&outer.display().to_string()));
 }

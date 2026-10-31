@@ -224,6 +224,10 @@ adding complexity — and say so rather than quietly regressing.
   Measure with `cargo +nightly llvm-cov -p storagelens-safety --branch --summary-only`
   (needs `cargo install cargo-llvm-cov` and a nightly toolchain with `llvm-tools-preview`;
   nightly is used only for this run).
+  After changing `crates/safety`, also run `python3 scripts/safety-mutants.py`. It removes
+  each guard in turn and fails unless the tests catch every removal. Safety tests touch
+  only their own temp dirs; the single real-Trash round trip is an `#[ignore]`d test, run
+  by hand.
 - **Accuracy gate:** `scanbench` within **2%** of `du -skx` (macOS) /
   `Get-ChildItem -Recurse` (Windows), excluding snapshots, purgeable, clones, pagefile.
 

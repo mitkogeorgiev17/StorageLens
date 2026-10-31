@@ -72,7 +72,7 @@ pub fn restore_by_rename(location: &Path, original: &Path) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::SystemBin;
+pub use macos::{DeviceOf, SystemBin};
 #[cfg(windows)]
 pub use windows::SystemBin;
 
@@ -83,21 +83,50 @@ mod macos {
     use std::io;
     use std::os::unix::fs::MetadataExt;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
     use super::{locate_in, restore_by_rename};
     use crate::trash::{Bin, Wanted};
 
+    /// Which volume a path is on (`st_dev`), or `None` if it does not exist.
+    pub type DeviceOf = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
+
     /// The macOS Trash.
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     pub struct SystemBin {
         home: PathBuf,
+        device_of: DeviceOf,
+    }
+
+    impl std::fmt::Debug for SystemBin {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("SystemBin")
+                .field("home", &self.home)
+                .finish()
+        }
+    }
+
+    /// The real lookup: OS glue, like `trash` below, so tests (which never
+    /// look at real volumes) do not reach it.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn lstat_device(path: &Path) -> Option<u64> {
+        fs::symlink_metadata(path)
+            .ok()
+            .map(|metadata| metadata.dev())
     }
 
     impl SystemBin {
         /// The Trash of the user whose home is `home`.
         pub fn new(home: &Path) -> Self {
+            Self::with_devices(home, Arc::new(lstat_device))
+        }
+
+        /// The same, finding volumes with `device_of` instead of `lstat`, so
+        /// tests can describe volumes without touching real ones.
+        pub fn with_devices(home: &Path, device_of: DeviceOf) -> Self {
             Self {
                 home: home.to_path_buf(),
+                device_of,
             }
         }
 
@@ -106,7 +135,7 @@ mod macos {
             let uid = fs::metadata(&self.home).map(|m| m.uid()).unwrap_or(0);
             let mut folders = BTreeSet::from([self.home.join(".Trash")]);
             for item in wanted {
-                if let Some(volume) = volume_of(item.original) {
+                if let Some(volume) = volume_of(item.original, &*self.device_of) {
                     folders.insert(volume.join(".Trashes").join(uid.to_string()));
                 }
             }
@@ -115,16 +144,13 @@ mod macos {
     }
 
     /// The top folder on the same volume as `path`'s nearest existing ancestor.
-    fn volume_of(path: &Path) -> Option<PathBuf> {
+    fn volume_of(path: &Path, device_of: &dyn Fn(&Path) -> Option<u64>) -> Option<PathBuf> {
         let mut ancestors = path.ancestors().skip(1);
-        let (mut top, dev) = ancestors.find_map(|folder| {
-            fs::symlink_metadata(folder)
-                .ok()
-                .map(|m| (folder.to_path_buf(), m.dev()))
-        })?;
+        let (mut top, dev) = ancestors
+            .find_map(|folder| device_of(folder).map(|dev| (folder.to_path_buf(), dev)))?;
         for folder in top.clone().ancestors().skip(1) {
-            match fs::symlink_metadata(folder) {
-                Ok(metadata) if metadata.dev() == dev => top = folder.to_path_buf(),
+            match device_of(folder) {
+                Some(found) if found == dev => top = folder.to_path_buf(),
                 _ => break,
             }
         }
