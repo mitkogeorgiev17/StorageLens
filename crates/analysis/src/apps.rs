@@ -1,4 +1,4 @@
-//! macOS app classification (PLAN §11): evidence in, [`AppStatus`] out.
+//! App classification (PLAN §11): evidence in, [`AppStatus`] out.
 //!
 //! ```text
 //! unknown       = no last-used date               → never flagged
@@ -7,8 +7,10 @@
 //! unused        = last used > 180 days ago
 //! ```
 //!
-//! The scanner (`storagelens-scan-macos::apps`) supplies the evidence and
-//! already discards Spotlight dates that are file dates rather than launches.
+//! One table for both platforms; only the evidence differs. The scanners
+//! supply it: `storagelens-scan-macos::apps` (Spotlight, discarding dates that
+//! are file dates rather than launches) and `storagelens-scan-windows::apps`
+//! (Prefetch and UserAssist, never `LastAccessTime`).
 
 use storagelens_core::{AppInfo, AppStatus, Bytes};
 

@@ -1036,7 +1036,7 @@ Duplicates and "files > 1 GB" are not glob rules; they come with the duplicate f
 
 | Signal | macOS | Windows |
 |---|---|---|
-| Last used | Spotlight `kMDItemLastUsedDate`, `kMDItemUseCount` | `Amcache.hve`, Prefetch, `LastAccessTime` (often disabled) |
+| Last used | Spotlight `kMDItemLastUsedDate`, `kMDItemUseCount` | Prefetch, UserAssist (`Amcache.hve` and `LastAccessTime` not read — see notes) |
 | Installed | `mdfind` on `kMDItemContentType == 'com.apple.application-bundle'` | `HKLM/HKCU\...\Uninstall` (+ `Wow6432Node`) |
 | Running | `NSWorkspace.runningApplications` | `EnumProcesses` + image path |
 | Autostart | `launchctl list`, `~/Library/LaunchAgents`, `/Library/LaunchDaemons`, `backgrounditems.btm` | `Run` keys, Startup folder, `Task Scheduler` |
@@ -1087,6 +1087,19 @@ name after the team prefix is the bundle id or below it; a path claimed by two a
 to neither. Default handlers count only for content types, extensions and
 `http`/`https`/`mailto`, not an app's own URL scheme. Login items in
 `backgrounditems.btm` are not read.
+
+**Windows implementation notes (#37).** `Amcache.hve` is not read: the system holds
+the hive open exclusively (readable only from a shadow copy), and it records first
+execution rather than last use. Last use comes from Prefetch file times (admin only) and
+UserAssist (`HKCU`, run count + last-run `FILETIME` for shell-launched programs).
+`LastAccessTime` is never read. Prefetch names are matched to an app by the `*.exe`
+files directly in its install directory; a name two apps share (`update.exe`) is
+ignored. Install locations that are a drive root or a well-known parent (`Program
+Files`, `%LOCALAPPDATA%`, …) are rejected, falling back to `DisplayIcon`'s directory.
+Satellites are `<data root>\<dir name or display name>` and
+`<data root>\<publisher>\<…>`, never `<data root>\<publisher>` alone. An app installed
+inside another app's directory is counted in both. Classification is the same table
+for both platforms (`analysis::apps`).
 
 ### Never suggest removing
 
