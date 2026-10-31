@@ -1,17 +1,28 @@
-//! `FindFirstFileExW` directory enumeration and the pure rules around it.
+//! Bulk directory enumeration and the pure rules around it.
 //!
-//! Everything above the `#[cfg(windows)]` line is plain Rust over `u16` slices
-//! and integers, so the path, time, and classification rules are unit-tested on
-//! every CI runner. Only [`DirReader`] and the two small helpers below it touch
-//! Win32.
+//! Everything above the `#[cfg(windows)]` line is plain Rust over bytes, `u16`
+//! slices, and integers, so the record parser, path, time, and classification
+//! rules are unit-tested on every CI runner. Only [`DirReader`] and the small
+//! helpers below it touch Win32.
 //!
-//! # One call per directory, no per-file syscalls
+//! # One call per directory batch, no per-file syscalls
 //!
-//! `FindFirstFileExW` with `FindExInfoBasic` (no 8.3 short names) and
-//! `FIND_FIRST_EX_LARGE_FETCH` (a larger kernel buffer) returns name, attributes,
-//! logical size, the three timestamps, and — for reparse points — the reparse tag
-//! in `dwReserved0`. That is everything the walker needs to classify an entry and
-//! decide whether to descend, so AGENTS.md invariant 5 holds.
+//! The reader opens each directory once and calls
+//! `GetFileInformationByHandleEx(FileIdBothDirectoryInfo)` until it reports
+//! `ERROR_NO_MORE_FILES`. Each call fills a 64 KiB buffer with
+//! `FILE_ID_BOTH_DIR_INFO` records carrying the name, attributes, the three
+//! timestamps, logical size (`EndOfFile`), **allocated size**
+//! (`AllocationSize`), the **64-bit file id**, and — for reparse points — the
+//! reparse tag (in `EaSize`, per the Win32 docs). That is everything the walker
+//! needs for sizes and hard-link dedupe, so AGENTS.md invariant 5 holds. PLAN §7.1
+//! records why this replaced `FindFirstFileExW`, which has no file id.
+//!
+//! The one exception is compressed and sparse files. A directory record's
+//! `AllocationSize` describes the stream as if uncompressed and fully allocated,
+//! so for exactly those files — flagged by `FILE_ATTRIBUTE_COMPRESSED` /
+//! `FILE_ATTRIBUTE_SPARSE_FILE` in the same record — the walker asks
+//! `GetCompressedFileSizeW`. They are rare outside system folders, so the cost
+//! stays proportional to the files that need it.
 //!
 //! # Reparse points
 //!
@@ -33,18 +44,26 @@
 //! off Win32 path normalisation, so the walker only ever passes absolute,
 //! already-normalised paths built by joining names it enumerated itself.
 
-use std::ffi::OsString;
+use std::io;
 
 use storagelens_core::EntryKind;
 
 /// `FILE_ATTRIBUTE_DIRECTORY`.
 pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+/// `FILE_ATTRIBUTE_SPARSE_FILE`.
+pub const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x0000_0200;
 /// `FILE_ATTRIBUTE_REPARSE_POINT`.
 pub const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+/// `FILE_ATTRIBUTE_COMPRESSED`.
+pub const FILE_ATTRIBUTE_COMPRESSED: u32 = 0x0000_0800;
 /// `IO_REPARSE_TAG_MOUNT_POINT`: junctions and volume mount points.
 pub const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
 /// `IO_REPARSE_TAG_SYMLINK`: file and directory symbolic links.
 pub const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+
+/// Bytes per `GetFileInformationByHandleEx` call. 64 KiB is also the largest
+/// buffer SMB servers accept for a directory query.
+pub const DIR_INFO_BUFFER_BYTES: usize = 64 * 1024;
 
 /// `FILETIME` of 1970-01-01T00:00:00Z: 100 ns ticks since 1601-01-01.
 const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
@@ -55,22 +74,60 @@ const BACKSLASH: u16 = b'\\' as u16;
 const QUESTION: u16 = b'?' as u16;
 const DOT: u16 = b'.' as u16;
 
-/// One entry as `FindFirstFileExW` reported it.
+/// Byte offsets inside one `FILE_ID_BOTH_DIR_INFO` record.
+///
+/// The record is `#[repr(C)]` with 8-byte alignment; `ShortName` (12 × `u16`)
+/// starts at 70 after the `i8` length and one byte of padding, and `FileId` is
+/// padded up to 96. A wrong offset here silently corrupts every size, so a
+/// Windows-only test checks each one against `core::mem::offset_of!` on the
+/// `windows` crate's definition.
+pub mod layout {
+    /// `NextEntryOffset: u32`.
+    pub const NEXT_ENTRY_OFFSET: usize = 0;
+    /// `CreationTime: i64`.
+    pub const CREATION_TIME: usize = 8;
+    /// `LastAccessTime: i64`.
+    pub const LAST_ACCESS_TIME: usize = 16;
+    /// `LastWriteTime: i64`.
+    pub const LAST_WRITE_TIME: usize = 24;
+    /// `EndOfFile: i64` — the logical size.
+    pub const END_OF_FILE: usize = 40;
+    /// `AllocationSize: i64`.
+    pub const ALLOCATION_SIZE: usize = 48;
+    /// `FileAttributes: u32`.
+    pub const FILE_ATTRIBUTES: usize = 56;
+    /// `FileNameLength: u32`, in bytes.
+    pub const FILE_NAME_LENGTH: usize = 60;
+    /// `EaSize: u32`; the reparse tag when the entry is a reparse point.
+    pub const EA_SIZE: usize = 64;
+    /// `FileId: i64`.
+    pub const FILE_ID: usize = 96;
+    /// `FileName: [u16]`, not NUL-terminated.
+    pub const FILE_NAME: usize = 104;
+}
+
+/// One entry from a `FILE_ID_BOTH_DIR_INFO` record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawEntry {
-    /// The name, exactly as stored. Not necessarily valid Unicode.
-    pub name: OsString,
-    /// `dwFileAttributes`.
+    /// The name as UTF-16 code units, exactly as stored. Not necessarily valid
+    /// Unicode: NTFS allows unpaired surrogates.
+    pub name: Vec<u16>,
+    /// `FileAttributes`.
     pub attributes: u32,
-    /// `dwReserved0` when the entry is a reparse point, otherwise `0`.
+    /// `EaSize` when the entry is a reparse point, otherwise `0`.
     pub reparse_tag: u32,
-    /// `nFileSizeHigh:nFileSizeLow` — the logical size.
-    pub size: u64,
-    /// `ftCreationTime` in `FILETIME` ticks.
+    /// `EndOfFile` — the logical size.
+    pub size_logical: u64,
+    /// `AllocationSize` — bytes on disk, except for compressed and sparse files
+    /// (see [`needs_compressed_size`]).
+    pub size_alloc: u64,
+    /// `FileId` — the NTFS file reference number.
+    pub file_id: u64,
+    /// `CreationTime` in `FILETIME` ticks.
     pub created: u64,
-    /// `ftLastWriteTime` in `FILETIME` ticks.
+    /// `LastWriteTime` in `FILETIME` ticks.
     pub modified: u64,
-    /// `ftLastAccessTime` in `FILETIME` ticks. Often stale: Windows disables
+    /// `LastAccessTime` in `FILETIME` ticks. Often stale: Windows disables
     /// last-access updates by default.
     pub accessed: u64,
 }
@@ -84,8 +141,7 @@ impl RawEntry {
 
 /// Classify an entry from its attributes and reparse tag.
 ///
-/// The `FindExInfoBasic` listing cannot distinguish devices, pipes, or sockets
-/// from files, and NTFS does not store them in directories anyway, so there is no
+/// NTFS does not store devices, pipes, or sockets in directories, so there is no
 /// [`EntryKind::Other`] here.
 pub fn kind_of(attributes: u32, reparse_tag: u32) -> EntryKind {
     if is_link(attributes, reparse_tag) {
@@ -104,6 +160,12 @@ pub fn is_link(attributes: u32, reparse_tag: u32) -> bool {
             reparse_tag,
             IO_REPARSE_TAG_SYMLINK | IO_REPARSE_TAG_MOUNT_POINT
         )
+}
+
+/// Whether a file's directory-record `AllocationSize` is not its size on disk,
+/// so `GetCompressedFileSizeW` must be asked instead.
+pub fn needs_compressed_size(attributes: u32) -> bool {
+    attributes & (FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_SPARSE_FILE) != 0
 }
 
 /// Join the two halves of a 64-bit Win32 value.
@@ -126,13 +188,80 @@ pub fn is_dot_entry(name: &[u16]) -> bool {
     matches!(name, [DOT] | [DOT, DOT])
 }
 
-/// The part of a NUL-terminated buffer before its first NUL.
-pub fn until_nul(buffer: &[u16]) -> &[u16] {
-    let end = buffer
-        .iter()
-        .position(|&unit| unit == 0)
-        .unwrap_or(buffer.len());
-    &buffer[..end]
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn read_u32(buffer: &[u8], at: usize) -> u32 {
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(&buffer[at..at + 4]);
+    u32::from_le_bytes(bytes)
+}
+
+fn read_u64(buffer: &[u8], at: usize) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&buffer[at..at + 8]);
+    u64::from_le_bytes(bytes)
+}
+
+/// Parse the chain of `FILE_ID_BOTH_DIR_INFO` records at the start of `buffer`,
+/// appending every entry except `.` and `..` to `out`.
+///
+/// The API does not report how many bytes it wrote, so the chain is followed by
+/// `NextEntryOffset` until a record whose offset is `0`. Every offset and length
+/// is bounds-checked before it is read: a malformed buffer is an error, never a
+/// panic and never a wrong size.
+pub fn parse_dir_info(buffer: &[u8], out: &mut Vec<RawEntry>) -> io::Result<()> {
+    let mut offset = 0usize;
+    loop {
+        let record = buffer
+            .get(offset..)
+            .filter(|record| record.len() >= layout::FILE_NAME)
+            .ok_or_else(|| invalid("directory record header runs past the buffer"))?;
+
+        let next = read_u32(record, layout::NEXT_ENTRY_OFFSET) as usize;
+        let name_bytes = read_u32(record, layout::FILE_NAME_LENGTH) as usize;
+        if name_bytes % 2 != 0 {
+            return Err(invalid("directory record name has an odd byte length"));
+        }
+        let name_end = layout::FILE_NAME
+            .checked_add(name_bytes)
+            .filter(|&end| end <= record.len())
+            .ok_or_else(|| invalid("directory record name runs past the buffer"))?;
+        if next != 0 && next < name_end {
+            return Err(invalid("directory records overlap"));
+        }
+
+        let name: Vec<u16> = record[layout::FILE_NAME..name_end]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+
+        if !is_dot_entry(&name) {
+            let attributes = read_u32(record, layout::FILE_ATTRIBUTES);
+            let reparse_tag = if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                read_u32(record, layout::EA_SIZE)
+            } else {
+                0
+            };
+            out.push(RawEntry {
+                name,
+                attributes,
+                reparse_tag,
+                size_logical: read_u64(record, layout::END_OF_FILE),
+                size_alloc: read_u64(record, layout::ALLOCATION_SIZE),
+                file_id: read_u64(record, layout::FILE_ID),
+                created: read_u64(record, layout::CREATION_TIME),
+                modified: read_u64(record, layout::LAST_WRITE_TIME),
+                accessed: read_u64(record, layout::LAST_ACCESS_TIME),
+            });
+        }
+
+        if next == 0 {
+            return Ok(());
+        }
+        offset += next;
+    }
 }
 
 /// Whether `path` already carries a `\\?\` or `\\.\` prefix.
@@ -181,15 +310,11 @@ pub fn strip_verbatim(path: &[u16]) -> Vec<u16> {
     }
 }
 
-/// The NUL-terminated `dir\*` pattern `FindFirstFileExW` expects, verbatim.
-pub fn search_pattern(dir: &[u16]) -> Vec<u16> {
-    let mut pattern = verbatim(dir);
-    if pattern.last() != Some(&BACKSLASH) {
-        pattern.push(BACKSLASH);
-    }
-    pattern.push(b'*' as u16);
-    pattern.push(0);
-    pattern
+/// [`verbatim`] plus the terminating NUL Win32 expects.
+pub fn verbatim_c(path: &[u16]) -> Vec<u16> {
+    let mut out = verbatim(path);
+    out.push(0);
+    out
 }
 
 /// A Win32 error code from an `HRESULT`, when it wraps one.
@@ -208,29 +333,48 @@ pub const fn win32_code(hresult: i32) -> Option<u32> {
     }
 }
 
+/// What the scan needs to know about the root's volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeInfo {
+    /// Volume serial number, used as every entry's `dev`.
+    pub serial: u32,
+    /// The filesystem is NTFS.
+    ///
+    /// Only NTFS guarantees that the 64-bit `FileId` is unique on the volume.
+    /// ReFS ids are 128-bit, so the low 64 bits may collide; FAT and exFAT have
+    /// no stable ids and no hard links. Deduping on anything but NTFS could merge
+    /// two different files.
+    pub ntfs: bool,
+}
+
+/// Whether a filesystem name, as `GetVolumeInformationW` reports it, is NTFS.
+pub fn is_ntfs(name: &[u16]) -> bool {
+    String::from_utf16_lossy(name).eq_ignore_ascii_case("NTFS")
+}
+
 #[cfg(windows)]
-pub use sys::{throttle_current_thread, volume_serial, DirReader};
+pub use sys::{compressed_size, throttle_current_thread, volume_info, DirReader};
 
 #[cfg(windows)]
 mod sys {
-    use std::ffi::OsString;
     use std::io;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
-        GetVolumeInformationW, GetVolumePathNameW, FIND_FIRST_EX_LARGE_FETCH, WIN32_FIND_DATAW,
+        CreateFileW, FileIdBothDirectoryInfo, GetCompressedFileSizeW, GetFileInformationByHandleEx,
+        GetVolumeInformationW, GetVolumePathNameW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, INVALID_FILE_SIZE, OPEN_EXISTING,
     };
     use windows::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
     };
 
     use super::{
-        is_dot_entry, join_u32, search_pattern, until_nul, verbatim, win32_code, RawEntry,
-        FILE_ATTRIBUTE_REPARSE_POINT,
+        is_ntfs, join_u32, parse_dir_info, verbatim_c, win32_code, RawEntry, VolumeInfo,
+        DIR_INFO_BUFFER_BYTES,
     };
 
     fn wide(path: &Path) -> Vec<u16> {
@@ -244,80 +388,84 @@ mod sys {
         }
     }
 
-    fn is_code(error: &windows::core::Error, code: u32) -> bool {
-        win32_code(error.code().0) == Some(code)
-    }
-
-    fn raw_entry(data: &WIN32_FIND_DATAW) -> RawEntry {
-        let reparse_tag = if data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            data.dwReserved0
-        } else {
-            0
-        };
-        let ticks = |time: windows::Win32::Foundation::FILETIME| {
-            join_u32(time.dwHighDateTime, time.dwLowDateTime)
-        };
-
-        RawEntry {
-            name: OsString::from_wide(until_nul(&data.cFileName)),
-            attributes: data.dwFileAttributes,
-            reparse_tag,
-            size: join_u32(data.nFileSizeHigh, data.nFileSizeLow),
-            created: ticks(data.ftCreationTime),
-            modified: ticks(data.ftLastWriteTime),
-            accessed: ticks(data.ftLastAccessTime),
-        }
-    }
-
     /// Streams the entries of one directory, skipping `.` and `..`.
     ///
-    /// Owns the find handle and closes it on drop, so a walker that stops early
-    /// (cancellation, an error in a later entry) never leaks it.
+    /// Owns the directory handle and closes it on drop, so a walker that stops
+    /// early (cancellation, a later error) never leaks it.
     pub struct DirReader {
         handle: HANDLE,
-        data: WIN32_FIND_DATAW,
-        /// `data` holds an entry not yet yielded.
-        pending: bool,
+        /// 8-byte aligned, as `FILE_ID_BOTH_DIR_INFO` requires.
+        buffer: Vec<u64>,
+        /// Parsed entries not yet yielded, in reverse order so `pop` is cheap.
+        pending: Vec<RawEntry>,
         done: bool,
     }
 
     impl DirReader {
         /// Open `dir` for enumeration.
         ///
-        /// `dir` must be absolute and normalised; see [`verbatim`].
+        /// `dir` must be absolute and normalised; see [`super::verbatim`].
         pub fn open(dir: &Path) -> io::Result<Self> {
-            let pattern = search_pattern(&wide(dir));
-            let mut data = WIN32_FIND_DATAW::default();
+            let path = verbatim_c(&wide(dir));
 
-            // SAFETY: `pattern` is NUL-terminated and outlives the call; `data` is a
-            // valid, writable WIN32_FIND_DATAW, which is what `FindExInfoBasic`
-            // fills. The search filter must be null for `FindExSearchNameMatch`.
-            let opened = unsafe {
-                FindFirstFileExW(
-                    PCWSTR(pattern.as_ptr()),
-                    FindExInfoBasic,
-                    (&mut data as *mut WIN32_FIND_DATAW).cast(),
-                    FindExSearchNameMatch,
+            // SAFETY: `path` is NUL-terminated and outlives the call. Opening a
+            // directory requires FILE_FLAG_BACKUP_SEMANTICS; FILE_LIST_DIRECTORY is
+            // the only right the query needs, and full sharing never blocks other
+            // processes.
+            let handle = unsafe {
+                CreateFileW(
+                    PCWSTR(path.as_ptr()),
+                    FILE_LIST_DIRECTORY.0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     None,
-                    FIND_FIRST_EX_LARGE_FETCH,
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                    None,
+                )
+            }
+            .map_err(|error| io_error(&error))?;
+
+            Ok(Self {
+                handle,
+                buffer: vec![0u64; DIR_INFO_BUFFER_BYTES / 8],
+                pending: Vec::new(),
+                done: false,
+            })
+        }
+
+        /// Fetch and parse the next batch of records.
+        fn refill(&mut self) -> io::Result<()> {
+            let bytes = (self.buffer.len() * 8) as u32;
+            // SAFETY: `handle` is the live directory handle opened above, and
+            // `buffer` is a writable, 8-byte aligned allocation of `bytes` bytes,
+            // which is the size passed. The kernel writes at most that many.
+            let filled = unsafe {
+                GetFileInformationByHandleEx(
+                    self.handle,
+                    FileIdBothDirectoryInfo,
+                    self.buffer.as_mut_ptr().cast(),
+                    bytes,
                 )
             };
 
-            match opened {
-                Ok(handle) => Ok(Self {
-                    handle,
-                    data,
-                    pending: true,
-                    done: false,
-                }),
-                // No entry matched `*`. Only a volume root can be this empty (other
-                // directories always list `.` and `..`), but it is not an error.
-                Err(error) if is_code(&error, ERROR_FILE_NOT_FOUND.0) => Ok(Self {
-                    handle: HANDLE::default(),
-                    data,
-                    pending: false,
-                    done: true,
-                }),
+            match filled {
+                Ok(()) => {
+                    // SAFETY: reinterpreting the initialised u64 buffer as bytes;
+                    // u8 has no alignment or validity requirements.
+                    let bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            self.buffer.as_ptr().cast::<u8>(),
+                            self.buffer.len() * 8,
+                        )
+                    };
+                    parse_dir_info(bytes, &mut self.pending)?;
+                    self.pending.reverse();
+                    Ok(())
+                }
+                Err(error) if win32_code(error.code().0) == Some(ERROR_NO_MORE_FILES.0) => {
+                    self.done = true;
+                    Ok(())
+                }
                 Err(error) => Err(io_error(&error)),
             }
         }
@@ -328,27 +476,16 @@ mod sys {
 
         fn next(&mut self) -> Option<Self::Item> {
             loop {
-                if self.pending {
-                    self.pending = false;
-                    if !is_dot_entry(until_nul(&self.data.cFileName)) {
-                        return Some(Ok(raw_entry(&self.data)));
-                    }
+                if let Some(entry) = self.pending.pop() {
+                    return Some(Ok(entry));
                 }
                 if self.done {
                     return None;
                 }
-
-                // SAFETY: `handle` is the live find handle returned by
-                // `FindFirstFileExW` (`done` is false, so it was opened and has not
-                // been closed), and `data` is a valid, writable WIN32_FIND_DATAW.
-                match unsafe { FindNextFileW(self.handle, &mut self.data) } {
-                    Ok(()) => self.pending = true,
-                    Err(error) => {
-                        self.done = true;
-                        if !is_code(&error, ERROR_NO_MORE_FILES.0) {
-                            return Some(Err(io_error(&error)));
-                        }
-                    }
+                if let Err(error) = self.refill() {
+                    // The handle's position is unknown after a failure.
+                    self.done = true;
+                    return Some(Err(error));
                 }
             }
         }
@@ -356,16 +493,26 @@ mod sys {
 
     impl Drop for DirReader {
         fn drop(&mut self) {
-            // `is_invalid` covers both null (the empty-volume case) and
-            // INVALID_HANDLE_VALUE.
-            if self.handle.is_invalid() {
-                return;
-            }
-            // SAFETY: the handle came from `FindFirstFileExW`, is closed exactly
-            // once (here), and is never used afterwards. A failure leaves nothing
-            // to recover.
-            let _ = unsafe { FindClose(self.handle) };
+            // SAFETY: the handle came from `CreateFileW`, is closed exactly once
+            // (here), and is never used afterwards. A failure leaves nothing to
+            // recover.
+            let _ = unsafe { CloseHandle(self.handle) };
         }
+    }
+
+    /// Bytes on disk for a compressed or sparse file, or `None` if the query fails.
+    pub fn compressed_size(path: &Path) -> Option<u64> {
+        let path = verbatim_c(&wide(path));
+        let mut high = 0u32;
+        // SAFETY: `path` is NUL-terminated and outlives the call; `high` is a
+        // valid, writable u32.
+        let low = unsafe { GetCompressedFileSizeW(PCWSTR(path.as_ptr()), Some(&mut high)) };
+        // INVALID_FILE_SIZE is also a valid low half; only the thread's last error
+        // tells them apart, so read it before anything else can overwrite it.
+        if low == INVALID_FILE_SIZE && io::Error::last_os_error().raw_os_error() != Some(0) {
+            return None;
+        }
+        Some(join_u32(high, low))
     }
 
     /// Lower this thread's CPU and I/O priority for the rest of its life.
@@ -380,23 +527,23 @@ mod sys {
         let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
     }
 
-    /// The serial number of the volume holding `path`, used as the entry `dev`.
+    /// Serial number and filesystem of the volume holding `path`.
     ///
     /// Called once per scan, not per entry. `None` when the volume cannot be
     /// queried (some network redirectors refuse).
-    pub fn volume_serial(path: &Path) -> Option<u32> {
-        let mut path_wide = verbatim(&wide(path));
-        path_wide.push(0);
+    pub fn volume_info(path: &Path) -> Option<VolumeInfo> {
+        let path = verbatim_c(&wide(path));
 
         // Long enough for any volume GUID path or drive root.
         let mut volume = [0u16; 1024];
-        // SAFETY: `path_wide` is NUL-terminated and outlives the call; the output
-        // slice carries its own length.
-        unsafe { GetVolumePathNameW(PCWSTR(path_wide.as_ptr()), &mut volume) }.ok()?;
+        // SAFETY: `path` is NUL-terminated and outlives the call; the output slice
+        // carries its own length.
+        unsafe { GetVolumePathNameW(PCWSTR(path.as_ptr()), &mut volume) }.ok()?;
 
         let mut serial = 0u32;
-        // SAFETY: `volume` is NUL-terminated by the previous call; `serial` is a
-        // valid, writable u32 and every other output is omitted.
+        let mut filesystem = [0u16; 64];
+        // SAFETY: `volume` was NUL-terminated by the previous call; `serial` is a
+        // valid, writable u32 and the name slice carries its own length.
         unsafe {
             GetVolumeInformationW(
                 PCWSTR(volume.as_ptr()),
@@ -404,11 +551,19 @@ mod sys {
                 Some(&mut serial),
                 None,
                 None,
-                None,
+                Some(&mut filesystem),
             )
         }
         .ok()?;
-        Some(serial)
+
+        let end = filesystem
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(filesystem.len());
+        Some(VolumeInfo {
+            serial,
+            ntfs: is_ntfs(&filesystem[..end]),
+        })
     }
 }
 
@@ -422,6 +577,186 @@ mod tests {
 
     fn s(units: &[u16]) -> String {
         String::from_utf16(units).expect("valid utf-16")
+    }
+
+    /// One record's worth of fields, for building test buffers.
+    #[derive(Clone)]
+    struct Record {
+        name: Vec<u16>,
+        attributes: u32,
+        ea_size: u32,
+        size_logical: u64,
+        size_alloc: u64,
+        file_id: u64,
+        created: u64,
+        modified: u64,
+        accessed: u64,
+    }
+
+    fn record(name: &str) -> Record {
+        Record {
+            name: w(name),
+            attributes: 0x20,
+            ea_size: 0,
+            size_logical: 5,
+            size_alloc: 8,
+            file_id: 42,
+            created: 1,
+            modified: 2,
+            accessed: 3,
+        }
+    }
+
+    /// Lay records out the way the kernel does: 8-byte aligned, chained by
+    /// `NextEntryOffset`, the last one `0`, trailing garbage after it.
+    fn buffer(records: &[Record]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (index, record) in records.iter().enumerate() {
+            let start = out.len();
+            let length = layout::FILE_NAME + record.name.len() * 2;
+            let padded = length.next_multiple_of(8);
+            out.resize(start + padded, 0);
+
+            let put32 = |out: &mut Vec<u8>, at: usize, value: u32| {
+                out[start + at..start + at + 4].copy_from_slice(&value.to_le_bytes());
+            };
+            let put64 = |out: &mut Vec<u8>, at: usize, value: u64| {
+                out[start + at..start + at + 8].copy_from_slice(&value.to_le_bytes());
+            };
+
+            let next = if index + 1 == records.len() {
+                0
+            } else {
+                padded
+            };
+            put32(&mut out, layout::NEXT_ENTRY_OFFSET, next as u32);
+            put64(&mut out, layout::CREATION_TIME, record.created);
+            put64(&mut out, layout::LAST_ACCESS_TIME, record.accessed);
+            put64(&mut out, layout::LAST_WRITE_TIME, record.modified);
+            put64(&mut out, layout::END_OF_FILE, record.size_logical);
+            put64(&mut out, layout::ALLOCATION_SIZE, record.size_alloc);
+            put32(&mut out, layout::FILE_ATTRIBUTES, record.attributes);
+            put32(
+                &mut out,
+                layout::FILE_NAME_LENGTH,
+                (record.name.len() * 2) as u32,
+            );
+            put32(&mut out, layout::EA_SIZE, record.ea_size);
+            put64(&mut out, layout::FILE_ID, record.file_id);
+            for (offset, unit) in record.name.iter().enumerate() {
+                let at = start + layout::FILE_NAME + offset * 2;
+                out[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+            }
+        }
+        out.extend([0xAB; 64]);
+        out
+    }
+
+    fn parse(bytes: &[u8]) -> io::Result<Vec<RawEntry>> {
+        let mut out = Vec::new();
+        parse_dir_info(bytes, &mut out).map(|()| out)
+    }
+
+    #[test]
+    fn records_are_parsed_field_by_field() {
+        let entries = parse(&buffer(&[record("a.txt")])).expect("parse");
+        assert_eq!(
+            entries,
+            vec![RawEntry {
+                name: w("a.txt"),
+                attributes: 0x20,
+                reparse_tag: 0,
+                size_logical: 5,
+                size_alloc: 8,
+                file_id: 42,
+                created: 1,
+                modified: 2,
+                accessed: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_chain_is_followed_and_dot_entries_are_dropped() {
+        let mut second = record("Фото-📷.jpg");
+        second.file_id = 7;
+        let entries =
+            parse(&buffer(&[record("."), record(".."), record("a"), second])).expect("parse");
+        let names: Vec<String> = entries.iter().map(|entry| s(&entry.name)).collect();
+        assert_eq!(names, ["a", "Фото-📷.jpg"]);
+        assert_eq!(entries[1].file_id, 7);
+    }
+
+    #[test]
+    fn the_reparse_tag_is_read_only_for_reparse_points() {
+        let mut junction = record("loop");
+        junction.attributes = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        junction.ea_size = IO_REPARSE_TAG_MOUNT_POINT;
+        let mut plain = record("plain");
+        plain.ea_size = 99; // A real EA size, not a tag.
+
+        let entries = parse(&buffer(&[junction, plain])).expect("parse");
+        assert_eq!(entries[0].reparse_tag, IO_REPARSE_TAG_MOUNT_POINT);
+        assert_eq!(entries[0].kind(), EntryKind::Symlink);
+        assert_eq!(entries[1].reparse_tag, 0);
+        assert_eq!(entries[1].kind(), EntryKind::File);
+    }
+
+    #[test]
+    fn a_255_unit_name_and_large_values_round_trip() {
+        let mut long = record(&"n".repeat(255));
+        long.size_logical = u64::MAX - 1;
+        long.size_alloc = 1 << 40;
+        long.file_id = 0x0001_0000_0000_0005; // sequence number in the high bits
+        let entries = parse(&buffer(&[long.clone()])).expect("parse");
+        assert_eq!(entries[0].name.len(), 255);
+        assert_eq!(entries[0].size_logical, long.size_logical);
+        assert_eq!(entries[0].size_alloc, long.size_alloc);
+        assert_eq!(entries[0].file_id, long.file_id);
+    }
+
+    #[test]
+    fn malformed_buffers_are_errors_not_panics() {
+        // Too short for a header.
+        assert!(parse(&[0u8; layout::FILE_NAME - 1]).is_err());
+
+        // Name length past the end.
+        let mut bytes = buffer(&[record("abc")]);
+        bytes[layout::FILE_NAME_LENGTH..layout::FILE_NAME_LENGTH + 4]
+            .copy_from_slice(&10_000u32.to_le_bytes());
+        assert!(parse(&bytes).is_err());
+
+        // Odd name length.
+        let mut bytes = buffer(&[record("abc")]);
+        bytes[layout::FILE_NAME_LENGTH..layout::FILE_NAME_LENGTH + 4]
+            .copy_from_slice(&5u32.to_le_bytes());
+        assert!(parse(&bytes).is_err());
+
+        // Next record past the end.
+        let mut bytes = buffer(&[record("a"), record("b")]);
+        bytes[0..4].copy_from_slice(&1_000_000u32.to_le_bytes());
+        assert!(parse(&bytes).is_err());
+
+        // Next offset pointing back into the current record's name.
+        let mut bytes = buffer(&[record("abcdef"), record("b")]);
+        bytes[0..4].copy_from_slice(&(layout::FILE_NAME as u32).to_le_bytes());
+        assert!(parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn only_compressed_and_sparse_files_need_the_extra_query() {
+        assert!(!needs_compressed_size(0x20));
+        assert!(needs_compressed_size(FILE_ATTRIBUTE_COMPRESSED));
+        assert!(needs_compressed_size(FILE_ATTRIBUTE_SPARSE_FILE | 0x20));
+    }
+
+    #[test]
+    fn only_ntfs_ids_are_trusted() {
+        assert!(is_ntfs(&w("NTFS")));
+        assert!(is_ntfs(&w("ntfs")));
+        assert!(!is_ntfs(&w("ReFS")));
+        assert!(!is_ntfs(&w("FAT32")));
+        assert!(!is_ntfs(&w("exFAT")));
     }
 
     #[test]
@@ -467,7 +802,6 @@ mod tests {
 
     #[test]
     fn a_link_tag_without_the_reparse_attribute_is_ignored() {
-        // `dwReserved0` is only meaningful when the attribute is set.
         assert_eq!(
             kind_of(FILE_ATTRIBUTE_DIRECTORY, IO_REPARSE_TAG_MOUNT_POINT),
             EntryKind::Dir
@@ -510,14 +844,6 @@ mod tests {
     }
 
     #[test]
-    fn names_stop_at_the_first_nul() {
-        let mut buffer = [0u16; 8];
-        buffer[..3].copy_from_slice(&w("abc"));
-        assert_eq!(until_nul(&buffer), w("abc").as_slice());
-        assert_eq!(until_nul(&w("full")), w("full").as_slice());
-    }
-
-    #[test]
     fn drive_and_unc_paths_gain_the_right_prefix() {
         assert_eq!(s(&verbatim(&w(r"C:\Users\me"))), r"\\?\C:\Users\me");
         assert_eq!(s(&verbatim(&w(r"C:\"))), r"\\?\C:\");
@@ -530,6 +856,9 @@ mod tests {
             s(&verbatim(&w(r"\\.\PhysicalDrive0"))),
             r"\\.\PhysicalDrive0"
         );
+        let terminated = verbatim_c(&w(r"C:\x"));
+        assert_eq!(terminated.last(), Some(&0));
+        assert_eq!(s(&terminated[..terminated.len() - 1]), r"\\?\C:\x");
     }
 
     #[test]
@@ -539,16 +868,6 @@ mod tests {
         }
         assert_eq!(s(&strip_verbatim(&w(r"D:\plain"))), r"D:\plain");
         assert_eq!(s(&strip_verbatim(&w(r"\\.\C:"))), r"\\.\C:");
-    }
-
-    #[test]
-    fn the_search_pattern_is_verbatim_wildcarded_and_terminated() {
-        let pattern = search_pattern(&w(r"C:\data"));
-        assert_eq!(pattern.last(), Some(&0));
-        assert_eq!(s(until_nul(&pattern)), r"\\?\C:\data\*");
-
-        // A volume root already ends in a separator.
-        assert_eq!(s(until_nul(&search_pattern(&w(r"C:\")))), r"\\?\C:\*");
     }
 
     #[test]
@@ -566,5 +885,26 @@ mod tests {
         assert_eq!(win32_code(0x8007_0012_u32 as i32), Some(18));
         // E_FAIL is not a Win32 code.
         assert_eq!(win32_code(0x8000_4005_u32 as i32), None);
+    }
+
+    /// The hand-written offsets must match the real struct, or every size is
+    /// silently wrong (AGENTS.md §10).
+    #[cfg(windows)]
+    #[test]
+    fn layout_matches_the_windows_definition() {
+        use core::mem::offset_of;
+        use windows::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO as Info;
+
+        assert_eq!(offset_of!(Info, NextEntryOffset), layout::NEXT_ENTRY_OFFSET);
+        assert_eq!(offset_of!(Info, CreationTime), layout::CREATION_TIME);
+        assert_eq!(offset_of!(Info, LastAccessTime), layout::LAST_ACCESS_TIME);
+        assert_eq!(offset_of!(Info, LastWriteTime), layout::LAST_WRITE_TIME);
+        assert_eq!(offset_of!(Info, EndOfFile), layout::END_OF_FILE);
+        assert_eq!(offset_of!(Info, AllocationSize), layout::ALLOCATION_SIZE);
+        assert_eq!(offset_of!(Info, FileAttributes), layout::FILE_ATTRIBUTES);
+        assert_eq!(offset_of!(Info, FileNameLength), layout::FILE_NAME_LENGTH);
+        assert_eq!(offset_of!(Info, EaSize), layout::EA_SIZE);
+        assert_eq!(offset_of!(Info, FileId), layout::FILE_ID);
+        assert_eq!(offset_of!(Info, FileName), layout::FILE_NAME);
     }
 }

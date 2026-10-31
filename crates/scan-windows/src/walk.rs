@@ -1,8 +1,8 @@
-//! Parallel `FindFirstFileExW` walker for the Windows scanner.
+//! Parallel bulk-directory-query walker for the Windows scanner.
 //!
 //! One thread — the caller's — owns the [`EntrySink`] (it is `!Send`) and acts as
 //! both writer and dispatcher. A fixed rayon pool enumerates directories, one
-//! `FindFirstFileExW` handle per task, and streams [`Entry`] values back in
+//! directory handle per task (see `ffi`), and streams [`Entry`] values back in
 //! batches; the writer accepts them in arrival order, assigns arena indices, and
 //! submits a task for every directory it accepts. A child directory therefore
 //! cannot produce a row before its own row has been accepted. See `writer.rs`.
@@ -21,13 +21,17 @@
 //! unreadable; they are reported as "not scanned", never silently left out of the
 //! total (PLAN §7.3).
 //!
-//! # Not yet
+//! # Sizes and identity (#13)
 //!
-//! Sizes and identity are filled from the listing only. Until #13:
-//!
-//! - `size_alloc` equals the logical size. Correct for ordinary NTFS files, wrong
-//!   for compressed and sparse ones, which need `GetCompressedFileSizeW`.
-//! - `file_id` is `0` and `nlink` is `1`, so hard links are counted per name.
+//! - `size_alloc` is the record's `AllocationSize`, or `GetCompressedFileSizeW`
+//!   for the compressed and sparse files whose record overstates it (see `ffi`).
+//!   That query is the only per-file syscall, and only flagged files pay it.
+//! - `file_id` is the NTFS file reference number and `dev` the volume serial.
+//!   Hard links are deduped on it in the writer (see `dedupe.rs`) — on NTFS only,
+//!   where the 64-bit id is guaranteed unique.
+//! - `nlink` is not in the bulk listing. It is `1` until a second name for the
+//!   same id is seen; that name is flagged `hardlink_dup` and given `nlink = 2`
+//!   ("at least two"), which keeps core's "duplicates have `nlink > 1`" rule.
 
 use std::fs;
 use std::io;
@@ -46,7 +50,8 @@ use storagelens_core::{
 };
 
 use crate::ffi::{
-    self, filetime_to_unix, kind_of, strip_verbatim, throttle_current_thread, DirReader, RawEntry,
+    self, compressed_size, filetime_to_unix, kind_of, needs_compressed_size, strip_verbatim,
+    throttle_current_thread, DirReader, RawEntry, VolumeInfo,
 };
 use crate::skip::Rules;
 use crate::writer::{self, Batch, Item, Message};
@@ -130,6 +135,15 @@ pub(crate) struct Shared {
     /// Serial number of the scan root's volume. Reparse points are never
     /// followed, so every entry lives on this volume.
     pub root_dev: u32,
+    /// The root volume is NTFS; see [`VolumeInfo::ntfs`].
+    pub ntfs: bool,
+}
+
+impl Shared {
+    /// Whether file ids on this volume are unique, so hard links may be deduped.
+    pub(crate) fn dedupe_ids(&self) -> bool {
+        self.ntfs
+    }
 }
 
 /// One directory for a worker to enumerate.
@@ -186,7 +200,13 @@ fn scan_root(
         path: root.to_path_buf(),
         source,
     })?;
-    let root_dev = ffi::volume_serial(root).unwrap_or(0);
+    let VolumeInfo {
+        serial: root_dev,
+        ntfs,
+    } = ffi::volume_info(root).unwrap_or(VolumeInfo {
+        serial: 0,
+        ntfs: false,
+    });
     let root_entry = entry_from_metadata(root, &metadata, root_dev);
     let is_dir = root_entry.kind == EntryKind::Dir;
 
@@ -204,6 +224,7 @@ fn scan_root(
         sender,
         pending: AtomicUsize::new(0),
         root_dev,
+        ntfs,
     });
 
     let mut writer = writer::Writer::new(sink);
@@ -311,19 +332,32 @@ fn io_skip_reason(error: &io::Error) -> SkipReason {
 
 fn item_from_raw(task: &Task, root_dev: u32, raw: RawEntry) -> Item {
     let kind = raw.kind();
-    let path = (kind == EntryKind::Dir).then(|| task.path.join(&raw.name));
-    // NTFS reports zero for directories; links carry no data of their own.
-    let size = if kind == EntryKind::File { raw.size } else { 0 };
+    let name = std::ffi::OsString::from_wide(&raw.name);
+    let path = (kind == EntryKind::Dir).then(|| task.path.join(&name));
+
+    // Only regular files have sizes that count. Directories and links keep their
+    // rows but report zero, matching the macOS scanner.
+    let (size_alloc, size_logical) = if kind == EntryKind::File {
+        let alloc = if needs_compressed_size(raw.attributes) {
+            // A failed query keeps the record's figure rather than dropping the
+            // file's bytes; it overstates, never hides.
+            compressed_size(&task.path.join(&name)).unwrap_or(raw.size_alloc)
+        } else {
+            raw.size_alloc
+        };
+        (alloc, raw.size_logical)
+    } else {
+        (0, 0)
+    };
 
     let entry = Entry {
         parent: task.id,
-        name: raw.name.to_string_lossy().into_owned(),
+        name: name.to_string_lossy().into_owned(),
         kind,
-        // Placeholder until #13 adds GetCompressedFileSizeW; see the module docs.
-        size_alloc: size,
-        size_logical: size,
+        size_alloc,
+        size_logical,
         dev: root_dev,
-        file_id: 0,
+        file_id: raw.file_id,
         nlink: 1,
         attrs: raw.attributes,
         created: filetime_to_unix(raw.created),
@@ -343,12 +377,20 @@ fn entry_from_metadata(root: &Path, metadata: &fs::Metadata, root_dev: u32) -> E
     } else {
         0
     };
+    // A file root is a one-off, so one extra query is fine. For an ordinary file
+    // `GetCompressedFileSizeW` returns the logical size, not the cluster-rounded
+    // allocation; only the scan's children carry exact `AllocationSize` figures.
+    let alloc = if kind == EntryKind::File {
+        compressed_size(root).unwrap_or(size)
+    } else {
+        0
+    };
 
     Entry {
         parent: 0,
         name: root_name(root),
         kind,
-        size_alloc: size,
+        size_alloc: alloc,
         size_logical: size,
         dev: root_dev,
         file_id: 0,

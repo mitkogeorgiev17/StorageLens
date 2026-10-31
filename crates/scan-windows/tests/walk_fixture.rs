@@ -1,19 +1,21 @@
-//! End-to-end tests for the Windows walker (#12).
+//! End-to-end tests for the Windows walker (#12, #13).
 //!
-//! The fixture tree from [`storagelens_core::fixtures`] is the input. Two
-//! independent oracles check the result:
+//! The fixture tree from [`storagelens_core::fixtures`] is the input. Independent
+//! oracles check the result:
 //!
-//! - `Get-ChildItem -Recurse -Force` (PowerShell 7) for **which paths exist** —
-//!   the issue's acceptance criterion. PowerShell 7 does not follow junctions or
-//!   symlinks during `-Recurse`, which is the walker's rule too.
+//! - `Get-ChildItem -Recurse -Force` (PowerShell 7) for **which paths exist**.
+//!   PowerShell 7 does not follow junctions or symlinks during `-Recurse`, which
+//!   is the walker's rule too.
 //! - A `std::fs` walk for **what each entry is**: kind and logical size.
+//! - A per-file handle query — `GetFileInformationByHandle` for the file index
+//!   and link count, `GetFileInformationByHandleEx(FileStandardInfo)` for the
+//!   allocation — for **the numbers the bulk parser decoded**. AGENTS.md §7: if a
+//!   record offset is wrong, sizes are silently wrong, and this is the check that
+//!   catches it.
 //!
 //! Sets are compared, not sequences: sibling subtrees interleave in a parallel
 //! scan. What the sink does check on every accept is the arena contract — root
 //! first, and `parent < index`.
-//!
-//! Hard links are counted per name and `size_alloc` equals the logical size until
-//! #13; the assertions that depend on that say so.
 
 #![cfg(windows)]
 
@@ -155,6 +157,60 @@ fn get_child_item(root: &Path) -> BTreeSet<PathBuf> {
 struct OracleEntry {
     kind: EntryKind,
     size_logical: u64,
+    /// Files only: what a per-file handle query reports.
+    handle: Option<HandleInfo>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HandleInfo {
+    alloc: u64,
+    file_index: u64,
+    links: u32,
+}
+
+/// Ask one file's handle for its allocation, index, and link count — the slow
+/// per-file path the scanner exists to avoid, used here as the oracle.
+fn handle_info(path: &Path) -> HandleInfo {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        FileStandardInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_STANDARD_INFO,
+    };
+
+    // Access mode 0 asks for attributes only, so the query works on any file the
+    // directory listing could see.
+    let file = fs::OpenOptions::new()
+        .access_mode(0)
+        .open(path)
+        .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+    let handle = HANDLE(file.as_raw_handle());
+
+    let mut by_handle = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `handle` is open for the lifetime of `file`, and `by_handle` is a
+    // valid, writable BY_HANDLE_FILE_INFORMATION.
+    unsafe { GetFileInformationByHandle(handle, &mut by_handle) }.expect("by-handle info");
+
+    let mut standard = FILE_STANDARD_INFO::default();
+    // SAFETY: as above; the size passed is exactly that of `standard`.
+    unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileStandardInfo,
+            (&mut standard as *mut FILE_STANDARD_INFO).cast(),
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    }
+    .expect("standard info");
+
+    HandleInfo {
+        alloc: standard.AllocationSize as u64,
+        file_index: (u64::from(by_handle.nFileIndexHigh) << 32)
+            | u64::from(by_handle.nFileIndexLow),
+        links: by_handle.nNumberOfLinks,
+    }
 }
 
 /// A `std::fs` walk that never follows links. Allowed here: this is a test, and
@@ -181,9 +237,14 @@ fn std_oracle(root: &Path) -> BTreeMap<PathBuf, OracleEntry> {
             } else {
                 0
             };
+            let handle = (kind == EntryKind::File).then(|| handle_info(&path));
             out.insert(
                 path.strip_prefix(root).expect("below root").to_path_buf(),
-                OracleEntry { kind, size_logical },
+                OracleEntry {
+                    kind,
+                    size_logical,
+                    handle,
+                },
             );
         }
     }
@@ -250,9 +311,51 @@ fn walker_matches_get_child_item_on_the_fixture_tree() {
             "logical size of {}",
             path.display()
         );
-        // #13 replaces this with GetCompressedFileSizeW.
-        assert_eq!(entry.size_alloc, entry.size_logical);
-        assert!(!entry.hardlink_dup);
+        match want.handle {
+            Some(handle) => {
+                assert_eq!(
+                    entry.size_alloc,
+                    handle.alloc,
+                    "allocated size of {}",
+                    path.display()
+                );
+                assert_eq!(
+                    entry.file_id,
+                    handle.file_index,
+                    "file id of {}",
+                    path.display()
+                );
+                if handle.links <= 1 {
+                    assert!(!entry.hardlink_dup, "{} is not a duplicate", path.display());
+                }
+            }
+            None => {
+                assert_eq!(entry.size_alloc, 0, "only files have bytes");
+                assert!(!entry.hardlink_dup);
+            }
+        }
+    }
+
+    // --- Hard links: one owner per file index ---------------------------------
+    let mut by_index: BTreeMap<u64, Vec<&Entry>> = BTreeMap::new();
+    for (path, want) in &oracle {
+        if let Some(handle) = want.handle.filter(|handle| handle.links > 1) {
+            by_index
+                .entry(handle.file_index)
+                .or_default()
+                .push(scanned[path]);
+        }
+    }
+    assert!(!by_index.is_empty(), "the fixture has a hard-linked file");
+    for (index, names) in &by_index {
+        let owners = names.iter().filter(|entry| !entry.hardlink_dup).count();
+        assert_eq!(
+            owners, 1,
+            "file {index} must be counted at exactly one name"
+        );
+        for duplicate in names.iter().filter(|entry| entry.hardlink_dup) {
+            assert!(duplicate.nlink >= 2, "a duplicate has at least two links");
+        }
     }
 
     // --- The junction loop terminates immediately ------------------------------
@@ -295,25 +398,26 @@ fn walker_matches_get_child_item_on_the_fixture_tree() {
         );
     }
 
-    // --- Totals against the manifest ------------------------------------------
-    // Until #13 dedupes on (volume serial, file index), each extra hard-link name
-    // counts as its own file.
-    let link_bytes = fs::metadata(&manifest.paths.hardlinks[0])
-        .expect("hard link metadata")
-        .len();
-    let extra_names = manifest.hardlink_names - 1;
-    assert_eq!(result.files, manifest.files + extra_names, "file count");
+    // --- Totals ----------------------------------------------------------------
+    // The manifest folds hard links into one file, and so must the scan.
+    assert_eq!(result.files, manifest.files, "file count");
     assert_eq!(result.dirs, manifest.dirs, "directory count");
     assert_eq!(
         result.bytes_logical.get(),
-        manifest.bytes_logical + extra_names * link_bytes,
+        manifest.bytes_logical,
         "logical bytes"
     );
-    assert_eq!(
-        result.bytes_alloc.get(),
-        manifest.bytes_alloc + extra_names * link_bytes,
-        "allocated bytes (logical until #13)"
-    );
+    // The manifest's Windows allocation is the logical size (std has no
+    // allocation query), so the handle oracle supplies the expected total, each
+    // file index counted once.
+    let mut counted = BTreeSet::new();
+    let expected_alloc: u64 = oracle
+        .values()
+        .filter_map(|entry| entry.handle)
+        .filter(|handle| counted.insert(handle.file_index))
+        .map(|handle| handle.alloc)
+        .sum();
+    assert_eq!(result.bytes_alloc.get(), expected_alloc, "allocated bytes");
     let links = scanned
         .values()
         .filter(|entry| entry.kind == EntryKind::Symlink)
@@ -486,12 +590,17 @@ fn cancellation_returns_a_consistent_partial_tree() {
     assert_eq!(sink.flush_count, 1, "a cancelled scan still flushes");
     assert!(sink.entries.len() >= 5);
 
-    let files = sink.entries.iter().skip(1).filter(|e| e.is_file()).count() as u64;
+    let files = sink
+        .entries
+        .iter()
+        .skip(1)
+        .filter(|e| e.is_file() && !e.hardlink_dup)
+        .count() as u64;
     let dirs = sink.entries.iter().skip(1).filter(|e| e.is_dir()).count() as u64;
     let bytes: u64 = sink
         .entries
         .iter()
-        .filter(|e| e.is_file())
+        .filter(|e| e.is_file() && !e.hardlink_dup)
         .map(|e| e.size_alloc)
         .sum();
     assert_eq!(result.files, files);
@@ -533,4 +642,91 @@ fn invalid_roots_are_rejected_before_the_sink_is_touched() {
 
     assert!(sink.entries.is_empty(), "no entry before the root is valid");
     assert_eq!(sink.flush_count, 0, "an early error never flushes");
+}
+
+#[test]
+fn sparse_and_compressed_files_report_bytes_on_disk() {
+    use std::io::Write;
+    use std::os::windows::fs::MetadataExt;
+
+    const COMPRESSED: u32 = 0x800;
+    const SPARSE: u32 = 0x200;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = long_form(temp.path());
+
+    // 64 MiB apparent, 4 KiB written. `fsutil sparse setflag` marks it sparse;
+    // extending it afterwards allocates nothing.
+    let sparse = root.join("sparse.img");
+    fs::write(&sparse, [7u8; 4096]).expect("sparse seed");
+    let status = Command::new("fsutil")
+        .args(["sparse", "setflag"])
+        .arg(&sparse)
+        .stdout(Stdio::null())
+        .status()
+        .expect("run fsutil");
+    assert!(status.success(), "fsutil sparse setflag failed");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&sparse)
+        .and_then(|file| file.set_len(64 * 1024 * 1024))
+        .expect("extend sparse file");
+
+    // 4 MiB of a repeating pattern compresses to a small fraction.
+    let compressed = root.join("compressed.txt");
+    let mut file = fs::File::create(&compressed).expect("compressed file");
+    for _ in 0..(4 * 1024 * 1024 / 16) {
+        file.write_all(b"storagelens-0123").expect("write");
+    }
+    drop(file);
+    let status = Command::new("compact")
+        .args(["/c", "/q"])
+        .arg(&compressed)
+        .stdout(Stdio::null())
+        .status()
+        .expect("run compact");
+    assert!(status.success(), "compact /c failed");
+
+    for (path, flag) in [(&sparse, SPARSE), (&compressed, COMPRESSED)] {
+        let attributes = fs::metadata(path).expect("metadata").file_attributes();
+        assert_ne!(
+            attributes & flag,
+            0,
+            "{} lacks its attribute",
+            path.display()
+        );
+    }
+
+    let mut sink = CollectSink::new(&root);
+    let result = scan(
+        ScanOptions::default(),
+        &root,
+        &mut sink,
+        CancelToken::new(),
+        &|_| {},
+    )
+    .expect("scan");
+    let scanned = sink.relative();
+
+    let sparse_entry = scanned[Path::new("sparse.img")];
+    assert_eq!(sparse_entry.size_logical, 64 * 1024 * 1024);
+    assert!(
+        sparse_entry.size_alloc <= 1024 * 1024,
+        "sparse file allocates {} bytes, expected far less than its 64 MiB",
+        sparse_entry.size_alloc
+    );
+
+    let compressed_entry = scanned[Path::new("compressed.txt")];
+    assert_eq!(compressed_entry.size_logical, 4 * 1024 * 1024);
+    assert!(
+        compressed_entry.size_alloc < compressed_entry.size_logical / 4,
+        "compressed file reports {} bytes on disk for {} logical",
+        compressed_entry.size_alloc,
+        compressed_entry.size_logical
+    );
+
+    assert_eq!(
+        result.bytes_alloc.get(),
+        sparse_entry.size_alloc + compressed_entry.size_alloc
+    );
 }

@@ -6,16 +6,15 @@
 //!
 //! # Layout
 //!
-//! - [`ffi`] — `FindFirstFileExW` directory reader (Windows only) and the pure
-//!   helpers around it: `\\?\` path prefixes, `FILETIME` conversion, and the
-//!   attribute/reparse-tag rules that decide what an entry is.
+//! - [`ffi`] — the bulk directory reader (Windows only) and the pure helpers
+//!   around it: the `FILE_ID_BOTH_DIR_INFO` record parser, `\\?\` path prefixes,
+//!   `FILETIME` conversion, and the attribute/reparse-tag rules.
+//! - `dedupe` — hard-link accounting on the NTFS file id. Pure.
 //! - `skip` — which directories the walker refuses to enter. Pure, so it is
 //!   tested on every runner.
 //! - [`walk`] / `writer` — the parallel walker behind [`WinScanner`] (Windows
 //!   only). Same single-writer design as the macOS scanner, deliberately not
 //!   shared code (AGENTS.md §2.4).
-//!
-//! Allocated size, file identity, and hard-link dedupe arrive with #13.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
@@ -27,6 +26,8 @@ pub mod ffi;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod skip;
 
+#[cfg_attr(not(windows), allow(dead_code))]
+mod dedupe;
 #[cfg(windows)]
 pub mod walk;
 #[cfg(windows)]

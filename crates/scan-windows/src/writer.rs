@@ -11,8 +11,8 @@
 //! parent has been accepted, no matter how the workers interleave.
 //!
 //! The same design as the macOS writer, kept as a separate copy on purpose
-//! (AGENTS.md §2.4): the platforms share a trait, not an implementation. The one
-//! structural difference is [`Item::path`]: the worker builds a child
+//! (AGENTS.md §2.4): the platforms share a trait, not an implementation. Hard
+//! links are deduped here too (see `dedupe.rs`). The one structural difference is [`Item::path`]: the worker builds a child
 //! directory's path from the raw `OsString` name, because [`Entry::name`] is a
 //! lossy `String` and an NTFS name may contain an unpaired surrogate.
 
@@ -28,6 +28,7 @@ use storagelens_core::{
     ScanStatus, SkippedDir,
 };
 
+use crate::dedupe::Dedupe;
 use crate::walk::{self, Shared, Task};
 
 /// Entries accumulated by one worker before it hands them to the writer.
@@ -86,6 +87,7 @@ pub(crate) struct Writer<'a> {
     bytes_alloc: u64,
     bytes_logical: u64,
     skipped: Vec<SkippedDir>,
+    dedupe: Dedupe,
     last_dir: Option<Arc<PathBuf>>,
     last_progress: Instant,
 }
@@ -101,6 +103,7 @@ impl<'a> Writer<'a> {
             bytes_alloc: 0,
             bytes_logical: 0,
             skipped: Vec::new(),
+            dedupe: Dedupe::new(),
             last_dir: None,
             last_progress: Instant::now(),
         }
@@ -248,11 +251,20 @@ impl<'a> Writer<'a> {
 
         self.last_dir = Some(dir);
 
-        for Item { entry, path } in items {
+        let dedupe_ids = shared.dedupe_ids();
+        for Item { mut entry, path } in items {
             let index = self.next_index;
             self.next_index = self.next_index.checked_add(1).ok_or_else(|| {
                 ScanError::Other("more than u32::MAX entries in one scan".to_owned())
             })?;
+
+            // The first name accepted for a file owns its bytes; later names keep
+            // their row and true size but are flagged. A flagged name has at least
+            // two links by definition, which the listing cannot otherwise report.
+            if dedupe_ids && self.dedupe.is_duplicate(&entry) {
+                entry.hardlink_dup = true;
+                entry.nlink = entry.nlink.max(2);
+            }
 
             self.count(&entry);
             self.sink.accept(entry)?;

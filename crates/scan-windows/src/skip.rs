@@ -27,7 +27,7 @@
 //! A volume mounted into a folder is an `IO_REPARSE_TAG_MOUNT_POINT` reparse
 //! point, which the walker records as a link and never enters (see `ffi`). So the
 //! scan never leaves its root volume, and `cross_filesystems` has no effect in the
-//! `FindFirstFileExW` walker.
+//! v1 walker.
 
 use std::path::Path;
 
