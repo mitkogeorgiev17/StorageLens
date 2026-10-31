@@ -77,14 +77,21 @@ pub trait StorageScanner: Send + Sync {
     /// Mounted volumes this scanner can see, with capacity and purgeable space.
     fn volumes(&self) -> Vec<Volume>;
 
-    /// Walk `roots`, streaming entries to the sink wired into the implementation.
+    /// Walk `roots`, streaming every entry to `sink`.
     ///
-    /// `progress` is called at most ~10 times per second. Implementations must
-    /// honour `cancel` between directories and return a consistent
-    /// [`ScanResult`] even when cancelled.
+    /// The sink is a parameter rather than a field of the scanner because
+    /// [`EntrySink`] is deliberately `!Send`: it must stay on the thread that
+    /// called this method. Scanners that enumerate in parallel forward `Entry`
+    /// values to that thread, which accepts them in arena order.
+    ///
+    /// `progress` is called at most ~10 times per second. Cancellation is
+    /// cooperative: implementations stop between directories and return `Ok` with
+    /// [`ScanStatus::Cancelled`](crate::ScanStatus::Cancelled), having flushed the
+    /// rows accepted so far.
     fn scan(
         &self,
         roots: &[PathBuf],
+        sink: &mut dyn EntrySink,
         cancel: CancelToken,
         progress: &(dyn Fn(Progress) + Send + Sync),
     ) -> Result<ScanResult>;

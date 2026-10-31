@@ -162,6 +162,43 @@ impl Iterator for DirReader {
     }
 }
 
+// --- I/O throttling ---------------------------------------------------------
+
+/// `IOPOL_TYPE_DISK` from `<sys/resource.h>`.
+const IOPOL_TYPE_DISK: libc::c_int = 0;
+/// `IOPOL_SCOPE_THREAD`: the policy applies to the calling thread only.
+const IOPOL_SCOPE_THREAD: libc::c_int = 1;
+/// `IOPOL_THROTTLE`: background I/O, so the machine stays responsive.
+const IOPOL_THROTTLE: libc::c_int = 3;
+
+extern "C" {
+    fn setiopolicy_np(iotype: libc::c_int, scope: libc::c_int, policy: libc::c_int) -> libc::c_int;
+}
+
+thread_local! {
+    static IO_POLICY_APPLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Throttle disk I/O for the current thread, once.
+///
+/// Rayon reuses worker threads across directories and scans, so the first task on
+/// each thread applies the policy and later tasks skip the syscall. Failure is
+/// ignored: throttling is a responsiveness nicety, not a correctness requirement.
+pub(crate) fn throttle_current_thread() {
+    IO_POLICY_APPLIED.with(|applied| {
+        if applied.get() {
+            return;
+        }
+        applied.set(true);
+        // SAFETY: `setiopolicy_np` only changes the calling thread's I/O policy and
+        // takes three integer arguments from <sys/resource.h>; it reads and writes
+        // nothing else.
+        unsafe {
+            setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE);
+        }
+    });
+}
+
 /// Build the `struct attrlist` the kernel expects.
 ///
 /// `libc::attrlist` already has the correct layout; re-declaring it here would
