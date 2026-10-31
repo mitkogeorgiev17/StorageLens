@@ -24,7 +24,7 @@
 //! `dir_rollup` written before `scan://done` is sent, so the UI can query the
 //! moment it hears it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -41,7 +41,7 @@ use tauri::{AppHandle, State};
 use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRowDto,
     FilterDto, Grouping, OverviewDto, Page, RuleGroupDto, ScanStatusDto, SizeCursorDto,
-    SyntheticNodeDto, VolumeDto,
+    SyntheticNodeDto, TreeNodeDto, VolumeDto,
 };
 use crate::events::{
     self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
@@ -54,6 +54,14 @@ pub const PAGE_SIZE: u32 = 200;
 /// Default and maximum children returned by `get_children`.
 pub const DEFAULT_CHILDREN: u32 = 500;
 pub const MAX_CHILDREN: u32 = 5_000;
+
+/// `get_tree` limits: levels below the parent (default and maximum), children
+/// per directory, and nodes in total. The budget is a few times the treemap's
+/// 1,500 drawn rects, so zooming within one load still has detail to show.
+pub const DEFAULT_TREE_DEPTH: u32 = 4;
+pub const MAX_TREE_DEPTH: u32 = 8;
+const TREE_PER_DIR: usize = 300;
+const TREE_BUDGET: usize = 6_000;
 
 /// Largest children shown on the Overview.
 const OVERVIEW_BIGGEST: usize = 10;
@@ -506,6 +514,192 @@ pub fn get_children(
     })
 }
 
+/// Children worth drawing: everything except extra names of hard links, whose
+/// bytes are already counted under their first name.
+fn counted_children(arena: &Arena, index: NodeIndex) -> Vec<ChildDto> {
+    let mut children = sorted_children(arena, index);
+    children.retain(|child| !child.hardlink_dup);
+    children
+}
+
+/// One expanded directory: the children kept, and the rest aggregated.
+struct Expansion {
+    kept: Vec<ChildDto>,
+    remaining_count: u64,
+    remaining_bytes: u64,
+}
+
+/// `parent_id`'s subtree, `depth` levels deep, capped at [`TREE_BUDGET`] nodes.
+///
+/// Expansion is breadth-first, biggest first within each directory, so the
+/// budget goes to what the treemap can actually draw: the top levels and the
+/// largest directories, not one deep corner.
+pub fn get_tree(
+    state: &AppState,
+    scan_id: i64,
+    parent_id: i64,
+    depth: Option<u32>,
+) -> CommandResult<TreeNodeDto> {
+    let arena = state.arena(scan_id)?;
+    let root = arena
+        .index_of(parent_id)
+        .ok_or_else(|| format!("entry {parent_id} is not part of scan {scan_id}"))?;
+    let root_dto = child_dto(&arena, root).ok_or("the entry has no data")?;
+    let max_depth = depth.unwrap_or(DEFAULT_TREE_DEPTH).clamp(1, MAX_TREE_DEPTH);
+
+    let mut expanded: HashMap<i64, Expansion> = HashMap::new();
+    let mut queue = VecDeque::from([(root, 0u32)]);
+    let mut budget = TREE_BUDGET;
+    while let Some((index, level)) = queue.pop_front() {
+        if level >= max_depth || budget == 0 {
+            continue;
+        }
+        let Some(id) = arena.entry_id(index) else {
+            continue;
+        };
+        let mut kept = counted_children(&arena, index);
+        let rest = kept.split_off(kept.len().min(TREE_PER_DIR).min(budget));
+        budget -= kept.len();
+        for child in kept.iter().filter(|child| child.has_children) {
+            if let Some(child_index) = arena.index_of(child.id) {
+                queue.push_back((child_index, level + 1));
+            }
+        }
+        expanded.insert(
+            id,
+            Expansion {
+                kept,
+                remaining_count: rest.len() as u64,
+                remaining_bytes: rest.iter().map(|child| child.size_alloc).sum(),
+            },
+        );
+    }
+    Ok(assemble(root_dto, &mut expanded))
+}
+
+fn assemble(node: ChildDto, expanded: &mut HashMap<i64, Expansion>) -> TreeNodeDto {
+    let (children, remaining_count, remaining_bytes) = match expanded.remove(&node.id) {
+        Some(expansion) => (
+            Some(
+                expansion
+                    .kept
+                    .into_iter()
+                    .map(|child| assemble(child, expanded))
+                    .collect(),
+            ),
+            expansion.remaining_count,
+            expansion.remaining_bytes,
+        ),
+        None => (None, 0, 0),
+    };
+    TreeNodeDto {
+        id: node.id,
+        name: node.name,
+        kind: node.kind,
+        category: node.category,
+        size_alloc: node.size_alloc,
+        file_count: node.file_count,
+        has_children: node.has_children,
+        children,
+        remaining_count,
+        remaining_bytes,
+    }
+}
+
+// --- Reveal and preview ------------------------------------------------------------
+
+/// The on-disk path of a catalogued entry, checked to still exist.
+///
+/// Reveal and preview take catalog ids, never paths from the UI: only what the
+/// scan saw can be handed to the OS.
+fn existing_path(state: &AppState, scan_id: i64, entry_id: i64) -> CommandResult<PathBuf> {
+    let root = state
+        .root_of(scan_id)
+        .ok_or("this scan predates path recording; rescan to open files from it")?;
+    let arena = state.arena(scan_id)?;
+    let index = arena
+        .index_of(entry_id)
+        .ok_or_else(|| format!("entry {entry_id} is not part of scan {scan_id}"))?;
+    let mut path = root;
+    for name in arena.path_names(index) {
+        path.push(name);
+    }
+    std::fs::symlink_metadata(&path).map_err(|_| format!("{} no longer exists", path.display()))?;
+    Ok(path)
+}
+
+/// Show an entry selected in Finder / Explorer.
+pub fn reveal_entry(state: &AppState, scan_id: i64, entry_id: i64) -> CommandResult<()> {
+    shell::reveal(&existing_path(state, scan_id, entry_id)?)
+}
+
+/// Quick Look on macOS. Windows has no system quick-preview, so it reveals the
+/// entry in Explorer instead, where the preview pane shows it.
+pub fn preview_entry(state: &AppState, scan_id: i64, entry_id: i64) -> CommandResult<()> {
+    shell::preview(&existing_path(state, scan_id, entry_id)?)
+}
+
+/// Handing paths to the OS shell. Programs are spawned by absolute path with
+/// arguments passed directly — no shell parses them — and reaped on a thread.
+mod shell {
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    fn spawn(mut command: Command) -> Result<(), String> {
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("could not open the file manager: {error}"))?;
+        std::thread::spawn(move || child.wait());
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn reveal(path: &Path) -> Result<(), String> {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg("-R").arg(path);
+        spawn(command)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn preview(path: &Path) -> Result<(), String> {
+        let mut command = Command::new("/usr/bin/qlmanage");
+        command.arg("-p").arg(path);
+        spawn(command)
+    }
+
+    #[cfg(windows)]
+    pub fn reveal(path: &Path) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+
+        // Explorer rejects verbatim (`\\?\`) paths. A Windows path cannot
+        // contain `"`, so quoting it is enough for Explorer's own parser.
+        let text = path.display().to_string();
+        let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+        let windows = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let mut command = Command::new(Path::new(&windows).join("explorer.exe"));
+        command.raw_arg(format!("/select,\"{text}\""));
+        spawn(command)
+    }
+
+    #[cfg(windows)]
+    pub fn preview(path: &Path) -> Result<(), String> {
+        reveal(path)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn reveal(_path: &Path) -> Result<(), String> {
+        Err("revealing files is supported on macOS and Windows".to_owned())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn preview(_path: &Path) -> Result<(), String> {
+        reveal(_path)
+    }
+}
+
 fn volume_for(root: Option<&Path>) -> Option<VolumeDto> {
     let root = root?;
     #[cfg(target_os = "macos")]
@@ -756,6 +950,34 @@ pub mod ipc {
         limit: Option<u32>,
     ) -> CommandResult<ChildrenDto> {
         super::get_children(state.inner(), scan_id, parent_id, limit)
+    }
+
+    #[tauri::command]
+    pub async fn get_tree(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        parent_id: i64,
+        depth: Option<u32>,
+    ) -> CommandResult<TreeNodeDto> {
+        super::get_tree(state.inner(), scan_id, parent_id, depth)
+    }
+
+    #[tauri::command]
+    pub async fn reveal_entry(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        entry_id: i64,
+    ) -> CommandResult<()> {
+        super::reveal_entry(state.inner(), scan_id, entry_id)
+    }
+
+    #[tauri::command]
+    pub async fn preview_entry(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        entry_id: i64,
+    ) -> CommandResult<()> {
+        super::preview_entry(state.inner(), scan_id, entry_id)
     }
 
     #[tauri::command]
@@ -1093,6 +1315,75 @@ mod tests {
                 .to_string(),
             "the root comes from the catalog, not this run's memory"
         );
+    }
+
+    fn sum_check(node: &TreeNodeDto) {
+        if let Some(children) = &node.children {
+            let total: u64 = children.iter().map(|child| child.size_alloc).sum();
+            assert_eq!(
+                total + node.remaining_bytes,
+                node.size_alloc,
+                "{}: children and remainder account for every byte",
+                node.name
+            );
+            children.iter().for_each(sum_check);
+        }
+    }
+
+    #[test]
+    fn get_tree_nests_and_keeps_every_byte() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let (scan_id, _) = scan(&state, &root);
+        let root_id = get_overview(&state, scan_id).expect("overview").root_id;
+
+        let full = get_tree(&state, scan_id, root_id, None).expect("tree");
+        assert_eq!(full.name, "scanned");
+        sum_check(&full);
+        let children = full.children.as_ref().expect("root expanded");
+        assert_eq!(children[0].name, "photos", "biggest first");
+        let photos = children[0].children.as_ref().expect("photos expanded");
+        let year = photos.iter().find(|c| c.name == "2024").expect("2024");
+        assert_eq!(
+            year.children.as_ref().expect("2024 expanded")[0].name,
+            "a.jpg"
+        );
+
+        let shallow = get_tree(&state, scan_id, root_id, Some(1)).expect("shallow");
+        sum_check(&shallow);
+        let top = shallow.children.as_ref().expect("root expanded");
+        assert!(
+            top.iter().all(|child| child.children.is_none()),
+            "one level only"
+        );
+        assert!(top[0].has_children, "an unexpanded directory still says so");
+
+        assert!(get_tree(&state, scan_id, i64::MAX, None).is_err());
+    }
+
+    #[test]
+    fn reveal_resolves_catalogued_entries_and_refuses_missing_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let (scan_id, _) = scan(&state, &root);
+        let page = get_largest(&state, scan_id, 0, None).expect("largest");
+        let jpg = page
+            .items
+            .iter()
+            .find(|row| row.name == "a.jpg")
+            .expect("a.jpg");
+
+        let path = existing_path(&state, scan_id, jpg.id).expect("resolves");
+        assert_eq!(path, root.join("photos").join("2024").join("a.jpg"));
+
+        fs::remove_file(&path).expect("remove");
+        let error = existing_path(&state, scan_id, jpg.id).expect_err("gone");
+        assert!(error.contains("no longer exists"), "{error}");
+        assert!(reveal_entry(&state, scan_id, jpg.id).is_err());
+        assert!(preview_entry(&state, scan_id, jpg.id).is_err());
+        assert!(existing_path(&state, scan_id, i64::MAX).is_err());
     }
 
     #[test]

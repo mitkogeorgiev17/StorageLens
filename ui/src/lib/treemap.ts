@@ -379,3 +379,150 @@ export function backingStore(
     scale,
   };
 }
+
+/** Display names, matching core's `Category::label`. */
+export const CATEGORY_LABELS: Readonly<Record<Category, string>> = {
+  images: "Images",
+  video: "Video",
+  audio: "Audio",
+  documents: "Documents",
+  spreadsheets: "Spreadsheets",
+  presentations: "Presentations",
+  archives: "Archives",
+  code: "Code",
+  data: "Data",
+  fonts: "Fonts",
+  "three-d": "3D / CAD",
+  apps: "Apps",
+  "disk-images": "Disk images",
+  other: "Other",
+};
+
+// --- Navigation ----------------------------------------------------------------------
+
+/** The rect index of input id `id`, or `null` when it was not laid out. */
+export function indexOfId(layout: Layout, id: number): number | null {
+  const index = layout.ids.indexOf(id);
+  return index === -1 ? null : index;
+}
+
+/**
+ * The view that makes rect `index` fill the viewport as far as a uniform scale
+ * allows, centred. Clamped like any other view, so it never shows past the map.
+ */
+export function fitView(layout: Layout, index: number, width: number, height: number): View {
+  const rectWidth = Math.max(1e-6, (layout.x1[index] ?? 0) - (layout.x0[index] ?? 0));
+  const rectHeight = Math.max(1e-6, (layout.y1[index] ?? 0) - (layout.y0[index] ?? 0));
+  const scale = Math.min(64, Math.max(1, Math.min(width / rectWidth, height / rectHeight)));
+  const centreX = (layout.x0[index] ?? 0) + rectWidth / 2;
+  const centreY = (layout.y0[index] ?? 0) + rectHeight / 2;
+  return clampView(
+    { scale, translateX: width / 2 - centreX * scale, translateY: height / 2 - centreY * scale },
+    width,
+    height,
+  );
+}
+
+/** Smooth start and stop for transitions, `t` in [0, 1]. */
+export function easeInOut(t: number): number {
+  const clamped = Math.min(1, Math.max(0, t));
+  return clamped < 0.5 ? 4 * clamped ** 3 : 1 - (-2 * clamped + 2) ** 3 / 2;
+}
+
+/**
+ * The view `t` of the way from `from` to `to`. Interpolates the visible window
+ * — its corner linearly, its size geometrically — so a zoom feels constant-speed
+ * instead of rushing at the end, as interpolating the scale would.
+ */
+export function interpolateView(from: View, to: View, t: number, width: number): View {
+  if (t <= 0) {
+    return from;
+  }
+  if (t >= 1) {
+    return to;
+  }
+  const fromSize = width / from.scale;
+  const toSize = width / to.scale;
+  const size = fromSize * (toSize / fromSize) ** t;
+  const fromX = -from.translateX / from.scale;
+  const fromY = -from.translateY / from.scale;
+  const toX = -to.translateX / to.scale;
+  const toY = -to.translateY / to.scale;
+  const scale = width / size;
+  return {
+    scale,
+    translateX: -(fromX + (toX - fromX) * t) * scale,
+    translateY: -(fromY + (toY - fromY) * t) * scale,
+  };
+}
+
+export type Direction = "left" | "right" | "up" | "down";
+
+/**
+ * Keyboard navigation: the top-level rect (depth 1, a child of the shown
+ * folder) nearest to `from` in `direction`, or `from` itself at an edge. With
+ * no current rect, the largest top-level rect.
+ *
+ * Candidates must lie wholly past `from`'s edge in that direction; among them
+ * the closest wins, sideways offset counting double so movement stays in line.
+ */
+export function neighbor(layout: Layout, from: number | null, direction: Direction): number | null {
+  const topLevel: number[] = [];
+  for (const index of layout.order) {
+    if (layout.depth[index] === 1) {
+      topLevel.push(index);
+    }
+  }
+  if (from === null || layout.depth[from] !== 1) {
+    return topLevel[0] ?? null;
+  }
+  const edge = 0.5;
+  const fx0 = layout.x0[from] ?? 0;
+  const fy0 = layout.y0[from] ?? 0;
+  const fx1 = layout.x1[from] ?? 0;
+  const fy1 = layout.y1[from] ?? 0;
+  const fcx = (fx0 + fx1) / 2;
+  const fcy = (fy0 + fy1) / 2;
+
+  let best: number | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const index of topLevel) {
+    if (index === from) {
+      continue;
+    }
+    const x0 = layout.x0[index] ?? 0;
+    const y0 = layout.y0[index] ?? 0;
+    const x1 = layout.x1[index] ?? 0;
+    const y1 = layout.y1[index] ?? 0;
+    let along: number;
+    let across: number;
+    switch (direction) {
+      case "right":
+        if (x0 < fx1 - edge) continue;
+        along = x0 - fx1;
+        across = Math.max(0, y0 - fcy, fcy - y1);
+        break;
+      case "left":
+        if (x1 > fx0 + edge) continue;
+        along = fx0 - x1;
+        across = Math.max(0, y0 - fcy, fcy - y1);
+        break;
+      case "down":
+        if (y0 < fy1 - edge) continue;
+        along = y0 - fy1;
+        across = Math.max(0, x0 - fcx, fcx - x1);
+        break;
+      case "up":
+        if (y1 > fy0 + edge) continue;
+        along = fy0 - y1;
+        across = Math.max(0, x0 - fcx, fcx - x1);
+        break;
+    }
+    const score = along + 2 * across;
+    if (score < bestScore) {
+      bestScore = score;
+      best = index;
+    }
+  }
+  return best ?? from;
+}

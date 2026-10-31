@@ -83,6 +83,24 @@ export interface ChildrenDto {
   readonly remainingBytes: number;
 }
 
+/**
+ * A directory's subtree for the treemap. Sizes add up at every level: loaded
+ * children plus `remainingBytes`. `children: null` means not expanded (the
+ * backend's node budget ran out); `hasChildren` still says whether it has any.
+ */
+export interface TreeNodeDto {
+  readonly id: number;
+  readonly name: string;
+  readonly kind: EntryKind;
+  readonly category: Category;
+  readonly sizeAlloc: number;
+  readonly fileCount: number;
+  readonly hasChildren: boolean;
+  readonly children: readonly TreeNodeDto[] | null;
+  readonly remainingCount: number;
+  readonly remainingBytes: number;
+}
+
 export interface OverviewDto {
   readonly scan: ScanStatusDto;
   readonly rootId: number;
@@ -201,6 +219,14 @@ export const api = {
     call<SyntheticNodeDto>("get_grouping", { scanId, by, filter: filter ?? null }),
   getChildren: (scanId: number, parentId: number, limit?: number) =>
     call<ChildrenDto>("get_children", { scanId, parentId, limit: limit ?? null }),
+  getTree: (scanId: number, parentId: number, depth?: number) =>
+    call<TreeNodeDto>("get_tree", { scanId, parentId, depth: depth ?? null }),
+  /** Show the entry selected in Finder / Explorer. */
+  revealEntry: (scanId: number, entryId: number) =>
+    call<void>("reveal_entry", { scanId, entryId }),
+  /** Quick Look on macOS; on Windows, reveal in Explorer (no system preview). */
+  previewEntry: (scanId: number, entryId: number) =>
+    call<void>("preview_entry", { scanId, entryId }),
   getLargest: (scanId: number, minSize: number, cursor?: SizeCursor) =>
     call<Page<FileRowDto, SizeCursor>>("get_largest", {
       scanId,

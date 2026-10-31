@@ -68,6 +68,28 @@ pub struct ChildDto {
     pub hardlink_dup: bool,
 }
 
+/// A directory's subtree, a few levels deep, for the treemap.
+///
+/// Sizes add up at every level: a node's `size_alloc` is its loaded children
+/// plus `remaining_bytes` (hard-link duplicates are listed nowhere, counted
+/// once already). A directory with `children: None` was not expanded — the
+/// node budget ran out — and is drawn as one block until it is zoomed into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeNodeDto {
+    pub id: i64,
+    pub name: String,
+    pub kind: EntryKind,
+    pub category: Category,
+    pub size_alloc: u64,
+    pub file_count: u64,
+    pub has_children: bool,
+    pub children: Option<Vec<TreeNodeDto>>,
+    /// Children not sent, aggregated into one "smaller items" block.
+    pub remaining_count: u64,
+    pub remaining_bytes: u64,
+}
+
 /// What the Overview screen shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
