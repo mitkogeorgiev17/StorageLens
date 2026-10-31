@@ -93,9 +93,12 @@ npm install          # root workspace — installs the Tauri CLI and ui/
 ```bash
 # Rust workspace (7 crates, no frontend needed)
 cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
+
+# Fixture tree generator only (off by default; never ships in the app)
+cargo test -p storagelens-core --features fixtures
 
 # Scanner validation (no UI) — the important one
 cargo run -p storagelens-scanbench --release -- ~/Documents
@@ -295,7 +298,7 @@ One logical change per commit. No `--no-verify`, no force-push to `main`.
 2. Claim it (assign yourself) so a parallel agent doesn't duplicate work.
 3. Branch from `main` using the naming convention above.
 4. Implement, with tests.
-5. `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+5. `cargo fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features`
 6. Open a PR with `Closes #N` and a short summary of decisions made.
 7. Squash merge once CI is green.
 8. If the work changed a design decision, update `PLAN.md` in the same PR.

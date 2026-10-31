@@ -34,10 +34,12 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # `--all-features` turns on `storagelens-core/fixtures`, so the fixture
+      # tree generator is exercised on both platforms.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
 
   ui:
     name: ui
