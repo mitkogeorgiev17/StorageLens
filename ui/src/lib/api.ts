@@ -61,6 +61,16 @@ export interface VolumeDto {
   readonly purgeable: number;
 }
 
+export interface ScanTargetDto {
+  readonly kind: "volume" | "home";
+  readonly label: string;
+  /** Absolute path for {@link api.startScan}. */
+  readonly path: string;
+  readonly total: number | null;
+  readonly available: number | null;
+  readonly removable: boolean;
+}
+
 export interface CategoryDto {
   readonly category: Category;
   readonly label: string;
@@ -212,6 +222,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 // --- Commands ----------------------------------------------------------------------
 
 export const api = {
+  listScanTargets: () => call<readonly ScanTargetDto[]>("list_scan_targets"),
   startScan: (root: string) => call<number>("start_scan", { roots: [root] }),
   cancelScan: (scanId: number) => call<void>("cancel_scan", { scanId }),
   scanStatus: (scanId: number) => call<ScanStatusDto>("scan_status", { scanId }),

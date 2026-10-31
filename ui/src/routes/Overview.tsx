@@ -10,7 +10,8 @@
  *
  * Every bar's segments add up to its stated total (see `lib/overview.ts`), and
  * every number goes through `lib/format.ts`. Keyed by scan id, so a rescan
- * reloads everything.
+ * reloads everything. Before a scan (or after a failed one) the screen is the
+ * scan picker; during one, its progress.
  */
 
 import { useEffect, useState } from "react";
@@ -25,7 +26,9 @@ import {
   type Segment,
 } from "../lib/overview";
 import { CATEGORY_COLORS } from "../lib/treemap";
-import { hasScan, useAppStore, type ScanSummary } from "../store";
+import ScanPicker from "../components/ScanPicker";
+import ScanProgress from "../components/ScanProgress";
+import { useAppStore, type ScanSummary } from "../store";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
@@ -40,22 +43,38 @@ type Rules =
 
 export default function OverviewScreen() {
   const scan = useAppStore((state) => state.scan);
-  if (!hasScan(scan)) {
-    const scanning = scan.kind === "scanning";
-    return (
-      <section className="empty" aria-labelledby="overview-empty">
-        <h2 id="overview-empty">
-          {scanning ? "The overview appears when the scan finishes." : "No scan yet."}
-        </h2>
-        <p className="empty-text">
-          {scanning
-            ? "Progress is shown in the status bar below."
-            : "Scan a volume to see where the space went and how much can safely be freed."}
-        </p>
-      </section>
-    );
+  switch (scan.kind) {
+    case "scanning":
+      return (
+        <div className="overview">
+          <ScanProgress scan={scan} />
+        </div>
+      );
+    case "idle":
+    case "failed":
+      return (
+        <div className="overview">
+          <section className="card" aria-labelledby="start-title">
+            <h2 id="start-title" className="card-title">
+              {scan.kind === "idle" ? "No scan yet" : "The scan failed"}
+            </h2>
+            {scan.kind === "failed" ? (
+              <p className="picker-error" role="alert">
+                {scan.root === "" ? scan.message : `${scan.root}: ${scan.message}`}
+              </p>
+            ) : (
+              <p className="card-note card-lead">
+                Scan a volume or folder to see where the space went and how much can safely be
+                freed. Nothing leaves this machine.
+              </p>
+            )}
+            <ScanPicker />
+          </section>
+        </div>
+      );
+    case "done":
+      return <OverviewView key={scan.summary.scanId} summary={scan.summary} />;
   }
-  return <OverviewView key={scan.summary.scanId} summary={scan.summary} />;
 }
 
 function OverviewView({ summary }: { readonly summary: ScanSummary }) {
@@ -93,6 +112,13 @@ function OverviewView({ summary }: { readonly summary: ScanSummary }) {
 
   return (
     <div className="overview">
+      {summary.status !== "complete" ? (
+        <p className="banner" role="note">
+          {summary.status === "cancelled"
+            ? "This scan was cancelled. The totals below cover only what it reached."
+            : "Some folders could not be read. The totals below are partial."}
+        </p>
+      ) : null}
       <Reclaim rules={rules} />
       <Capacity overview={overview} />
       <Categories overview={overview} />

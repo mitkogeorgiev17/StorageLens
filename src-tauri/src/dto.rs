@@ -45,6 +45,28 @@ pub struct VolumeDto {
     pub purgeable: u64,
 }
 
+/// Something the scan picker offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScanTargetKind {
+    Volume,
+    Home,
+}
+
+/// One entry of the scan picker: a mounted volume or the home folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanTargetDto {
+    pub kind: ScanTargetKind,
+    pub label: String,
+    /// Absolute path to pass to `start_scan`.
+    pub path: String,
+    /// Capacity, for volumes.
+    pub total: Option<u64>,
+    pub available: Option<u64>,
+    pub removable: bool,
+}
+
 /// One category's share of the scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
