@@ -1220,9 +1220,11 @@ scanners.
 - manifest write failure → abort before moving anything
 - undo with a missing Trash item → reports, doesn't crash
 
-### Performance CI
+### Performance checks
 
-Nightly benchmark against a fixed 200k-file image. Fail on >20% regression.
+Manual, not automated (there is no CI, #64): before a release, run `scanbench --budget`
+against a fixed 200k-file tree and the ignored 1M-node arena benchmark, and treat a
+>20% regression as a bug.
 
 ### Category invariants
 
