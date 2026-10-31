@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use storagelens_core::{EntryKind, FileStamp};
 use storagelens_safety::bin::{locate_in, restore_by_rename};
 use storagelens_safety::{
-    execute, undo, Bin, Guard, Item, Manifest, ManifestError, Status, Undone, Wanted,
+    execute, execute_with, undo, Bin, Guard, Item, Manifest, ManifestError, Status, Undone, Wanted,
 };
 
 const NOW: i64 = 1_793_456_701;
@@ -323,13 +323,24 @@ fn refused_skipped_and_failed_items_are_recorded_and_left_alone() {
         ..f.item("Other/old.iso")
     };
     changed.rule_id = None;
-    let items = [refused, changed, gone];
+    // A link inside the root to the manifests folder outside it.
+    symlink(&f.manifests, f.root.join("escape")).expect("link");
+    let escape = Item {
+        path: f.root.join("escape"),
+        ..f.item("old.iso")
+    };
+    let items = [refused, changed, gone, escape];
 
     let outcome = execute(&f.guard, &items, &f.manifests, &f.bin, &stamp, NOW).expect("execute");
     let statuses: Vec<Status> = outcome.items.iter().map(|item| item.status).collect();
     assert_eq!(
         statuses,
-        [Status::Refused, Status::Skipped, Status::Refused]
+        [
+            Status::Refused,
+            Status::Skipped,
+            Status::Skipped,
+            Status::Refused
+        ]
     );
     assert!(outcome.items[0]
         .reason
@@ -342,12 +353,16 @@ fn refused_skipped_and_failed_items_are_recorded_and_left_alone() {
     assert!(outcome.items[2]
         .reason
         .as_deref()
-        .is_some_and(|r| r.contains("resolved")));
+        .is_some_and(|r| r.contains("no longer there")));
     assert_eq!(outcome.trashed_bytes, 0);
     assert_eq!(f.bin.calls.get(), 0);
 
     let report = undo(&outcome.manifest, &f.bin, NOW).expect("undo");
-    assert_eq!(report.count(&Undone::NotTrashed), 3);
+    assert!(outcome.items[3]
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.contains("outside")));
+    assert_eq!(report.count(&Undone::NotTrashed), 4);
 }
 
 /// A bin whose every operation fails.
@@ -558,4 +573,53 @@ fn a_restore_recreates_a_missing_folder() {
         fs::read(f.root.join("Cache/deep/x")).expect("read"),
         b"deep"
     );
+}
+
+#[test]
+fn a_cancelled_deletion_stops_cleanly_and_can_be_undone() {
+    let f = fixture();
+    let before = snapshot(&f.root);
+    let items = f.items();
+    let mut seen = Vec::new();
+    let outcome = execute_with(
+        &f.guard,
+        &items,
+        &f.manifests,
+        &f.bin,
+        &stamp,
+        NOW,
+        &mut |index| {
+            seen.push(index);
+            index < 2
+        },
+    )
+    .expect("execute");
+    assert_eq!(seen, [0, 1, 2], "asked before each item until it said stop");
+    let statuses: Vec<Status> = outcome.items.iter().map(|item| item.status).collect();
+    assert_eq!(
+        statuses,
+        [
+            Status::Trashed,
+            Status::Trashed,
+            Status::Cancelled,
+            Status::Cancelled
+        ]
+    );
+    assert!(outcome.items[2]
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.contains("cancelled")));
+    assert!(
+        fs::symlink_metadata(&items[2].path).is_ok(),
+        "cancelled items never move"
+    );
+    assert_eq!(
+        Manifest::read(&outcome.manifest).expect("manifest").items,
+        outcome.items
+    );
+
+    let report = undo(&outcome.manifest, &f.bin, NOW).expect("undo");
+    assert_eq!(report.count(&Undone::Restored), 2);
+    assert_eq!(report.count(&Undone::NotTrashed), 2);
+    assert_eq!(snapshot(&f.root), before);
 }

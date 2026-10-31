@@ -31,7 +31,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use storagelens_analysis::rules::{evaluate, fingerprint, Context, Evaluation, RuleSet};
+use storagelens_analysis::rules::{
+    evaluate, fingerprint, risk_name, risk_weight, Context, Evaluation, Kind, RuleSet,
+};
 use storagelens_analysis::{FileFilter, Risk, SyntheticTree};
 use storagelens_catalog::{
     file_order, modified_times, rollup, slice, Arena, Catalog, Collection, CollectionQuery,
@@ -42,10 +44,11 @@ use storagelens_core::{CancelToken, EntryKind, Progress, ScanOptions, ScanResult
 use tauri::{AppHandle, State};
 
 use crate::dto::{
-    AppRowDto, CategoryDto, ChildDto, CollectionDto, CollectionResultDto, CrumbDto,
-    DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRangeDto, FileRowDto, FileSortDto,
-    FilterDto, Grouping, OverviewDto, Page, RuleGroupDto, ScanStatusDto, ScanTargetDto,
-    ScanTargetKind, SearchCursorDto, SizeCursorDto, TreeNodeDto, VolumeDto,
+    AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CollectionDto,
+    CollectionResultDto, CrumbDto, DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRangeDto,
+    FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page, PlanItemDto, ResultItemDto,
+    RuleGroupDto, RuleItemDto, ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto,
+    SizeCursorDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
 };
 use crate::events::{
     self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
@@ -116,7 +119,22 @@ struct GroupingCache {
 struct RulesCache {
     scan_id: i64,
     fingerprint: u64,
-    evaluation: Arc<Evaluation>,
+    rules: Arc<Rules>,
+}
+
+/// One evaluation of the rule catalog over one scan.
+struct Rules {
+    /// Changes whenever the rules are re-run.
+    key: u64,
+    set: RuleSet,
+    evaluation: Evaluation,
+}
+
+/// A receipt `execute_deletion` may act on: what the user saw, and what the
+/// Trash service needs for each line.
+struct StoredPlan {
+    dto: DeletionPlanDto,
+    items: Vec<storagelens_safety::Item>,
 }
 
 /// The scan currently running.
@@ -138,7 +156,12 @@ pub struct AppState {
     /// Final results of scans finished in this run, for `elevated` and skips.
     results: Mutex<HashMap<i64, ScanResult>>,
     /// Dry-run receipts, by plan id.
-    plans: Mutex<HashMap<String, DeletionPlanDto>>,
+    plans: Mutex<HashMap<String, StoredPlan>>,
+    /// Paths moved to the Trash in this run and not restored: hidden from
+    /// the Cleanup screen until the next scan.
+    removed: Mutex<std::collections::HashSet<String>>,
+    /// Set by `cancel_deletion`; checked before each item.
+    cancel_deletion: std::sync::atomic::AtomicBool,
     listing: Mutex<Option<Listing>>,
     grouping: Mutex<Option<GroupingCache>>,
     rules: Mutex<Option<RulesCache>>,
@@ -156,6 +179,8 @@ impl AppState {
             arena: Mutex::new(None),
             results: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
+            removed: Mutex::new(std::collections::HashSet::new()),
+            cancel_deletion: std::sync::atomic::AtomicBool::new(false),
             listing: Mutex::new(None),
             grouping: Mutex::new(None),
             rules: Mutex::new(None),
@@ -201,10 +226,16 @@ impl AppState {
     /// User and developer rule catalogs, read beside the catalog database;
     /// edited files are picked up on the next evaluation.
     fn rules_dir(&self) -> PathBuf {
-        self.catalog_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("rules")
+        self.data_dir().join("rules")
+    }
+
+    /// Deletion manifests (`trash-<UTC>.json`), beside the catalog.
+    fn manifests_dir(&self) -> PathBuf {
+        self.data_dir().join("manifests")
+    }
+
+    fn data_dir(&self) -> &Path {
+        self.catalog_path.parent().unwrap_or(Path::new("."))
     }
 }
 
@@ -708,7 +739,7 @@ fn grouping_tree(
         Grouping::Cleanliness => rule_evaluation(state, arena, scan_id, root.as_deref(), &times)?,
         _ => None,
     };
-    let rules_key = rules.as_ref().map(|(key, _)| *key);
+    let rules_key = rules.as_ref().map(|rules| rules.key);
     if let Some(cached) = lock(&state.grouping)?.as_ref() {
         if cached.scan_id == scan_id
             && cached.by == by
@@ -742,7 +773,7 @@ fn grouping_tree(
     };
     let risk = rules
         .as_ref()
-        .map(|(_, evaluation)| |index: NodeIndex| evaluation.risk_of(index));
+        .map(|rules| |index: NodeIndex| rules.evaluation.risk_of(index));
     let input = storagelens_analysis::GroupingInput {
         arena,
         root_path: root.as_deref(),
@@ -800,17 +831,16 @@ fn rules_context() -> Context {
     context
 }
 
-/// The cleanup rules' verdicts on `scan_id`, with a key that changes when
-/// they are re-run. Re-run when the scan or the rules folder changes; each
-/// run replaces the scan's `rule_hit` rows. `None` for a scan with no
-/// recorded root (the engine matches absolute paths).
+/// The cleanup rules' verdicts on `scan_id`. Re-run when the scan or the
+/// rules folder changes; each run replaces the scan's `rule_hit` rows. `None`
+/// for a scan with no recorded root (the engine matches absolute paths).
 fn rule_evaluation(
     state: &AppState,
     arena: &Arena,
     scan_id: i64,
     root: Option<&Path>,
     times: &[i64],
-) -> CommandResult<Option<(u64, Arc<Evaluation>)>> {
+) -> CommandResult<Option<Arc<Rules>>> {
     let Some(root) = root.and_then(Path::to_str) else {
         return Ok(None);
     };
@@ -818,34 +848,42 @@ fn rule_evaluation(
     let print = fingerprint(&dir);
     if let Some(cached) = lock(&state.rules)?.as_ref() {
         if cached.scan_id == scan_id && cached.fingerprint == print {
-            return Ok(Some((print, Arc::clone(&cached.evaluation))));
+            return Ok(Some(Arc::clone(&cached.rules)));
         }
     }
     let context = rules_context();
-    let rules = RuleSet::load(&context, &dir);
-    for problem in &rules.problems {
+    let set = RuleSet::load(&context, &dir);
+    for problem in &set.problems {
         eprintln!("cleanup rule skipped: {problem}");
     }
     let guard =
         storagelens_safety::Guard::from_resolved(context.platform, root, context.home.as_deref())
             .map_err(|refusal| format!("the scanned folder {root} cannot be cleaned: {refusal}"))?;
-    let evaluation = Arc::new(evaluate(
-        &rules,
-        arena,
-        root,
-        Some(times),
-        now_unix(),
-        &guard,
-    ));
+    let evaluation = evaluate(&set, arena, root, Some(times), now_unix(), &guard);
     lock(&state.catalog)?
         .replace_rule_hits(scan_id, &evaluation.rows(arena))
         .map_err(|error| error.to_string())?;
+    let rules = Arc::new(Rules {
+        key: print ^ (state.next_plan.fetch_add(1, Ordering::Relaxed) << 1),
+        set,
+        evaluation,
+    });
     *lock(&state.rules)? = Some(RulesCache {
         scan_id,
         fingerprint: print,
-        evaluation: Arc::clone(&evaluation),
+        rules: Arc::clone(&rules),
     });
-    Ok(Some((print, evaluation)))
+    Ok(Some(rules))
+}
+
+/// The rules over `scan_id`, loading what they need.
+fn rules_for(state: &AppState, scan_id: i64) -> CommandResult<Arc<Rules>> {
+    let arena = state.arena(scan_id)?;
+    let times = cached_times(state, &arena, scan_id)?;
+    let root = state.root_of(scan_id);
+    rule_evaluation(state, &arena, scan_id, root.as_deref(), &times)?.ok_or_else(|| {
+        "this scan predates path recording; rescan to see cleanup suggestions".to_owned()
+    })
 }
 
 /// The id a group goes by: its folder's entry id when it stands for one
@@ -1603,9 +1641,137 @@ pub fn get_largest(
     Ok(Page { items, next_cursor })
 }
 
-// --- Deletion: the receipt rule is enforced now, execution comes with #30 -------
+// --- Cleanup: suggestions, receipt, Trash, undo (#34) -------------------------------
 
-pub fn preview_deletion(state: &AppState, paths: Vec<String>) -> CommandResult<DeletionPlanDto> {
+/// Over this, execution needs a second confirmation (PLAN §15.7).
+pub const CONFIRM_ABOVE: u64 = 5 * 1024 * 1024 * 1024;
+
+const KIND_ORDER: [Kind; 6] = [
+    Kind::Regenerable,
+    Kind::Stale,
+    Kind::Duplicate,
+    Kind::Leftover,
+    Kind::Valuable,
+    Kind::System,
+];
+
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Regenerable => "regenerable",
+        Kind::Stale => "stale",
+        Kind::Duplicate => "duplicate",
+        Kind::Leftover => "leftover",
+        Kind::Valuable => "valuable",
+        Kind::System => "system",
+    }
+}
+
+/// Local Time Machine snapshots, as a report-only card (macOS).
+#[cfg(target_os = "macos")]
+fn snapshot_card(problems: &mut Vec<String>) -> Option<RuleGroupDto> {
+    use storagelens_scan_macos::snapshots;
+    let found = match snapshots::list(Path::new("/")) {
+        Ok(found) => found,
+        Err(error) => {
+            problems.push(format!("local snapshots could not be listed: {error}"));
+            return None;
+        }
+    };
+    (!found.is_empty()).then(|| RuleGroupDto {
+        rule_id: snapshots::RULE_ID.to_owned(),
+        title: snapshots::TITLE.to_owned(),
+        kind: kind_name(Kind::System).to_owned(),
+        risk: "safe".to_owned(),
+        explain: snapshots::EXPLAIN.to_owned(),
+        command: Some("tmutil deletelocalsnapshots <date>".to_owned()),
+        deletable: false,
+        bytes: 0,
+        items: found
+            .into_iter()
+            .map(|snapshot| RuleItemDto {
+                path: snapshot.name,
+                entry_id: None,
+                bytes: 0,
+                selected: false,
+            })
+            .collect(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn snapshot_card(_problems: &mut Vec<String>) -> Option<RuleGroupDto> {
+    None
+}
+
+/// The Cleanup screen's cards for `scan_id`.
+pub fn get_rules(state: &AppState, scan_id: i64) -> CommandResult<CleanupDto> {
+    let rules = rules_for(state, scan_id)?;
+    let removed = lock(&state.removed)?.clone();
+    let mut groups: Vec<(usize, RuleGroupDto)> = Vec::new();
+    for compiled in &rules.set.rules {
+        let rule = &compiled.rule;
+        let mut items: Vec<RuleItemDto> = rules
+            .evaluation
+            .hits
+            .iter()
+            .filter(|hit| hit.rule_id == rule.id && !removed.contains(&hit.path))
+            .map(|hit| RuleItemDto {
+                path: hit.path.clone(),
+                entry_id: None,
+                bytes: hit.bytes,
+                selected: hit.selected,
+            })
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        items.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
+        let order = KIND_ORDER
+            .iter()
+            .position(|kind| *kind == rule.kind)
+            .unwrap_or(0);
+        groups.push((
+            order,
+            RuleGroupDto {
+                rule_id: rule.id.clone(),
+                title: rule.title.clone(),
+                kind: kind_name(rule.kind).to_owned(),
+                risk: risk_name(rule.risk()).to_owned(),
+                explain: rule.explain.clone(),
+                command: rule.command.clone(),
+                deletable: rule.deletable(),
+                bytes: items.iter().map(|item| item.bytes).sum(),
+                items,
+            },
+        ));
+    }
+    let mut problems = rules.set.problems.clone();
+    if let Some(card) = snapshot_card(&mut problems) {
+        groups.push((KIND_ORDER.len() - 1, card));
+    }
+    groups.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| y.bytes.cmp(&x.bytes)));
+    Ok(CleanupDto {
+        scan_id,
+        groups: groups.into_iter().map(|(_, group)| group).collect(),
+        refused: rules.evaluation.refused.len() as u64,
+        reclaim_safe: rules.evaluation.reclaim.safe.round() as u64,
+        reclaim_review: (rules.evaluation.reclaim.review / risk_weight(Risk::Review)).round()
+            as u64,
+        problems,
+    })
+}
+
+/// Whether `inner` is `outer` or below it, component by component.
+fn is_within(inner: &str, outer: &str) -> bool {
+    Path::new(inner).starts_with(Path::new(outer))
+}
+
+/// Make the receipt for `paths`, each a deletable suggestion of `scan_id`.
+pub fn preview_deletion(
+    state: &AppState,
+    scan_id: i64,
+    paths: Vec<String>,
+) -> CommandResult<DeletionPlanDto> {
     if paths.is_empty() {
         return Err("nothing selected to delete".to_owned());
     }
@@ -1618,24 +1784,287 @@ pub fn preview_deletion(state: &AppState, paths: Vec<String>) -> CommandResult<D
             return Err(format!("listed twice: {path}"));
         }
     }
+    for (i, a) in paths.iter().enumerate() {
+        for b in &paths[i + 1..] {
+            if is_within(a, b) || is_within(b, a) {
+                return Err(format!("{a} and {b} overlap; select only one of them"));
+            }
+        }
+    }
 
+    let rules = rules_for(state, scan_id)?;
+    let removed = lock(&state.removed)?.clone();
+    let candidates: HashMap<&str, &storagelens_analysis::rules::Hit> = rules
+        .evaluation
+        .candidates()
+        .map(|candidate| (candidate.hit().path.as_str(), candidate.hit()))
+        .collect();
+    let arena = state.arena(scan_id)?;
+    let catalog = lock(&state.catalog)?;
+    let mut items = Vec::new();
+    let mut lines = Vec::new();
+    for path in &paths {
+        if removed.contains(path) {
+            return Err(format!("{path} was already moved to the Trash"));
+        }
+        let hit = candidates
+            .get(path.as_str())
+            .ok_or_else(|| format!("{path} is not a cleanup suggestion of this scan"))?;
+        let entry = arena
+            .entry_id(hit.node)
+            .and_then(|id| catalog.entry(scan_id, id).ok().flatten())
+            .ok_or_else(|| format!("{path} is not in the catalog"))?;
+        let title = rules.set.get(&hit.rule_id).map_or_else(
+            || hit.rule_id.clone(),
+            |compiled| compiled.rule.title.clone(),
+        );
+        items.push(storagelens_safety::Item {
+            path: PathBuf::from(path),
+            bytes: hit.bytes,
+            rule_id: Some(hit.rule_id.clone()),
+            stamp: storagelens_core::FileStamp {
+                kind: entry.kind,
+                size_logical: entry.size_logical,
+                modified: entry.modified.unwrap_or(0),
+                dev: entry.dev,
+                file_id: entry.file_id,
+                attrs: entry.attrs,
+            },
+        });
+        lines.push(PlanItemDto {
+            path: path.clone(),
+            bytes: hit.bytes,
+            rule_id: hit.rule_id.clone(),
+            title,
+            risk: risk_name(hit.risk).to_owned(),
+        });
+    }
+    drop(catalog);
+
+    let total_bytes = lines.iter().map(|line| line.bytes).sum();
     let number = state.next_plan.fetch_add(1, Ordering::Relaxed);
-    let plan = DeletionPlanDto {
+    let dto = DeletionPlanDto {
         plan_id: format!("plan-{number}-{}", now_unix()),
-        paths,
+        scan_id,
+        items: lines,
+        total_bytes,
+        needs_confirmation: total_bytes > CONFIRM_ABOVE,
         created_at: now_unix(),
     };
-    lock(&state.plans)?.insert(plan.plan_id.clone(), plan.clone());
-    Ok(plan)
+    lock(&state.plans)?.insert(
+        dto.plan_id.clone(),
+        StoredPlan {
+            dto: dto.clone(),
+            items,
+        },
+    );
+    Ok(dto)
 }
 
-pub fn execute_deletion(state: &AppState, plan_id: &str) -> CommandResult<DeletionResultDto> {
-    if !lock(&state.plans)?.contains_key(plan_id) {
-        return Err(format!(
-            "no dry-run receipt for plan '{plan_id}': call preview_deletion first"
-        ));
+/// The platform's Trash, for the user whose home is `home`.
+#[cfg(target_os = "macos")]
+fn system_bin(home: &Path) -> storagelens_safety::bin::SystemBin {
+    storagelens_safety::bin::SystemBin::new(home)
+}
+
+#[cfg(windows)]
+fn system_bin(home: &Path) -> storagelens_safety::bin::SystemBin {
+    storagelens_safety::bin::SystemBin::new(home)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_stamp(path: &Path) -> std::io::Result<storagelens_core::FileStamp> {
+    storagelens_scan_macos::stamp(path)
+}
+
+#[cfg(windows)]
+fn platform_stamp(path: &Path) -> std::io::Result<storagelens_core::FileStamp> {
+    storagelens_scan_windows::stamp(path)
+}
+
+fn status_name(status: storagelens_safety::Status) -> &'static str {
+    use storagelens_safety::Status;
+    match status {
+        Status::Planned => "planned",
+        Status::Trashed => "trashed",
+        Status::Refused => "refused",
+        Status::Skipped => "skipped",
+        Status::Failed => "failed",
+        Status::Cancelled => "cancelled",
     }
-    Err(not_built("Moving files to the Trash", "#30"))
+}
+
+/// Move a previewed plan to the Trash. `confirmed` is the second click a plan
+/// over 5 GB needs. A plan runs once: it is used up whatever happens.
+pub fn execute_deletion(
+    state: &AppState,
+    sink: &dyn Emit,
+    plan_id: &str,
+    confirmed: bool,
+    bin: &dyn storagelens_safety::Bin,
+    stamp: &dyn Fn(&Path) -> std::io::Result<storagelens_core::FileStamp>,
+) -> CommandResult<DeletionResultDto> {
+    let plan = {
+        let mut plans = lock(&state.plans)?;
+        let Some(plan) = plans.remove(plan_id) else {
+            return Err(format!(
+                "no dry-run receipt for plan '{plan_id}': call preview_deletion first"
+            ));
+        };
+        if plan.dto.needs_confirmation && !confirmed {
+            plans.insert(plan_id.to_owned(), plan);
+            return Err("this deletion is over 5 GB and needs a second confirmation".to_owned());
+        }
+        plan
+    };
+    let root = state
+        .root_of(plan.dto.scan_id)
+        .ok_or("this scan predates path recording; rescan first")?;
+    let home = home_dir();
+    let guard = storagelens_safety::Guard::new(&root, home.as_deref().map(Path::new))
+        .map_err(|refusal| format!("cannot clean {}: {refusal}", root.display()))?;
+    let dir = state.manifests_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+
+    state.cancel_deletion.store(false, Ordering::SeqCst);
+    let total = plan.items.len() as u64;
+    let throttle = Throttle::new(PROGRESS_INTERVAL);
+    let mut before = |index: usize| {
+        if index == 0 || throttle.ready() {
+            events::emit(
+                sink,
+                events::CLEANUP_PROGRESS,
+                &CleanupProgressDto {
+                    plan_id: plan_id.to_owned(),
+                    done: index as u64,
+                    total,
+                },
+            );
+        }
+        !state.cancel_deletion.load(Ordering::SeqCst)
+    };
+    let now = now_unix();
+    let outcome =
+        storagelens_safety::execute_with(&guard, &plan.items, &dir, bin, stamp, now, &mut before)
+            .map_err(|error| error.to_string())?;
+
+    let manifest_path = outcome.manifest.display().to_string();
+    let trashed: Vec<(String, u64, Option<String>)> = outcome
+        .items
+        .iter()
+        .filter(|item| item.status == storagelens_safety::Status::Trashed)
+        .map(|item| {
+            (
+                item.path.display().to_string(),
+                item.bytes,
+                item.rule_id.clone(),
+            )
+        })
+        .collect();
+    lock(&state.catalog)?
+        .record_trashed(now, &manifest_path, &trashed)
+        .map_err(|error| error.to_string())?;
+    lock(&state.removed)?.extend(trashed.iter().map(|(path, _, _)| path.clone()));
+
+    Ok(DeletionResultDto {
+        manifest_id: outcome
+            .manifest
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        items: outcome
+            .items
+            .iter()
+            .map(|item| ResultItemDto {
+                path: item.path.display().to_string(),
+                bytes: item.bytes,
+                status: status_name(item.status).to_owned(),
+                reason: item.reason.clone(),
+            })
+            .collect(),
+        trashed: trashed.len() as u64,
+        trashed_bytes: outcome.trashed_bytes,
+        warning: outcome.manifest_warning,
+    })
+}
+
+/// Stop an executing deletion before its next item.
+pub fn cancel_deletion(state: &AppState) {
+    state.cancel_deletion.store(true, Ordering::SeqCst);
+}
+
+/// The manifest `manifest_id` names: a bare `trash-….json` in the manifests
+/// folder, never a path.
+fn manifest_path(state: &AppState, manifest_id: &str) -> CommandResult<PathBuf> {
+    let plain = manifest_id.starts_with("trash-")
+        && manifest_id.ends_with(".json")
+        && !manifest_id.contains(['/', '\\'])
+        && !manifest_id.contains("..");
+    if !plain {
+        return Err(format!("'{manifest_id}' is not a deletion manifest"));
+    }
+    Ok(state.manifests_dir().join(manifest_id))
+}
+
+/// Put back what the deletion `manifest_id` moved.
+pub fn undo_deletion(
+    state: &AppState,
+    manifest_id: &str,
+    bin: &dyn storagelens_safety::Bin,
+) -> CommandResult<UndoResultDto> {
+    use storagelens_safety::Undone;
+    let path = manifest_path(state, manifest_id)?;
+    let now = now_unix();
+    let report = storagelens_safety::undo(&path, bin, now).map_err(|error| error.to_string())?;
+    let restored: Vec<String> = report
+        .items
+        .iter()
+        .filter(|item| item.result == Undone::Restored)
+        .map(|item| item.path.display().to_string())
+        .collect();
+    lock(&state.catalog)?
+        .mark_restored(&path.display().to_string(), &restored, now)
+        .map_err(|error| error.to_string())?;
+    {
+        let mut removed = lock(&state.removed)?;
+        for path in &restored {
+            removed.remove(path);
+        }
+    }
+    let items = report
+        .items
+        .iter()
+        .map(|item| {
+            let (result, reason) = match &item.result {
+                Undone::Restored => ("restored", None),
+                Undone::AlreadyRestored => ("already-restored", None),
+                Undone::NotTrashed => ("not-trashed", None),
+                Undone::NotInTrash => (
+                    "not-in-trash",
+                    Some("it is no longer in the Trash".to_owned()),
+                ),
+                Undone::Occupied => (
+                    "occupied",
+                    Some(
+                        "something else is at its old place now, so it stays in the Trash"
+                            .to_owned(),
+                    ),
+                ),
+                Undone::Failed(why) => ("failed", Some(why.clone())),
+            };
+            UndoItemDto {
+                path: item.path.display().to_string(),
+                result: result.to_owned(),
+                reason,
+            }
+        })
+        .collect();
+    Ok(UndoResultDto {
+        items,
+        restored: restored.len() as u64,
+        warning: report.manifest_warning,
+    })
 }
 
 // --- Full Disk Access --------------------------------------------------------------
@@ -1873,31 +2302,62 @@ pub mod ipc {
     }
 
     #[tauri::command]
-    pub async fn get_rules(scan_id: i64) -> CommandResult<Vec<RuleGroupDto>> {
-        let _ = scan_id;
-        Err(not_built("Cleanup rules", "#31"))
+    pub async fn get_rules(state: AppStateRef<'_>, scan_id: i64) -> CommandResult<CleanupDto> {
+        super::get_rules(state.inner(), scan_id)
     }
 
     #[tauri::command]
     pub async fn preview_deletion(
         state: AppStateRef<'_>,
+        scan_id: i64,
         paths: Vec<String>,
     ) -> CommandResult<DeletionPlanDto> {
-        super::preview_deletion(state.inner(), paths)
+        super::preview_deletion(state.inner(), scan_id, paths)
     }
 
     #[tauri::command]
     pub async fn execute_deletion(
+        app: AppHandle,
         state: AppStateRef<'_>,
         plan_id: String,
+        confirmed: bool,
     ) -> CommandResult<DeletionResultDto> {
-        super::execute_deletion(state.inner(), &plan_id)
+        let state = Arc::clone(state.inner());
+        tauri::async_runtime::spawn_blocking(move || {
+            let home = super::home_dir().unwrap_or_default();
+            let bin = super::system_bin(Path::new(&home));
+            super::execute_deletion(
+                &state,
+                &app,
+                &plan_id,
+                confirmed,
+                &bin,
+                &super::platform_stamp,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     #[tauri::command]
-    pub async fn undo_deletion(manifest_id: String) -> CommandResult<()> {
-        let _ = manifest_id;
-        Err(not_built("Undo", "#30"))
+    pub async fn cancel_deletion(state: AppStateRef<'_>) -> CommandResult<()> {
+        super::cancel_deletion(state.inner());
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn undo_deletion(
+        state: AppStateRef<'_>,
+        manifest_id: String,
+    ) -> CommandResult<UndoResultDto> {
+        let state = Arc::clone(state.inner());
+        tauri::async_runtime::spawn_blocking(move || {
+            let home = super::home_dir().unwrap_or_default();
+            let bin = super::system_bin(Path::new(&home));
+            super::undo_deletion(&state, &manifest_id, &bin)
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     #[tauri::command]
@@ -2082,26 +2542,361 @@ mod tests {
         assert!(get_children(&state, scan_id, i64::MAX, Some(0)).is_err());
     }
 
+    /// A Trash that is a folder in the test's temp dir: never the real one.
+    #[cfg(unix)]
+    struct FolderBin {
+        dir: PathBuf,
+        /// Called on each move, after it.
+        after: Box<dyn Fn() + Send + Sync>,
+    }
+
+    #[cfg(unix)]
+    impl FolderBin {
+        fn new(dir: &tempfile::TempDir) -> Self {
+            let trash = dir.path().join("Trash");
+            fs::create_dir_all(&trash).expect("trash");
+            Self {
+                dir: trash,
+                after: Box::new(|| {}),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl storagelens_safety::Bin for FolderBin {
+        fn trash(&self, path: &Path) -> std::io::Result<()> {
+            let name = path
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned();
+            let mut target = self.dir.join(&name);
+            let mut n = 1;
+            while fs::symlink_metadata(&target).is_ok() {
+                n += 1;
+                target = self.dir.join(format!("{name} {n}"));
+            }
+            fs::rename(path, target)?;
+            (self.after)();
+            Ok(())
+        }
+        fn locate(
+            &self,
+            wanted: &[storagelens_safety::Wanted<'_>],
+        ) -> std::io::Result<Vec<Option<String>>> {
+            storagelens_safety::bin::locate_in(std::slice::from_ref(&self.dir), wanted)
+        }
+        fn restore(&self, location: &str, original: &Path) -> std::io::Result<()> {
+            storagelens_safety::bin::restore_by_rename(Path::new(location), original)
+        }
+    }
+
+    /// The scan fixture plus two Python caches the built-in rules suggest.
+    #[cfg(unix)]
+    fn cleanup_fixture(dir: &tempfile::TempDir) -> (Arc<AppState>, i64, PathBuf) {
+        let state = state(dir);
+        let root = tree(dir);
+        for (folder, bytes) in [("tool", 40_000), ("lib", 9_000)] {
+            fs::create_dir_all(root.join(folder).join("__pycache__")).expect("dirs");
+            fs::write(
+                root.join(folder).join("__pycache__/m.pyc"),
+                vec![4u8; bytes],
+            )
+            .expect("file");
+        }
+        let (scan_id, _) = scan(&state, &root);
+        (state, scan_id, root)
+    }
+
+    #[cfg(unix)]
+    fn suggestions(state: &AppState, scan_id: i64) -> Vec<String> {
+        get_rules(state, scan_id)
+            .expect("rules")
+            .groups
+            .into_iter()
+            .filter(|group| group.deletable)
+            .flat_map(|group| group.items.into_iter().map(|item| item.path))
+            .collect()
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn execute_deletion_requires_a_preview() {
+    fn cleanup_previews_trashes_and_undoes_exactly_what_the_receipt_lists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, scan_id, root) = cleanup_fixture(&dir);
+        let bin = FolderBin::new(&dir);
+        let recorder = Recorder::default();
+
+        let cleanup = get_rules(&state, scan_id).expect("rules");
+        assert!(cleanup.problems.is_empty(), "{:?}", cleanup.problems);
+        let cache = cleanup
+            .groups
+            .iter()
+            .find(|group| group.rule_id == "dev.python_bytecode")
+            .expect("card");
+        assert!(cache.deletable && cache.kind == "regenerable" && cache.risk == "safe");
+        assert_eq!(cache.items.len(), 2);
+        assert!(
+            cache.items[0].bytes >= cache.items[1].bytes,
+            "biggest first"
+        );
+        let paths = suggestions(&state, scan_id);
+
+        // The receipt rule: no preview, no execution.
+        let error = execute_deletion(
+            &state,
+            &recorder,
+            "plan-made-up",
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect_err("no receipt");
+        assert!(error.contains("preview_deletion"), "{error}");
+        // Only real suggestions, each once, never one inside another.
+        assert!(preview_deletion(&state, scan_id, vec![]).is_err());
+        assert!(preview_deletion(&state, scan_id, vec!["relative".into()]).is_err());
+        assert!(
+            preview_deletion(&state, scan_id, vec![paths[0].clone(), paths[0].clone()]).is_err()
+        );
+        let notes = root.join("notes.txt").display().to_string();
+        let error = preview_deletion(&state, scan_id, vec![notes]).expect_err("not a suggestion");
+        assert!(error.contains("not a cleanup suggestion"), "{error}");
+        let inside = format!("{}/m.pyc", paths[0]);
+        let error =
+            preview_deletion(&state, scan_id, vec![paths[0].clone(), inside]).expect_err("overlap");
+        assert!(error.contains("overlap"), "{error}");
+
+        let plan = preview_deletion(&state, scan_id, paths.clone()).expect("preview");
+        assert!(!plan.needs_confirmation);
+        assert_eq!(
+            plan.total_bytes,
+            plan.items.iter().map(|item| item.bytes).sum::<u64>()
+        );
+        assert!(plan
+            .items
+            .iter()
+            .all(|item| item.title == "Python bytecode caches"));
+
+        let result = execute_deletion(
+            &state,
+            &recorder,
+            &plan.plan_id,
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect("execute");
+        assert_eq!(result.trashed, 2, "{:?}", result.items);
+        assert_eq!(result.trashed_bytes, plan.total_bytes);
+        assert!(!recorder.named(events::CLEANUP_PROGRESS).is_empty());
+        for path in &paths {
+            assert!(!Path::new(path).exists(), "{path} still there");
+        }
+
+        // The receipt and the manifest list the same items, in the same order.
+        let manifest =
+            storagelens_safety::Manifest::read(&state.manifests_dir().join(&result.manifest_id))
+                .expect("manifest");
+        let in_manifest: Vec<(String, u64, Option<String>)> = manifest
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.path.display().to_string(),
+                    item.bytes,
+                    item.rule_id.clone(),
+                )
+            })
+            .collect();
+        let on_receipt: Vec<(String, u64, Option<String>)> = plan
+            .items
+            .iter()
+            .map(|item| (item.path.clone(), item.bytes, Some(item.rule_id.clone())))
+            .collect();
+        assert_eq!(in_manifest, on_receipt);
+
+        // A receipt is used once; moved items leave the screen; the log has them.
+        assert!(execute_deletion(
+            &state,
+            &recorder,
+            &plan.plan_id,
+            false,
+            &bin,
+            &platform_stamp
+        )
+        .is_err());
+        assert!(suggestions(&state, scan_id).is_empty());
+        let log = lock(&state.catalog)
+            .expect("catalog")
+            .trash_log()
+            .expect("log");
+        assert_eq!(log.len(), 2);
+
+        let undone = undo_deletion(&state, &result.manifest_id, &bin).expect("undo");
+        assert_eq!(undone.restored, 2, "{:?}", undone.items);
+        for path in &paths {
+            assert!(Path::new(path).exists(), "{path} not restored");
+        }
+        assert_eq!(suggestions(&state, scan_id).len(), 2, "back on the screen");
+        let log = lock(&state.catalog)
+            .expect("catalog")
+            .trash_log()
+            .expect("log");
+        assert!(log.iter().all(|row| row.restored_at.is_some()));
+        for bad in ["../catalog.db", "trash-x/../../y.json", "notes.json"] {
+            assert!(undo_deletion(&state, bad, &bin).is_err(), "{bad}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_or_changed_item_is_explained_and_nothing_else_moves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, scan_id, _) = cleanup_fixture(&dir);
+        let recorder = Recorder::default();
+        let paths = suggestions(&state, scan_id);
+
+        // Changed after the scan: skipped, with the reason.
+        let plan = preview_deletion(&state, scan_id, paths.clone()).expect("preview");
+        fs::write(format!("{}/new.pyc", paths[1]), b"written after the scan").expect("write");
+        // Times are compared to the second; make the change visible even
+        // when the test runs within the scan's second.
+        fs::File::open(&paths[1])
+            .and_then(|folder| {
+                folder.set_modified(std::time::SystemTime::now() + Duration::from_secs(60))
+            })
+            .expect("touch");
+        let bin = FolderBin::new(&dir);
+        let result = execute_deletion(
+            &state,
+            &recorder,
+            &plan.plan_id,
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect("execute");
+        let statuses: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.status.as_str())
+            .collect();
+        assert_eq!(statuses, ["trashed", "skipped"]);
+        assert!(
+            result.items[1]
+                .reason
+                .as_deref()
+                .is_some_and(|why| why.contains("modified")),
+            "{:?}",
+            result.items[1]
+        );
+        assert!(Path::new(&paths[1]).exists());
+        undo_deletion(&state, &result.manifest_id, &bin).expect("undo");
+
+        // Cancelled during the first move: the second never starts.
+        let plan = preview_deletion(&state, scan_id, vec![paths[0].clone()]).expect("preview");
+        let plan_two =
+            preview_deletion(&state, scan_id, vec![paths[0].clone()]).expect("second receipt");
+        let shared = Arc::clone(&state);
+        let mut bin = FolderBin::new(&dir);
+        bin.after = Box::new(move || cancel_deletion(&shared));
+        let first = execute_deletion(
+            &state,
+            &recorder,
+            &plan.plan_id,
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect("execute");
+        assert_eq!(first.trashed, 1);
+        // A new deletion starts uncancelled; this one finds its item gone.
+        let second = execute_deletion(
+            &state,
+            &recorder,
+            &plan_two.plan_id,
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect("execute");
+        assert_eq!(second.items[0].status, "skipped");
+        assert!(second.items[0]
+            .reason
+            .as_deref()
+            .is_some_and(|why| why.contains("no longer there")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_mid_way_leaves_the_rest_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state, scan_id, _) = cleanup_fixture(&dir);
+        let recorder = Recorder::default();
+        let paths = suggestions(&state, scan_id);
+        let plan = preview_deletion(&state, scan_id, paths.clone()).expect("preview");
+        let shared = Arc::clone(&state);
+        let mut bin = FolderBin::new(&dir);
+        bin.after = Box::new(move || cancel_deletion(&shared));
+        let result = execute_deletion(
+            &state,
+            &recorder,
+            &plan.plan_id,
+            false,
+            &bin,
+            &platform_stamp,
+        )
+        .expect("execute");
+        let statuses: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.status.as_str())
+            .collect();
+        assert_eq!(statuses, ["trashed", "cancelled"]);
+        assert!(Path::new(&paths[1]).exists());
+        assert_eq!(
+            suggestions(&state, scan_id),
+            [paths[1].clone()],
+            "only the moved one leaves"
+        );
+        let undone = undo_deletion(&state, &result.manifest_id, &bin).expect("undo");
+        assert_eq!(undone.restored, 1);
+        assert_eq!(suggestions(&state, scan_id).len(), 2);
+    }
+
+    #[test]
+    fn plans_over_5_gb_need_a_second_confirmation() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = state(&dir);
-
-        let error = execute_deletion(&state, "plan-made-up").expect_err("no receipt");
-        assert!(error.contains("preview_deletion"), "{error}");
-
-        assert!(preview_deletion(&state, vec![]).is_err());
-        assert!(preview_deletion(&state, vec!["relative".to_owned()]).is_err());
-        let absolute = dir.path().join("x").display().to_string();
-        assert!(preview_deletion(&state, vec![absolute.clone(), absolute.clone()]).is_err());
-
-        let plan = preview_deletion(&state, vec![absolute]).expect("preview");
-        let error = execute_deletion(&state, &plan.plan_id).expect_err("not built yet");
-        assert!(
-            !error.contains("preview_deletion"),
-            "a previewed plan passes the receipt check: {error}"
+        let root = tree(&dir);
+        let (scan_id, _) = scan(&state, &root);
+        let recorder = Recorder::default();
+        let dto = DeletionPlanDto {
+            plan_id: "plan-big".to_owned(),
+            scan_id,
+            items: Vec::new(),
+            total_bytes: CONFIRM_ABOVE + 1,
+            needs_confirmation: true,
+            created_at: 0,
+        };
+        lock(&state.plans).expect("plans").insert(
+            dto.plan_id.clone(),
+            StoredPlan {
+                dto,
+                items: Vec::new(),
+            },
         );
-        assert!(error.contains("#30"), "{error}");
+        let home = home_dir().unwrap_or_default();
+        let bin = system_bin(Path::new(&home));
+        let error = execute_deletion(&state, &recorder, "plan-big", false, &bin, &platform_stamp)
+            .expect_err("one click is not enough");
+        assert!(error.contains("second confirmation"), "{error}");
+        // The receipt survives the refusal; the second click goes through (and,
+        // with nothing on it, moves nothing).
+        let result = execute_deletion(&state, &recorder, "plan-big", true, &bin, &platform_stamp)
+            .expect("confirmed");
+        assert_eq!(result.trashed, 0);
     }
 
     #[test]

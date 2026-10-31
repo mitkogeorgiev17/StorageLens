@@ -50,6 +50,7 @@ fn main() {
             ipc::get_rules,
             ipc::preview_deletion,
             ipc::execute_deletion,
+            ipc::cancel_deletion,
             ipc::undo_deletion,
             ipc::list_apps,
             ipc::find_duplicates,

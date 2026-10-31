@@ -14,7 +14,12 @@ export interface Segment {
   readonly fraction: number;
 }
 
-function segment(key: string, label: string, bytes: number, total: number): Segment {
+function segment(
+  key: string,
+  label: string,
+  bytes: number,
+  total: number,
+): Segment {
   return { key, label, bytes, fraction: total > 0 ? bytes / total : 0 };
 }
 
@@ -29,7 +34,11 @@ function segment(key: string, label: string, bytes: number, total: number): Segm
 export function capacitySegments(
   volume: VolumeDto,
   scanned: number,
-): { readonly segments: readonly Segment[]; readonly total: number; readonly clamped: boolean } {
+): {
+  readonly segments: readonly Segment[];
+  readonly total: number;
+  readonly clamped: boolean;
+} {
   const total = Math.max(0, volume.total);
   const available = Math.min(total, Math.max(0, volume.available));
   const used = total - available;
@@ -59,10 +68,14 @@ export function categorySegments(
   const segments = categories
     .filter((category) => category.bytesAlloc > 0)
     .sort((left, right) => right.bytesAlloc - left.bytesAlloc)
-    .map((category) => segment(category.category, category.label, category.bytesAlloc, total));
+    .map((category) =>
+      segment(category.category, category.label, category.bytesAlloc, total),
+    );
   const counted = segments.reduce((sum, item) => sum + item.bytes, 0);
   const gap = total - counted;
-  return gap > 0 ? [...segments, segment("unaccounted", "Unaccounted", gap, total)] : segments;
+  return gap > 0
+    ? [...segments, segment("unaccounted", "Unaccounted", gap, total)]
+    : segments;
 }
 
 /** The reclaim headline, split as PLAN §10 asks: safe vs needs review. */
@@ -73,23 +86,28 @@ export interface Reclaim {
   readonly score: number;
 }
 
-export function reclaimSummary(rules: readonly RuleGroupDto[]): Reclaim {
-  let safe = 0;
-  let review = 0;
-  for (const rule of rules) {
-    if (rule.risk === "safe") {
-      safe += Math.max(0, rule.bytes);
-    } else if (rule.risk === "review") {
-      review += Math.max(0, rule.bytes);
-    }
-  }
+/** The rules engine's figures as the headline shows them. */
+export function reclaimSummary(cleanup: {
+  readonly reclaimSafe: number;
+  readonly reclaimReview: number;
+}): Reclaim {
+  const safe = Math.max(0, cleanup.reclaimSafe);
+  const review = Math.max(0, cleanup.reclaimReview);
   return { safe, review, score: safe + review * 0.5 };
 }
 
 /** The biggest actionable rule groups. "never" rules are not wins. */
-export function topWins(rules: readonly RuleGroupDto[], count = 5): readonly RuleGroupDto[] {
+export function topWins(
+  rules: readonly RuleGroupDto[],
+  count = 5,
+): readonly RuleGroupDto[] {
   return rules
-    .filter((rule) => (rule.risk === "safe" || rule.risk === "review") && rule.bytes > 0)
+    .filter(
+      (rule) =>
+        rule.deletable &&
+        (rule.risk === "safe" || rule.risk === "review") &&
+        rule.bytes > 0,
+    )
     .sort((left, right) => right.bytes - left.bytes)
     .slice(0, count);
 }

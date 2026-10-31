@@ -1227,10 +1227,16 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
     // totals of the query in that scan, tagged with scan_id; a folder that is not in the
     // scan, or an unreadable query, is a `problem`, not an error
 
-#[tauri::command] async fn get_rules(scan_id: u32) -> Result<Vec<RuleGroup>, String>;
-#[tauri::command] async fn preview_deletion(paths: Vec<String>) -> Result<DeletionPlan, String>;
-#[tauri::command] async fn execute_deletion(plan_id: String) -> Result<DeletionResult, String>;
-#[tauri::command] async fn undo_deletion(manifest_id: String) -> Result<(), String>;
+// Cleanup (#34)
+#[tauri::command] async fn get_rules(scan_id: i64) -> Result<Cleanup, String>;
+    // cards by kind, the reclaim figures, refused count, skipped catalog rules;
+    // on macOS a report-only Time Machine snapshots card
+#[tauri::command] async fn preview_deletion(scan_id: i64, paths: Vec<String>) -> Result<DeletionPlan, String>;
+    // only deletable suggestions of that scan, each once, none inside another
+#[tauri::command] async fn execute_deletion(plan_id: String, confirmed: bool) -> Result<DeletionResult, String>;
+    // a plan runs once; over 5 GB `confirmed` must be true; emits cleanup://progress
+#[tauri::command] async fn cancel_deletion() -> Result<(), String>;
+#[tauri::command] async fn undo_deletion(manifest_id: String) -> Result<UndoResult, String>;
 
 #[tauri::command] async fn list_apps(scan_id: u32) -> Result<Vec<AppRow>, String>;
 #[tauri::command] async fn find_duplicates(scan_id: u32, min_size: u64)
@@ -1324,6 +1330,27 @@ mistake is my own data, so the mechanics stay.
   The plan builder (#31/#34) checks the arena below each folder it offers.
 - **Coverage.** `cargo +nightly llvm-cov -p storagelens-safety --branch --summary-only`
   gives 100% of lines and branches.
+
+**Built (#34).** The Cleanup screen puts §15.2–§15.8 in front of the user.
+
+- **Selecting.** Rule cards are grouped by kind (`routes/Cleanup.tsx`,
+  `components/RuleCard.tsx`).
+  - Only deletable cards have checkboxes, and a report-only card shows its command.
+  - Selection starts from each rule's default.
+  - The running total counts a selected folder once, even if things inside it are
+    selected too (`lib/cleanup.ts`).
+- **The receipt** (`components/Receipt.tsx`) is the plan the backend made from the
+  selection. It lists every path, size and risk, in manifest order, and a test checks
+  that the manifest matches it. Over 5 GB, "Move to Trash" asks twice, and the backend
+  refuses the first click too.
+- **A plan runs once.** Each item goes through the guard, the preflight and the Trash.
+  "Stop" ends the run before the next item; those items are recorded as `cancelled`.
+  Moved items are logged in `trash_log` and hidden from the screen until the next scan.
+- **The result** lists every item that did not move, with its reason. A missing item is
+  reported as skipped ("no longer there"), not refused. Undo puts items back and
+  reports each one that it could not.
+- **Known limit.** The preflight compares times to the second, as the scan records them.
+  A folder changed within the same second as its scan is not caught by time alone.
 
 **Built (#30).** `safety::{trash, manifest, undo, bin}`.
 

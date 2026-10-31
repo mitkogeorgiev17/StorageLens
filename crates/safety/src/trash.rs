@@ -23,9 +23,9 @@ use std::path::{Path, PathBuf};
 
 use storagelens_core::FileStamp;
 
-use crate::guard::Guard;
+use crate::guard::{Guard, Refusal};
 use crate::manifest::{new_path, Manifest, ManifestError, ManifestItem, Status, MANIFEST_VERSION};
-use crate::preflight::preflight;
+use crate::preflight::{preflight, Skip};
 
 /// An item in the Trash that undo is looking for.
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +96,23 @@ pub fn execute(
     stamp: &dyn Fn(&Path) -> io::Result<FileStamp>,
     now: i64,
 ) -> Result<Outcome, ManifestError> {
+    execute_with(guard, items, manifest_dir, bin, stamp, now, &mut |_| true)
+}
+
+/// [`execute`], calling `before(index)` ahead of each item. When it returns
+/// `false` the deletion stops there: that item and every later one are
+/// recorded as [`Status::Cancelled`], never moved, and the manifest is
+/// finished as usual — a cancelled deletion is as consistent, and as
+/// undoable, as a complete one.
+pub fn execute_with(
+    guard: &Guard,
+    items: &[Item],
+    manifest_dir: &Path,
+    bin: &dyn Bin,
+    stamp: &dyn Fn(&Path) -> io::Result<FileStamp>,
+    now: i64,
+    before: &mut dyn FnMut(usize) -> bool,
+) -> Result<Outcome, ManifestError> {
     let mut manifest = Manifest {
         version: MANIFEST_VERSION,
         created_at: now,
@@ -117,9 +134,21 @@ pub fn execute(
     manifest.write(&path)?;
 
     let mut trashed_bytes = 0u64;
-    for item in &mut manifest.items {
-        let (status, reason) = if let Err(refusal) = guard.check(&item.path) {
-            (Status::Refused, Some(refusal.to_string()))
+    let mut cancelled = false;
+    for (index, item) in manifest.items.iter_mut().enumerate() {
+        cancelled = cancelled || !before(index);
+        let (status, reason) = if cancelled {
+            (
+                Status::Cancelled,
+                Some("the deletion was cancelled first".to_owned()),
+            )
+        } else if let Err(refusal) = guard.check(&item.path) {
+            if refusal == Refusal::Unresolvable(io::ErrorKind::NotFound) {
+                // Gone since the scan: nothing to refuse, just nothing to move.
+                (Status::Skipped, Some(Skip::Missing.to_string()))
+            } else {
+                (Status::Refused, Some(refusal.to_string()))
+            }
         } else if let Err(skip) = preflight(&item.path, &item.stamp, stamp) {
             (Status::Skipped, Some(skip.to_string()))
         } else {

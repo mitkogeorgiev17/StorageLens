@@ -61,6 +61,16 @@ fn map_entry(row: &Row<'_>) -> rusqlite::Result<StoredEntry> {
     })
 }
 
+/// One entry of `scan_id` by id.
+pub fn entry(conn: &Connection, scan_id: i64, id: i64) -> Result<Option<StoredEntry>> {
+    use rusqlite::OptionalExtension;
+    let sql = format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE scan_id = ?1 AND id = ?2");
+    Ok(conn
+        .prepare_cached(&sql)?
+        .query_row(params![scan_id, id], map_entry)
+        .optional()?)
+}
+
 /// Direct children of `parent_id`, largest first.
 pub fn children(conn: &Connection, scan_id: i64, parent_id: i64) -> Result<Vec<StoredEntry>> {
     let sql = format!(

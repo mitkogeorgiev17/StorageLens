@@ -24,7 +24,7 @@ pub mod undo;
 pub use guard::{Guard, Refusal};
 pub use manifest::{Manifest, ManifestError, ManifestItem, Status};
 pub use preflight::{compare, preflight, Skip};
-pub use trash::{execute, Bin, Item, Outcome, Wanted};
+pub use trash::{execute, execute_with, Bin, Item, Outcome, Wanted};
 pub use undo::{undo, UndoItem, UndoReport, Undone};
 
 /// Whose rules apply. Both platforms' rules are pure, so both are tested on

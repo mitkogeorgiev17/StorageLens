@@ -256,34 +256,132 @@ pub struct FilterDto {
     pub within: Option<i64>,
 }
 
-/// A cleanup rule's findings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// What the Cleanup screen shows for one scan (#34).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupDto {
+    pub scan_id: i64,
+    /// By kind (regenerable, stale, duplicate, leftover, valuable, system),
+    /// biggest first within a kind.
+    pub groups: Vec<RuleGroupDto>,
+    /// Matches the path guard refused; they are never offered.
+    pub refused: u64,
+    /// Σ bytes × confidence over safe suggestions, each byte once (PLAN §10),
+    /// as of the scan.
+    pub reclaim_safe: u64,
+    /// The same over suggestions that need review, before the score's 0.5.
+    pub reclaim_review: u64,
+    /// Catalog files or rules that were skipped, and why.
+    pub problems: Vec<String>,
+}
+
+/// One rule card.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleGroupDto {
     pub rule_id: String,
     pub title: String,
+    /// `regenerable`, `stale`, `duplicate`, `leftover`, `valuable`, `system`.
+    pub kind: String,
+    /// `safe`, `review`, `keep`, `never`.
     pub risk: String,
+    pub explain: String,
+    /// For report-only cards: what to run instead.
+    pub command: Option<String>,
+    /// Whether its items can be selected at all.
+    pub deletable: bool,
     pub bytes: u64,
-    pub paths: Vec<String>,
+    pub items: Vec<RuleItemDto>,
 }
 
-/// The dry-run receipt `execute_deletion` requires (AGENTS.md invariant 10).
+/// One match on a rule card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleItemDto {
+    /// Absolute path (or, for a snapshot, its name).
+    pub path: String,
+    pub entry_id: Option<i64>,
+    pub bytes: u64,
+    /// Starts selected.
+    pub selected: bool,
+}
+
+/// The dry-run receipt `execute_deletion` requires (AGENTS.md invariant 10):
+/// exactly what will be moved, in the order the manifest will list it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletionPlanDto {
     pub plan_id: String,
-    pub paths: Vec<String>,
+    pub scan_id: i64,
+    pub items: Vec<PlanItemDto>,
+    pub total_bytes: u64,
+    /// Over 5 GB: execution needs a second confirmation (PLAN §15.7).
+    pub needs_confirmation: bool,
     pub created_at: i64,
 }
 
-/// What an executed plan did.
+/// One receipt line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanItemDto {
+    pub path: String,
+    pub bytes: u64,
+    pub rule_id: String,
+    pub title: String,
+    pub risk: String,
+}
+
+/// What an executed plan did, item by item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletionResultDto {
+    /// The manifest's file name; `undo_deletion` takes it.
     pub manifest_id: String,
-    pub trashed: Vec<String>,
-    pub skipped: Vec<String>,
-    pub bytes_freed: u64,
+    pub items: Vec<ResultItemDto>,
+    pub trashed: u64,
+    pub trashed_bytes: u64,
+    /// Set when the final manifest write failed (undo still works).
+    pub warning: Option<String>,
+}
+
+/// One item's outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultItemDto {
+    pub path: String,
+    pub bytes: u64,
+    /// `trashed`, `refused`, `skipped`, `failed`, `cancelled`.
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+/// What an undo did, item by item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoResultDto {
+    pub items: Vec<UndoItemDto>,
+    pub restored: u64,
+    pub warning: Option<String>,
+}
+
+/// One item's undo outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoItemDto {
+    pub path: String,
+    /// `restored`, `already-restored`, `not-trashed`, `not-in-trash`,
+    /// `occupied`, `failed`.
+    pub result: String,
+    pub reason: Option<String>,
+}
+
+/// Deletion progress, sent before each item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupProgressDto {
+    pub plan_id: String,
+    pub done: u64,
+    pub total: u64,
 }
 
 /// One installed app.

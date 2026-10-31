@@ -169,7 +169,8 @@ export interface Page<T, C> {
   readonly nextCursor: C | null;
 }
 
-export type Grouping = "folder" | "type" | "app" | "age" | "size" | "cleanliness";
+export type Grouping =
+  "folder" | "type" | "app" | "age" | "size" | "cleanliness";
 
 export interface Filter {
   readonly categories?: readonly Category[];
@@ -211,25 +212,106 @@ export interface CollectionResultDto {
   readonly problem: string | null;
 }
 
+/** What the Cleanup screen shows for one scan (#34). */
+export interface CleanupDto {
+  readonly scanId: number;
+  /** By kind, biggest first within a kind. */
+  readonly groups: readonly RuleGroupDto[];
+  /** Matches the path guard refused; never offered. */
+  readonly refused: number;
+  /** Σ bytes × confidence over safe suggestions, each byte once (PLAN §10). */
+  readonly reclaimSafe: number;
+  /** The same over suggestions that need review. */
+  readonly reclaimReview: number;
+  readonly problems: readonly string[];
+}
+
+export type RuleKind =
+  "regenerable" | "stale" | "duplicate" | "leftover" | "valuable" | "system";
+export type RiskLevel = "safe" | "review" | "keep" | "never";
+
+/** One rule card. */
 export interface RuleGroupDto {
   readonly ruleId: string;
   readonly title: string;
-  readonly risk: string;
+  readonly kind: RuleKind;
+  readonly risk: RiskLevel;
+  readonly explain: string;
+  /** For report-only cards: what to run instead. */
+  readonly command: string | null;
+  readonly deletable: boolean;
   readonly bytes: number;
-  readonly paths: readonly string[];
+  readonly items: readonly RuleItemDto[];
 }
 
+export interface RuleItemDto {
+  /** Absolute path, or a snapshot's name. */
+  readonly path: string;
+  readonly entryId: number | null;
+  readonly bytes: number;
+  readonly selected: boolean;
+}
+
+/** The dry-run receipt: exactly what will move, in manifest order. */
 export interface DeletionPlanDto {
   readonly planId: string;
-  readonly paths: readonly string[];
+  readonly scanId: number;
+  readonly items: readonly PlanItemDto[];
+  readonly totalBytes: number;
+  /** Over 5 GB: execution needs a second confirmation. */
+  readonly needsConfirmation: boolean;
   readonly createdAt: number;
 }
 
+export interface PlanItemDto {
+  readonly path: string;
+  readonly bytes: number;
+  readonly ruleId: string;
+  readonly title: string;
+  readonly risk: RiskLevel;
+}
+
+export type ItemStatus =
+  "trashed" | "refused" | "skipped" | "failed" | "cancelled";
+
 export interface DeletionResultDto {
+  /** Pass to {@link api.undoDeletion}. */
   readonly manifestId: string;
-  readonly trashed: readonly string[];
-  readonly skipped: readonly string[];
-  readonly bytesFreed: number;
+  readonly items: readonly ResultItemDto[];
+  readonly trashed: number;
+  readonly trashedBytes: number;
+  readonly warning: string | null;
+}
+
+export interface ResultItemDto {
+  readonly path: string;
+  readonly bytes: number;
+  readonly status: ItemStatus;
+  readonly reason: string | null;
+}
+
+export type UndoOutcome =
+  | "restored"
+  | "already-restored"
+  | "not-trashed"
+  | "not-in-trash"
+  | "occupied"
+  | "failed";
+
+export interface UndoResultDto {
+  readonly items: readonly {
+    readonly path: string;
+    readonly result: UndoOutcome;
+    readonly reason: string | null;
+  }[];
+  readonly restored: number;
+  readonly warning: string | null;
+}
+
+export interface CleanupProgressEvent {
+  readonly planId: string;
+  readonly done: number;
+  readonly total: number;
 }
 
 export interface AppRowDto {
@@ -260,12 +342,19 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+async function call<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
   try {
     return await invoke<T>(command, args);
   } catch (error: unknown) {
     const message =
-      typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
+      typeof error === "string"
+        ? error
+        : error instanceof Error
+          ? error.message
+          : String(error);
     throw new ApiError(command, message);
   }
 }
@@ -276,11 +365,14 @@ export const api = {
   listScanTargets: () => call<readonly ScanTargetDto[]>("list_scan_targets"),
   startScan: (root: string) => call<number>("start_scan", { roots: [root] }),
   cancelScan: (scanId: number) => call<void>("cancel_scan", { scanId }),
-  scanStatus: (scanId: number) => call<ScanStatusDto>("scan_status", { scanId }),
+  scanStatus: (scanId: number) =>
+    call<ScanStatusDto>("scan_status", { scanId }),
   latestScan: () => call<ScanStatusDto | null>("latest_scan"),
 
-  getOverview: (scanId: number) => call<OverviewDto>("get_overview", { scanId }),
-  getCategories: (scanId: number) => call<readonly CategoryDto[]>("get_categories", { scanId }),
+  getOverview: (scanId: number) =>
+    call<OverviewDto>("get_overview", { scanId }),
+  getCategories: (scanId: number) =>
+    call<readonly CategoryDto[]>("get_categories", { scanId }),
   /**
    * One of the six grouping views (PLAN §9.6), as the same tree shape as
    * {@link api.getTree}: `parentId` zooms into a group (negative ids are
@@ -301,7 +393,11 @@ export const api = {
       depth: depth ?? null,
     }),
   getChildren: (scanId: number, parentId: number, limit?: number) =>
-    call<ChildrenDto>("get_children", { scanId, parentId, limit: limit ?? null }),
+    call<ChildrenDto>("get_children", {
+      scanId,
+      parentId,
+      limit: limit ?? null,
+    }),
   getTree: (scanId: number, parentId: number, depth?: number) =>
     call<TreeNodeDto>("get_tree", { scanId, parentId, depth: depth ?? null }),
   /** Show the entry selected in Finder / Explorer. */
@@ -318,7 +414,15 @@ export const api = {
     minSize: number,
     start: number,
     count: number,
-  ) => call<FileRangeDto>("get_files", { scanId, sort, reversed, minSize, start, count }),
+  ) =>
+    call<FileRangeDto>("get_files", {
+      scanId,
+      sort,
+      reversed,
+      minSize,
+      start,
+      count,
+    }),
   getLargest: (scanId: number, minSize: number, cursor?: SizeCursor) =>
     call<Page<FileRowDto, SizeCursor>>("get_largest", {
       scanId,
@@ -327,7 +431,11 @@ export const api = {
     }),
   /** Files and folders whose name matches, biggest first; 50 per page. */
   search: (scanId: number, query: string, cursor?: SearchCursor) =>
-    call<Page<FileRowDto, SearchCursor>>("search", { scanId, query, cursor: cursor ?? null }),
+    call<Page<FileRowDto, SearchCursor>>("search", {
+      scanId,
+      query,
+      cursor: cursor ?? null,
+    }),
   listCollections: () => call<readonly CollectionDto[]>("list_collections"),
   createCollection: (name: string, query: CollectionQuery) =>
     call<CollectionDto>("create_collection", { name, query }),
@@ -341,19 +449,28 @@ export const api = {
   getAncestors: (scanId: number, entryId: number) =>
     call<readonly CrumbDto[]>("get_ancestors", { scanId, entryId }),
 
-  getRules: (scanId: number) => call<readonly RuleGroupDto[]>("get_rules", { scanId }),
-  previewDeletion: (paths: readonly string[]) =>
-    call<DeletionPlanDto>("preview_deletion", { paths }),
-  /** Requires a `planId` from {@link api.previewDeletion}; the backend enforces it. */
-  executeDeletion: (planId: string) => call<DeletionResultDto>("execute_deletion", { planId }),
-  undoDeletion: (manifestId: string) => call<void>("undo_deletion", { manifestId }),
+  getRules: (scanId: number) => call<CleanupDto>("get_rules", { scanId }),
+  previewDeletion: (scanId: number, paths: readonly string[]) =>
+    call<DeletionPlanDto>("preview_deletion", { scanId, paths }),
+  /**
+   * Requires a `planId` from {@link api.previewDeletion}; the backend enforces
+   * it. `confirmed` is the second click a plan over 5 GB needs.
+   */
+  executeDeletion: (planId: string, confirmed: boolean) =>
+    call<DeletionResultDto>("execute_deletion", { planId, confirmed }),
+  /** Stop an executing deletion before its next item. */
+  cancelDeletion: () => call<void>("cancel_deletion"),
+  undoDeletion: (manifestId: string) =>
+    call<UndoResultDto>("undo_deletion", { manifestId }),
 
-  listApps: (scanId: number) => call<readonly AppRowDto[]>("list_apps", { scanId }),
+  listApps: (scanId: number) =>
+    call<readonly AppRowDto[]>("list_apps", { scanId }),
   findDuplicates: (scanId: number, minSize: number) =>
     call<readonly DupGroupDto[]>("find_duplicates", { scanId, minSize }),
 
   checkFullDiskAccess: () => call<DiskAccess>("check_full_disk_access"),
-  openFullDiskAccessSettings: () => call<void>("open_full_disk_access_settings"),
+  openFullDiskAccessSettings: () =>
+    call<void>("open_full_disk_access_settings"),
 } as const;
 
 // --- Events ------------------------------------------------------------------------
@@ -390,6 +507,7 @@ export const EVENTS = {
   scanProgress: "scan://progress",
   scanDone: "scan://done",
   scanError: "scan://error",
+  cleanupProgress: "cleanup://progress",
   dupesProgress: "dupes://progress",
 } as const;
 
@@ -448,14 +566,27 @@ export async function bridgeScanEvents(sink: ScanSink): Promise<UnlistenFn> {
           }
         })
         .catch((error: unknown) =>
-          sink.scanFailed(error instanceof Error ? error.message : String(error)),
+          sink.scanFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
         );
     }),
-    listen<ScanErrorEvent>(EVENTS.scanError, (event) => sink.scanFailed(event.payload.message)),
+    listen<ScanErrorEvent>(EVENTS.scanError, (event) =>
+      sink.scanFailed(event.payload.message),
+    ),
   ]);
   return () => {
     for (const unlisten of unlisteners) {
       unlisten();
     }
   };
+}
+
+/** Follow an executing deletion's progress. Returns a function that stops. */
+export function onCleanupProgress(
+  handler: (event: CleanupProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<CleanupProgressEvent>(EVENTS.cleanupProgress, (event) =>
+    handler(event.payload),
+  );
 }

@@ -18,6 +18,7 @@ import {
 
 import ScanPicker from "./components/ScanPicker";
 import SearchBar from "./components/SearchBar";
+import CleanupScreen from "./routes/Cleanup";
 import CollectionsScreen from "./routes/Collections";
 import LargeFilesScreen from "./routes/LargeFiles";
 import MapScreen from "./routes/Map";
@@ -117,7 +118,7 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
     label: "Cleanup",
     title: "Cleanup",
     purpose: "Caches and leftovers that are safe to remove, with Trash and undo.",
-    empty: "Cleanup recommendations are not built yet.",
+    empty: "Cleanup suggestions appear after a scan.",
   },
   duplicates: {
     label: "Duplicates",
@@ -211,6 +212,7 @@ const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
   map: MapScreen,
   "large-files": LargeFilesScreen,
   collections: CollectionsScreen,
+  cleanup: CleanupScreen,
 };
 
 function Screen({ id }: { readonly id: RouteId }) {
