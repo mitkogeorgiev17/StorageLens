@@ -1,16 +1,41 @@
 //! macOS storage scanner.
 //!
-//! The real implementation is `#[cfg(target_os = "macos")]`; on other platforms the
-//! crate still compiles and reports that the scanner is unsupported. This keeps
-//! `cargo build --workspace` honest on a Windows CI runner.
+//! The kernel-facing implementation is `#[cfg(target_os = "macos")]`; on other
+//! platforms the crate still compiles so that `cargo build --workspace` stays
+//! honest on a Windows CI runner.
 //!
-//! Filled in by issues #7–#11.
+//! # Layout
+//!
+//! - [`attrlist`] — attribute bitmaps and the request the scanner makes.
+//! - [`parse`] — byte-exact parser for the `getattrlistbulk` buffer. Deliberately
+//!   free of `unsafe` and of platform dependencies, so it is unit-tested on every
+//!   CI runner.
+//! - [`DirReader`] — the syscall loop that fills a buffer and yields one parsed
+//!   entry at a time (macOS only).
+//! - [`volumes`] — mounted volumes, capacity, and the Full Disk Access probe
+//!   (macOS only).
+//!
+//! Later issues add the parallel walker (#8), dedupe and skip rules (#9), and the
+//! accuracy gate (#11).
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+pub mod attrlist;
+pub mod parse;
+
+#[cfg(target_os = "macos")]
+mod ffi;
 #[cfg(target_os = "macos")]
 pub mod volumes;
+
+pub use attrlist::{AttrSet, Request};
+pub use parse::{ObjType, ParseError, RawEntry};
+
+#[cfg(target_os = "macos")]
+pub use ffi::{DirReader, BUFFER_BYTES};
+#[cfg(target_os = "macos")]
+pub use volumes::{full_disk_access, open_full_disk_access_settings, volumes};
 
 /// Deep link to the Full Disk Access pane in System Settings.
 pub const FULL_DISK_ACCESS_URL: &str =
@@ -29,9 +54,6 @@ pub enum FullDiskAccess {
     /// The probe was inconclusive.
     Unknown,
 }
-
-#[cfg(target_os = "macos")]
-pub use volumes::{full_disk_access, open_full_disk_access_settings, volumes};
 
 /// Enumerate mounted volumes. Always empty off macOS.
 #[cfg(not(target_os = "macos"))]
