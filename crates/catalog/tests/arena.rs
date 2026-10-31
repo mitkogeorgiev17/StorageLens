@@ -13,6 +13,7 @@
 //!   equal a full recompute, in memory and in `dir_rollup`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::Instant;
 
 use rusqlite::params;
@@ -101,7 +102,7 @@ fn random_tree(seed: u64, count: usize) -> Vec<Row> {
 fn write_scan(dir: &tempfile::TempDir, rows: &[Row]) -> (Catalog, i64) {
     let catalog = Catalog::open(dir.path().join("catalog.db")).expect("open");
     let scan_id = catalog
-        .begin_session(Platform::Macos, false)
+        .begin_session(Platform::Macos, false, Path::new("/scanned"))
         .expect("begin");
     write_into(&catalog, scan_id, rows);
     (catalog, scan_id)
@@ -353,7 +354,7 @@ fn scans_load_independently() {
     let second = random_tree(8, 300);
     let (catalog, first_id) = write_scan(&dir, &first);
     let second_id = catalog
-        .begin_session(Platform::Macos, false)
+        .begin_session(Platform::Macos, false, Path::new("/scanned"))
         .expect("begin");
     write_into(&catalog, second_id, &second);
 
@@ -371,7 +372,7 @@ fn damaged_catalogs_are_errors() {
     let dir = tempfile::tempdir().expect("tempdir");
     let catalog = Catalog::open(dir.path().join("catalog.db")).expect("open");
     let empty = catalog
-        .begin_session(Platform::Macos, false)
+        .begin_session(Platform::Macos, false, Path::new("/scanned"))
         .expect("begin");
     assert!(matches!(
         Arena::load(catalog.connection(), empty),

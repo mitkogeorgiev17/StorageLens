@@ -260,7 +260,8 @@ CREATE TABLE scan_session (
   files_seen   INTEGER NOT NULL DEFAULT 0,
   bytes_seen   INTEGER NOT NULL DEFAULT 0,
   dirs_skipped INTEGER NOT NULL DEFAULT 0,
-  elevated     INTEGER NOT NULL DEFAULT 0
+  elevated     INTEGER NOT NULL DEFAULT 0,
+  root         TEXT                   -- absolute scanned path; NULL before schema v2
 );
 
 CREATE TABLE entries (

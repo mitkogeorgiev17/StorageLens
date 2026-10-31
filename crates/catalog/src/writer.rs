@@ -258,7 +258,7 @@ mod tests {
     fn catalog_with_session(dir: &tempfile::TempDir) -> (Catalog, i64) {
         let catalog = Catalog::open(dir.path().join("catalog.db")).expect("open");
         let scan_id = catalog
-            .begin_session(Platform::Macos, false)
+            .begin_session(Platform::Macos, false, Path::new("/scanned"))
             .expect("begin");
         (catalog, scan_id)
     }
@@ -541,7 +541,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (catalog, first) = catalog_with_session(&dir);
         let second = catalog
-            .begin_session(Platform::Macos, false)
+            .begin_session(Platform::Macos, false, Path::new("/scanned"))
             .expect("begin");
 
         for scan_id in [first, second] {

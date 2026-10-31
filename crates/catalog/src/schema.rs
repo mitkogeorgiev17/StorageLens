@@ -11,7 +11,7 @@ use rusqlite::{params, Connection};
 use crate::error::{CatalogError, Result};
 
 /// Highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The version table itself. Created outside the first migration so the runner can
 /// always read the current version.
@@ -97,6 +97,11 @@ CREATE TABLE trash_log (
   restored_at   INTEGER
 );
 ",
+    // v2 — the scanned root's absolute path (#61). Nullable: sessions recorded
+    // before v2 have no root, and inventing one would be worse than admitting it.
+    "
+ALTER TABLE scan_session ADD COLUMN root TEXT;
+",
 ];
 
 /// Create the version table if needed and apply every missing migration.
@@ -172,6 +177,32 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count");
         assert_eq!(rows, i64::from(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn a_v1_database_upgrades_without_losing_sessions() {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(VERSION_TABLE).expect("version table");
+        conn.execute_batch(MIGRATIONS[0]).expect("v1 schema");
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (1, 0)",
+            [],
+        )
+        .expect("mark v1");
+        conn.execute(
+            "INSERT INTO scan_session (platform, started_at, status) VALUES ('macos', 1, 'complete')",
+            [],
+        )
+        .expect("v1 session");
+
+        assert_eq!(migrate(&conn).expect("migrate"), 2);
+        let (count, root): (i64, Option<String>) = conn
+            .query_row("SELECT COUNT(*), MAX(root) FROM scan_session", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("read back");
+        assert_eq!(count, 1, "the v1 session survives");
+        assert_eq!(root, None, "and honestly has no root");
     }
 
     #[test]

@@ -62,6 +62,8 @@ pub struct ScanSession {
     pub dirs_skipped: u64,
     /// Whether the scan ran elevated.
     pub elevated: bool,
+    /// The scanned path. `None` for sessions recorded before schema v2.
+    pub root: Option<std::path::PathBuf>,
 }
 
 /// An entry read back from `entries`.
