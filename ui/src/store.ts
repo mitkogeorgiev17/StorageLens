@@ -53,7 +53,12 @@ export interface ScanSummary {
 
 export type ScanState =
   | { readonly kind: "idle" }
-  | { readonly kind: "scanning"; readonly root: string; readonly progress: ScanProgress }
+  | {
+      readonly kind: "scanning";
+      readonly scanId: number;
+      readonly root: string;
+      readonly progress: ScanProgress;
+    }
   | { readonly kind: "done"; readonly summary: ScanSummary }
   | { readonly kind: "failed"; readonly root: string; readonly message: string };
 
@@ -69,7 +74,7 @@ export interface AppState {
   readonly route: RouteId;
   readonly scan: ScanState;
   navigate(route: RouteId): void;
-  scanStarted(root: string): void;
+  scanStarted(scanId: number, root: string): void;
   scanProgressed(progress: ScanProgress): void;
   scanFinished(summary: ScanSummary): void;
   scanFailed(message: string): void;
@@ -82,8 +87,15 @@ export const useAppStore = create<AppState>()((set) => ({
 
   navigate: (route) => set({ route }),
 
-  scanStarted: (root) =>
-    set({ scan: { kind: "scanning", root, progress: EMPTY_PROGRESS } }),
+  // A tiny scan can finish — and its `scan://done` be handled — before the
+  // `start_scan` call that started it returns. Starting after finishing would
+  // leave the UI stuck on "scanning", so a finished scan stays finished.
+  scanStarted: (scanId, root) =>
+    set((state) =>
+      state.scan.kind === "done" && state.scan.summary.scanId === scanId
+        ? state
+        : { scan: { kind: "scanning", scanId, root, progress: EMPTY_PROGRESS } },
+    ),
 
   // Progress for a scan that is no longer running (a late event after
   // completion or failure) is ignored rather than resurrecting it.

@@ -1017,6 +1017,7 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
 ## 14. Tauri command surface
 
 ```rust
+#[tauri::command] async fn list_scan_targets() -> Result<Vec<ScanTarget>, String>; // home + volumes
 #[tauri::command] async fn start_scan(roots: Vec<String>) -> Result<u32, String>;
 #[tauri::command] async fn cancel_scan(scan_id: u32) -> Result<(), String>;
 #[tauri::command] async fn scan_status(scan_id: u32) -> Result<ScanStatus, String>;

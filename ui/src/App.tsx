@@ -7,8 +7,16 @@
  * Apps #36+, Duplicates #39+). Each issue adds its component to `COMPONENTS`.
  */
 
-import { Component, type ComponentType, type ErrorInfo, type ReactNode } from "react";
+import {
+  Component,
+  useRef,
+  useState,
+  type ComponentType,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 
+import ScanPicker from "./components/ScanPicker";
 import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
 import { formatBytes, formatCount, formatDuration } from "./lib/format";
@@ -28,19 +36,19 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
     label: "Overview",
     title: "Overview",
     purpose: "Capacity, the biggest consumers, and how much can safely be freed.",
-    empty: "No scan yet. Scan a volume to see where the space went.",
+    empty: "No scan yet. Start one from the Overview.",
   },
   map: {
     label: "Map",
     title: "Storage map",
     purpose: "A zoomable treemap of every folder, sized by space on disk.",
-    empty: "The map appears after the first scan.",
+    empty: "The map appears after the first scan. Start one from the Overview.",
   },
   "large-files": {
     label: "Large Files",
     title: "Large files",
     purpose: "Every file, biggest first, filterable by type and age.",
-    empty: "Large files are listed after the first scan.",
+    empty: "Large files are listed after the first scan. Start one from the Overview.",
   },
   apps: {
     label: "Apps",
@@ -171,9 +179,10 @@ function scanStatus(scan: ScanState): string {
       const { summary } = scan;
       const gaps =
         summary.skippedDirs > 0 ? ` · ${formatCount(summary.skippedDirs)} folders not scanned` : "";
+      const ended = summary.status === "cancelled" ? " · cancelled" : "";
       return `${summary.root} · ${formatBytes(summary.bytesAlloc)} in ${formatCount(
         summary.files,
-      )} files · ${formatDuration(summary.elapsedMs)}${gaps}`;
+      )} files · ${formatDuration(summary.elapsedMs)}${gaps}${ended}`;
     }
     case "failed":
       return `Scan failed: ${scan.message}`;
@@ -189,6 +198,55 @@ function StatusBar() {
   );
 }
 
+/**
+ * "New scan" in the header, once there is a scan to replace. A native modal
+ * `<dialog>`: it traps focus and closes on Esc; focus goes back to the button.
+ */
+function NewScan() {
+  const scanKind = useAppStore((state) => state.scan.kind);
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const openerRef = useRef<HTMLButtonElement | null>(null);
+  const [open, setOpen] = useState(false);
+
+  if (scanKind !== "done") {
+    return null;
+  }
+  const close = () => dialogRef.current?.close();
+  return (
+    <>
+      <button
+        ref={openerRef}
+        type="button"
+        className="button button-secondary"
+        onClick={() => {
+          setOpen(true);
+          dialogRef.current?.showModal();
+        }}
+      >
+        New scan
+      </button>
+      <dialog
+        ref={dialogRef}
+        className="dialog"
+        aria-labelledby="new-scan-title"
+        onClose={() => {
+          setOpen(false);
+          openerRef.current?.focus();
+        }}
+      >
+        <div className="dialog-heading">
+          <h2 id="new-scan-title">New scan</h2>
+          <button type="button" className="dialog-close" aria-label="Close" onClick={close}>
+            ×
+          </button>
+        </div>
+        {/* Mounted only while open, so targets and access are re-checked each time. */}
+        {open ? <ScanPicker onStarted={close} /> : null}
+      </dialog>
+    </>
+  );
+}
+
 export default function App() {
   const route = useAppStore((state) => state.route);
 
@@ -198,6 +256,7 @@ export default function App() {
       <div className="main">
         <header className="header">
           <h1>{SCREENS[route].title}</h1>
+          <NewScan />
         </header>
         <main className="content" data-route={route}>
           <ErrorBoundary resetKey={route}>

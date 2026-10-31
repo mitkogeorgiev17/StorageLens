@@ -40,8 +40,8 @@ use tauri::{AppHandle, State};
 
 use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRowDto,
-    FilterDto, Grouping, OverviewDto, Page, RuleGroupDto, ScanStatusDto, SizeCursorDto,
-    SyntheticNodeDto, TreeNodeDto, VolumeDto,
+    FilterDto, Grouping, OverviewDto, Page, RuleGroupDto, ScanStatusDto, ScanTargetDto,
+    ScanTargetKind, SizeCursorDto, SyntheticNodeDto, TreeNodeDto, VolumeDto,
 };
 use crate::events::{
     self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
@@ -700,19 +700,65 @@ mod shell {
     }
 }
 
-fn volume_for(root: Option<&Path>) -> Option<VolumeDto> {
-    let root = root?;
+/// Mounted volumes the platform scanner can see.
+fn all_volumes() -> Vec<storagelens_core::Volume> {
     #[cfg(target_os = "macos")]
-    let volumes = storagelens_scan_macos::volumes();
+    {
+        storagelens_scan_macos::volumes()
+    }
     #[cfg(windows)]
-    let volumes = {
+    {
         use storagelens_core::StorageScanner;
         storagelens_scan_windows::WinScanner::default().volumes()
-    };
+    }
     #[cfg(not(any(target_os = "macos", windows)))]
-    let volumes: Vec<storagelens_core::Volume> = Vec::new();
+    {
+        Vec::new()
+    }
+}
 
-    volumes
+/// The current user's home folder, from the environment the OS set up.
+fn home_folder() -> Option<PathBuf> {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home = PathBuf::from(std::env::var_os(variable)?);
+    (home.is_absolute() && home.is_dir()).then_some(home)
+}
+
+/// What the scan picker offers: the home folder first, then every volume,
+/// fixed before removable, largest first.
+pub fn list_scan_targets() -> Vec<ScanTargetDto> {
+    let mut volumes = all_volumes();
+    volumes.sort_by(|left, right| {
+        left.removable
+            .cmp(&right.removable)
+            .then_with(|| right.total.get().cmp(&left.total.get()))
+    });
+    let home = home_folder().map(|home| ScanTargetDto {
+        kind: ScanTargetKind::Home,
+        label: home.file_name().map_or_else(
+            || "Home".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
+        path: home.display().to_string(),
+        total: None,
+        available: None,
+        removable: false,
+    });
+    home.into_iter()
+        .chain(volumes.into_iter().map(|volume| ScanTargetDto {
+            kind: ScanTargetKind::Volume,
+            label: volume.name,
+            path: volume.mount_point.display().to_string(),
+            total: Some(volume.total.get()),
+            available: Some(volume.available.get()),
+            removable: volume.removable,
+        }))
+        .collect()
+}
+
+fn volume_for(root: Option<&Path>) -> Option<VolumeDto> {
+    let root = root?;
+    all_volumes()
         .into_iter()
         .filter(|volume| on_volume(root, &volume.mount_point))
         .max_by_key(|volume| volume.mount_point.as_os_str().len())
@@ -916,6 +962,11 @@ pub mod ipc {
         roots: Vec<String>,
     ) -> CommandResult<i64> {
         super::start_scan(state.inner(), Arc::new(app), roots)
+    }
+
+    #[tauri::command]
+    pub async fn list_scan_targets() -> CommandResult<Vec<ScanTargetDto>> {
+        Ok(super::list_scan_targets())
     }
 
     #[tauri::command]
@@ -1403,6 +1454,30 @@ mod tests {
         assert!(reveal_entry(&state, scan_id, jpg.id).is_err());
         assert!(preview_entry(&state, scan_id, jpg.id).is_err());
         assert!(existing_path(&state, scan_id, i64::MAX).is_err());
+    }
+
+    #[test]
+    fn scan_targets_are_absolute_and_scannable_paths() {
+        let targets = list_scan_targets();
+        for target in &targets {
+            assert!(
+                Path::new(&target.path).is_absolute(),
+                "{} is not absolute",
+                target.path
+            );
+            assert!(!target.label.is_empty());
+            if target.kind == ScanTargetKind::Volume {
+                assert!(target.total.is_some() && target.available.is_some());
+            }
+        }
+        let homes = targets
+            .iter()
+            .filter(|target| target.kind == ScanTargetKind::Home)
+            .count();
+        assert!(homes <= 1, "at most one home folder");
+        if homes == 1 {
+            assert_eq!(targets[0].kind, ScanTargetKind::Home, "home comes first");
+        }
     }
 
     #[test]

@@ -55,7 +55,7 @@ export default function MapScreen() {
     const text =
       scan.kind === "scanning"
         ? "The map appears when the scan finishes."
-        : "The map appears after the first scan.";
+        : "The map appears after the first scan. Start one from the Overview.";
     return (
       <section className="empty" aria-labelledby="map-empty">
         <h2 id="map-empty">{text}</h2>
