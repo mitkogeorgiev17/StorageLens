@@ -19,6 +19,19 @@ tauri-build = { version = "=2.7.4", features = [] }
 tauri = { version = "=2.12.5", features = [] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+# The workspace crates the commands wrap. Path dependencies: src-tauri is its own
+# Cargo workspace so it can embed the built frontend (AGENTS.md §4).
+storagelens-core = { path = "../crates/core" }
+storagelens-catalog = { path = "../crates/catalog" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+storagelens-scan-macos = { path = "../crates/scan-macos" }
+
+[target.'cfg(windows)'.dependencies]
+storagelens-scan-windows = { path = "../crates/scan-windows" }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
 
 [profile.release]
 lto = "thin"
