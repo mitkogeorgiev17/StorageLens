@@ -7,14 +7,17 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod arena;
 pub mod db;
 pub mod error;
 pub mod model;
 pub mod query;
+pub mod rollup;
 pub mod schema;
 pub mod util;
 pub mod writer;
 
+pub use arena::{Arena, Node, NodeIndex, NIL};
 pub use db::Catalog;
 pub use error::{CatalogError, Result};
 pub use model::{CategoryTotal, Platform, ScanSession, SizeCursor, StoredEntry};
