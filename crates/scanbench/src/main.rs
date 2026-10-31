@@ -1,13 +1,14 @@
 //! `scanbench` — measure scanner correctness and speed without a UI.
 //!
-//! One run walks a path with the portable reference walker, streams every entry
-//! through the real catalog ([`Catalog`] + [`EntryWriter`]), verifies that the row
-//! count matches what the walker produced, and prints the PLAN §17 table (or the
-//! stable `--json` document).
+//! One run walks a path with the platform scanner (`MacScanner` on macOS, the
+//! portable reference walker elsewhere and with `--reference`), streams every
+//! entry through the real catalog ([`Catalog`] + [`EntryWriter`]), verifies that
+//! the row count matches what the walker produced, and prints the PLAN §17 table
+//! (or the stable `--json` document).
 //!
 //! ```text
-//! scanbench <PATH> [--json] [--budget] [--db PATH]
-//! scanbench --fixtures [--json] [--budget]
+//! scanbench <PATH> [--json] [--budget] [--db PATH] [--reference]
+//! scanbench --fixtures [--json] [--budget] [--reference]
 //! ```
 //!
 //! # Exit codes
@@ -32,6 +33,7 @@
 
 mod budget;
 mod fixtures_check;
+mod platform;
 mod report;
 mod walk;
 
@@ -44,6 +46,7 @@ use clap::Parser;
 use storagelens_catalog::{Catalog, Platform};
 use storagelens_core::{CancelToken, EntrySink, FixtureTree, ScanError, ScanOptions, ScanStatus};
 
+use crate::platform::Backend;
 use crate::report::Report;
 
 /// Everything passed checks.
@@ -84,6 +87,13 @@ struct Cli {
     /// Keep the catalog at PATH instead of a temporary directory.
     #[arg(long, value_name = "PATH")]
     db: Option<PathBuf>,
+
+    /// Use the portable reference walker instead of the platform scanner.
+    ///
+    /// The reference walker is the accuracy baseline; comparing the two isolates a
+    /// platform bug. Off macOS it is the only backend, so the flag is a no-op there.
+    #[arg(long)]
+    reference: bool,
 }
 
 fn main() -> ExitCode {
@@ -130,7 +140,8 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn Error>> {
 
     let cancel = CancelToken::new();
     let options = ScanOptions::default();
-    let scanned = walk::scan(&root, &options, &cancel, &mut writer);
+    let backend = resolve_backend(cli.reference);
+    let scanned = platform::scan(backend, &root, &options, &cancel, &mut writer);
 
     // Flush even after a failure so a partial scan stays consistent.
     let flushed = writer.flush();
@@ -182,7 +193,7 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn Error>> {
         )
     });
 
-    let report = Report::new(&root, &outcome, &db_path, fixture, budget);
+    let report = Report::new(&root, backend, &outcome, &db_path, fixture, budget);
 
     if cli.json {
         print!("{}", report::render_json(&report)?);
@@ -214,6 +225,19 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn Error>> {
         return Ok(EXIT_OVER_BUDGET);
     }
     Ok(EXIT_OK)
+}
+
+/// Choose the backend, downgrading to the reference walker where no platform
+/// scanner exists yet.
+///
+/// `cfg!(...)` is a compile-time constant, so this is a single branch with no
+/// runtime cost.
+fn resolve_backend(reference: bool) -> Backend {
+    if reference || !cfg!(target_os = "macos") {
+        Backend::Reference
+    } else {
+        Backend::Platform
+    }
 }
 
 /// Resolve a user path to an absolute one so the report and skip rules agree.
@@ -271,14 +295,30 @@ mod tests {
             "/tmp",
             "--json",
             "--budget",
+            "--reference",
             "--db",
             "/tmp/catalog.db",
         ])
         .expect("parse");
         assert!(cli.json);
         assert!(cli.budget);
+        assert!(cli.reference);
         assert!(!cli.fixtures);
         assert_eq!(cli.db.as_deref(), Some(Path::new("/tmp/catalog.db")));
+    }
+
+    #[test]
+    fn the_reference_escape_hatch_wins() {
+        assert_eq!(resolve_backend(true), Backend::Reference);
+        assert_eq!(
+            resolve_backend(false),
+            if cfg!(target_os = "macos") {
+                Backend::Platform
+            } else {
+                Backend::Reference
+            },
+            "the platform scanner only exists on macOS today"
+        );
     }
 
     /// `canonicalize` returns a verbatim path on Windows; leaving the prefix on
