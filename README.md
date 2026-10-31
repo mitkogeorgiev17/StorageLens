@@ -13,7 +13,8 @@ recommends safely deletable junk — with Trash + undo.
 
 ## Status
 
-Planning complete. Implementation starts at M0 — see `PLAN.md` §16.
+M0 — Foundation. Workspace, crates, Tauri shell, and CI are in place; domain types and
+scanners follow. See `PLAN.md` §16 and the GitHub milestones.
 
 ## Stack
 

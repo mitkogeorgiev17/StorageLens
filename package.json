@@ -1,0 +1,19 @@
+{
+  "name": "storagelens",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Personal storage mapper for macOS and Windows",
+  "workspaces": [
+    "ui"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace storagelens-ui",
+    "build": "npm run build --workspace storagelens-ui",
+    "typecheck": "npm run typecheck --workspace storagelens-ui",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}
