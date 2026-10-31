@@ -19,8 +19,8 @@ const busy: MapView = {
   chart: "sunburst",
   by: "type",
   categories: ["video", "images"],
-  minSize: "1g",
-  olderThan: "1y",
+  minSize: 1024 ** 3,
+  olderThan: 365,
   within: { id: 42, name: "Down loads & more" },
 };
 
@@ -74,14 +74,23 @@ test("the key does not depend on the order types were picked in", () => {
     viewKey({ ...busy, categories: ["video", "images"] }),
     viewKey({ ...busy, categories: ["images", "video"] }),
   );
-  assert.notEqual(viewKey(busy), viewKey({ ...busy, minSize: "10g" }));
+  assert.notEqual(viewKey(busy), viewKey({ ...busy, minSize: 10 * 1024 ** 3 }));
 });
 
 test("a hand-edited or stale hash falls back instead of failing", () => {
   assert.deepEqual(fromHash(""), { route: null, view: DEFAULT_VIEW });
   assert.deepEqual(fromHash("#large-files"), { route: "large-files", view: DEFAULT_VIEW });
   const odd = fromHash("#map?by=colour&type=video,nope&size=huge&age=1y&in=abc");
-  assert.deepEqual(odd.view, { ...DEFAULT_VIEW, categories: ["video"], olderThan: "1y" });
+  assert.deepEqual(odd.view, { ...DEFAULT_VIEW, categories: ["video"], olderThan: 365 });
+  assert.equal(fromHash("#map?size=-5&age=0").view.minSize, null);
+});
+
+test("presets use short names in the hash, other values plain numbers", () => {
+  assert.match(toHash("map", busy), /size=1g&age=1y/);
+  const custom: MapView = { ...DEFAULT_VIEW, minSize: 700 * 1024 ** 2, olderThan: 90 };
+  const hash = toHash("map", custom);
+  assert.match(hash, /size=734003200&age=90/);
+  assert.deepEqual(fromHash(hash).view, custom);
 });
 
 const store = () => useAppStore.getState();

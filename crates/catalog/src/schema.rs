@@ -11,7 +11,7 @@ use rusqlite::{params, Connection};
 use crate::error::{CatalogError, Result};
 
 /// Highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// The version table itself. Created outside the first migration so the runner can
 /// always read the current version.
@@ -135,6 +135,18 @@ END;
 
 INSERT INTO entries_fts(entries_fts) VALUES ('rebuild');
 UPDATE scan_session SET names_indexed = 1;
+",
+    // v4 — smart collections (#28): saved Map queries. `query` is versioned
+    // JSON (`collections::CollectionQuery`) and names no scan, so a collection
+    // re-evaluates against whatever scan is current.
+    "
+CREATE TABLE collection (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT    NOT NULL,
+  query      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 ",
 ];
 
@@ -299,6 +311,7 @@ mod tests {
             "dir_rollup",
             "rule_hit",
             "trash_log",
+            "collection",
         ] {
             let found: i64 = conn
                 .query_row(

@@ -21,10 +21,9 @@ import {
   SIZE_OPTIONS,
   cleared,
   isFiltered,
-  type AgeOption,
   type MapView,
-  type SizeOption,
 } from "../lib/mapView";
+import { formatBytes } from "../lib/format";
 import { CATEGORY_LABELS } from "../lib/treemap";
 
 function typeSummary(categories: readonly Category[]): string {
@@ -118,16 +117,21 @@ export default function FilterBar({
         onChange={(event) =>
           onChange({
             ...view,
-            minSize: event.target.value === "" ? null : (event.target.value as SizeOption),
+            minSize: event.target.value === "" ? null : Number(event.target.value),
           })
         }
       >
         <option value="">Any size</option>
-        {Object.entries(SIZE_OPTIONS).map(([key, option]) => (
-          <option key={key} value={key}>
+        {Object.values(SIZE_OPTIONS).map((option) => (
+          <option key={option.bytes} value={option.bytes}>
             {option.label}
           </option>
         ))}
+        {/* A collection can carry a size the presets do not have. */}
+        {view.minSize !== null &&
+        !Object.values(SIZE_OPTIONS).some((option) => option.bytes === view.minSize) ? (
+          <option value={view.minSize}>{formatBytes(view.minSize)} or more</option>
+        ) : null}
       </select>
 
       <select
@@ -138,16 +142,20 @@ export default function FilterBar({
         onChange={(event) =>
           onChange({
             ...view,
-            olderThan: event.target.value === "" ? null : (event.target.value as AgeOption),
+            olderThan: event.target.value === "" ? null : Number(event.target.value),
           })
         }
       >
         <option value="">Any age</option>
-        {Object.entries(AGE_OPTIONS).map(([key, option]) => (
-          <option key={key} value={key}>
+        {Object.values(AGE_OPTIONS).map((option) => (
+          <option key={option.days} value={option.days}>
             {option.label}
           </option>
         ))}
+        {view.olderThan !== null &&
+        !Object.values(AGE_OPTIONS).some((option) => option.days === view.olderThan) ? (
+          <option value={view.olderThan}>Older than {view.olderThan} days</option>
+        ) : null}
       </select>
 
       {location === null ? null : (

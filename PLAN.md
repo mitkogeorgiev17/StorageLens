@@ -326,6 +326,15 @@ CREATE TABLE trash_log (
   manifest_path TEXT,
   restored_at   INTEGER
 );
+
+-- v4 (#28): smart collections. `query` is versioned JSON and names no scan.
+CREATE TABLE collection (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT    NOT NULL,
+  query      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 ```
 
 The catalog keeps one **read** connection. A scan writes through a second connection
@@ -765,8 +774,19 @@ number), minimum size, age, and location — a file must pass every chip. `Filte
 ("Path under"). In the Folder view the breadcrumb is the location; switching to another
 grouping inside a folder sets `within` to it. The view lives in the URL hash
 (`#map?by=type&type=video&size=1g&age=1y&in=42:Downloads`), so back/forward restore it.
-"Path not under" and the cleanliness chip wait for smart collections (#28) and the rules
-engine (#31); the Cleanliness grouping is disabled until rules give files a verdict.
+"Path not under" and the cleanliness chip are not built; the cleanliness chip waits for the
+rules engine (#31), and the Cleanliness grouping is disabled until rules give files a verdict.
+
+**Smart collections (#28):** "Save view" on the Map stores the grouping, chart, and filters
+in the catalog's `collection` table (schema v4) as versioned JSON —
+`{"v":1,"by":"type","chart":"treemap","categories":["video"],"minSize":524288000,
+"olderThanDays":365,"within":"/Users/me/Movies"}`. The folder is an absolute **path**, not
+an entry id, and the query names no scan: the Collections screen re-evaluates every
+collection against the current scan (`evaluate_collection` returns totals tagged with the
+scan id; the UI shows a total only for the current scan id), and opening one resolves its
+folder in that scan. A stored query this build cannot parse (edited by hand, or written by a
+newer build) is listed with the reason and can still be renamed or deleted. Sort order,
+and a flat-table view of a collection, are not part of v1.
 
 ### 9.8 Performance
 
@@ -1071,6 +1091,15 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
 #[tauri::command] async fn search(scan_id: u32, query: String, cursor: Option<SearchCursor>)
     -> Result<Page<FileRow>, String>;   // 50 per page, biggest then most recent
 #[tauri::command] async fn get_ancestors(scan_id: u32, entry_id: u32) -> Result<Vec<Crumb>, String>;
+
+// Smart collections (#28)
+#[tauri::command] async fn list_collections() -> Result<Vec<Collection>, String>;
+#[tauri::command] async fn create_collection(name: String, query: CollectionQuery) -> Result<Collection, String>;
+#[tauri::command] async fn rename_collection(id: i64, name: String) -> Result<Collection, String>;
+#[tauri::command] async fn delete_collection(id: i64) -> Result<(), String>;
+#[tauri::command] async fn evaluate_collection(scan_id: i64, id: i64) -> Result<CollectionResult, String>;
+    // totals of the query in that scan, tagged with scan_id; a folder that is not in the
+    // scan, or an unreadable query, is a `problem`, not an error
 
 #[tauri::command] async fn get_rules(scan_id: u32) -> Result<Vec<RuleGroup>, String>;
 #[tauri::command] async fn preview_deletion(paths: Vec<String>) -> Result<DeletionPlan, String>;

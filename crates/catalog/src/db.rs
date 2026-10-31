@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use storagelens_core::ScanStatus;
 
+use crate::collections::{self, Collection, CollectionQuery};
 use crate::error::{CatalogError, Result};
 use crate::model::{CategoryTotal, Platform, ScanSession, SizeCursor, StoredEntry};
 use crate::query;
@@ -62,6 +63,28 @@ impl Catalog {
     /// expose yet (the analysis crate in M4).
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Save a smart collection (#28).
+    pub fn create_collection(&self, name: &str, query: &CollectionQuery) -> Result<Collection> {
+        collections::create(&self.conn, name, query)
+    }
+
+    /// Every smart collection, by name.
+    pub fn collections(&self) -> Result<Vec<Collection>> {
+        collections::list(&self.conn)
+    }
+
+    pub fn collection(&self, id: i64) -> Result<Option<Collection>> {
+        collections::get(&self.conn, id)
+    }
+
+    pub fn rename_collection(&self, id: i64, name: &str) -> Result<Collection> {
+        collections::rename(&self.conn, id, name)
+    }
+
+    pub fn delete_collection(&self, id: i64) -> Result<()> {
+        collections::delete(&self.conn, id)
     }
 
     /// Start a scan session and return its id.
