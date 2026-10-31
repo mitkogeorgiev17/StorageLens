@@ -8,12 +8,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod categories;
 pub mod error;
 pub mod scanner;
+pub mod tags;
 pub mod types;
 
+pub use categories::{extension_of, sniff_category, Category};
 pub use error::{Result, ScanError};
 pub use scanner::{CancelToken, EntrySink, StorageScanner};
+pub use tags::Tags;
 pub use types::{
     AppInfo, AppStatus, Bytes, Entry, EntryKind, NodeId, PlatformTarget, Progress, ScanOptions,
     ScanResult, ScanStatus, SkipReason, SkippedDir, Volume,
