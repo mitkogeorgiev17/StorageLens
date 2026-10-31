@@ -19,7 +19,9 @@
 //! [`ScanResult::skipped`] — `PermissionDenied` for `ERROR_ACCESS_DENIED`,
 //! `IoError` otherwise — and the walk continues. Unelevated, parts of `C:\` are
 //! unreadable; they are reported as "not scanned", never silently left out of the
-//! total (PLAN §7.3).
+//! total (PLAN §7.3). The result records whether the scan was elevated
+//! (`ScanResult::elevated`), which is what labels those skips as gaps an
+//! elevated relaunch may fill.
 //!
 //! # Sizes and identity (#13)
 //!
@@ -137,6 +139,8 @@ pub(crate) struct Shared {
     pub root_dev: u32,
     /// The root volume is NTFS; see [`VolumeInfo::ntfs`].
     pub ntfs: bool,
+    /// The process token is elevated, recorded once in `ScanResult::elevated`.
+    pub elevated: bool,
 }
 
 impl Shared {
@@ -225,6 +229,7 @@ fn scan_root(
         pending: AtomicUsize::new(0),
         root_dev,
         ntfs,
+        elevated: crate::elevation::is_elevated(),
     });
 
     let mut writer = writer::Writer::new(sink);

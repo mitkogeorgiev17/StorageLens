@@ -212,6 +212,7 @@ impl<'a> Writer<'a> {
             bytes_logical: Bytes::new(self.bytes_logical),
             elapsed_ms: started.elapsed().as_millis() as u64,
             skipped: std::mem::take(&mut self.skipped),
+            elevated: Some(shared.elevated),
         };
 
         progress(self.snapshot(started));

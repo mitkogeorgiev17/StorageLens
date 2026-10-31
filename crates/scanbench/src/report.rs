@@ -250,6 +250,7 @@ mod tests {
                 bytes_logical: Bytes::new(54_835_994_951),
                 elapsed_ms: 4_310,
                 skipped,
+                elevated: None,
             },
             links: 7,
             entries: files + dirs + 1,
