@@ -19,7 +19,10 @@ use super::glob::Glob;
 use super::{Rule, RulePlatform};
 
 /// The catalogs compiled into the binary, by file name.
-pub const BUILTIN: &[(&str, &str)] = &[("shared.json", include_str!("../../rules/shared.json"))];
+pub const BUILTIN: &[(&str, &str)] = &[
+    ("shared.json", include_str!("../../rules/shared.json")),
+    ("macos.json", include_str!("../../rules/macos.json")),
+];
 
 /// What variables in a glob expand to, and which platform's rules apply.
 #[derive(Debug, Clone)]
