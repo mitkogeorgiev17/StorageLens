@@ -87,6 +87,36 @@ impl Catalog {
         collections::delete(&self.conn, id)
     }
 
+    /// One entry of `scan_id` by id.
+    pub fn entry(&self, scan_id: i64, id: i64) -> Result<Option<StoredEntry>> {
+        query::entry(&self.conn, scan_id, id)
+    }
+
+    /// Log the items one deletion moved to the Trash (#34).
+    pub fn record_trashed(
+        &self,
+        performed_at: i64,
+        manifest_path: &str,
+        items: &[(String, u64, Option<String>)],
+    ) -> Result<()> {
+        crate::trash_log::record(&self.conn, performed_at, manifest_path, items)
+    }
+
+    /// Mark logged items of `manifest_path` restored.
+    pub fn mark_restored(
+        &self,
+        manifest_path: &str,
+        paths: &[String],
+        restored_at: i64,
+    ) -> Result<()> {
+        crate::trash_log::mark_restored(&self.conn, manifest_path, paths, restored_at)
+    }
+
+    /// Every item ever moved to the Trash, newest first.
+    pub fn trash_log(&self) -> Result<Vec<crate::TrashLogRow>> {
+        crate::trash_log::list(&self.conn)
+    }
+
     /// Replace the cleanup-rule hits of `scan_id` (#31).
     pub fn replace_rule_hits(&self, scan_id: i64, rows: &[crate::RuleHitRow]) -> Result<()> {
         crate::rule_hits::replace(&self.conn, scan_id, rows)

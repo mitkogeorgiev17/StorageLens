@@ -26,6 +26,8 @@ pub const SCAN_ERROR: &str = "scan://error";
 /// Emitted by the duplicate finder (#39); declared now so the UI can listen.
 #[allow(dead_code)]
 pub const DUPES_PROGRESS: &str = "dupes://progress";
+/// Before each item of an executing deletion: [`CleanupProgressDto`](crate::dto::CleanupProgressDto).
+pub const CLEANUP_PROGRESS: &str = "cleanup://progress";
 
 /// Minimum spacing between two progress events of one stream.
 pub const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);

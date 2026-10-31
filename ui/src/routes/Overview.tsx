@@ -1,9 +1,10 @@
 /**
  * The Overview screen (PLAN §13): "how bad is it?" in one glance.
  *
- * - The reclaim headline, split into safe and needs-review (PLAN §10). Until
- *   the rules engine lands (M4), `get_rules` fails with "not available yet"
- *   and the headline says so instead of guessing.
+ * - The reclaim headline, split into safe and needs-review (PLAN §10), from
+ *   the rules engine's own score (`get_rules`): confidence-weighted, each
+ *   byte once, report-only matches excluded. If it fails, the headline says
+ *   so instead of guessing.
  * - The capacity gauge: this scan, other used space, purgeable, free.
  * - The category bar, the ten biggest items at the scan root, and the biggest
  *   cleanup wins.
@@ -16,7 +17,7 @@
 
 import { useEffect, useState } from "react";
 
-import { api, type OverviewDto, type RuleGroupDto } from "../lib/api";
+import { api, type OverviewDto, type CleanupDto } from "../lib/api";
 import { formatBytes, formatCount, formatPercent } from "../lib/format";
 import {
   capacitySegments,
@@ -30,7 +31,8 @@ import ScanPicker from "../components/ScanPicker";
 import ScanProgress from "../components/ScanProgress";
 import { useAppStore, type ScanSummary } from "../store";
 
-const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -38,7 +40,7 @@ function message(error: unknown): string {
 
 type Rules =
   | { readonly kind: "loading" }
-  | { readonly kind: "ready"; readonly rules: readonly RuleGroupDto[] }
+  | { readonly kind: "ready"; readonly rules: CleanupDto }
   | { readonly kind: "unavailable"; readonly reason: string };
 
 export default function OverviewScreen() {
@@ -60,12 +62,14 @@ export default function OverviewScreen() {
             </h2>
             {scan.kind === "failed" ? (
               <p className="picker-error" role="alert">
-                {scan.root === "" ? scan.message : `${scan.root}: ${scan.message}`}
+                {scan.root === ""
+                  ? scan.message
+                  : `${scan.root}: ${scan.message}`}
               </p>
             ) : (
               <p className="card-note card-lead">
-                Scan a volume or folder to see where the space went and how much can safely be
-                freed. Nothing leaves this machine.
+                Scan a volume or folder to see where the space went and how much
+                can safely be freed. Nothing leaves this machine.
               </p>
             )}
             <ScanPicker />
@@ -92,7 +96,10 @@ function OverviewView({ summary }: { readonly summary: ScanSummary }) {
     api
       .getRules(scanId)
       .then((loaded) => live && setRules({ kind: "ready", rules: loaded }))
-      .catch((cause: unknown) => live && setRules({ kind: "unavailable", reason: message(cause) }));
+      .catch(
+        (cause: unknown) =>
+          live && setRules({ kind: "unavailable", reason: message(cause) }),
+      );
     return () => {
       live = false;
     };
@@ -216,11 +223,18 @@ function StackedBar({
           const extra = detail?.(segment) ?? null;
           return (
             <li key={segment.key}>
-              <span className="legend-swatch" style={{ background: colorOf(segment) }} />
+              <span
+                className="legend-swatch"
+                style={{ background: colorOf(segment) }}
+              />
               <span className="legend-label">{segment.label}</span>
               <span className="legend-value">{formatBytes(segment.bytes)}</span>
-              <span className="legend-share">{formatPercent(segment.fraction)}</span>
-              {extra === null ? null : <span className="legend-extra">{extra}</span>}
+              <span className="legend-share">
+                {formatPercent(segment.fraction)}
+              </span>
+              {extra === null ? null : (
+                <span className="legend-extra">{extra}</span>
+              )}
             </li>
           );
         })}
@@ -245,8 +259,9 @@ function Capacity({ overview }: { readonly overview: OverviewDto }) {
           Capacity
         </h2>
         <p className="card-note">
-          The capacity of the volume holding {overview.scan.root ?? overview.rootName} is
-          unavailable. This scan found {formatBytes(overview.scan.bytesAlloc)}.
+          The capacity of the volume holding{" "}
+          {overview.scan.root ?? overview.rootName} is unavailable. This scan
+          found {formatBytes(overview.scan.bytesAlloc)}.
         </p>
       </section>
     );
@@ -290,7 +305,12 @@ function Capacity({ overview }: { readonly overview: OverviewDto }) {
 function Categories({ overview }: { readonly overview: OverviewDto }) {
   const total = overview.scan.bytesAlloc;
   const segments = categorySegments(overview.categories, total);
-  const files = new Map(overview.categories.map((category) => [category.category, category.fileCount]));
+  const files = new Map(
+    overview.categories.map((category) => [
+      category.category,
+      category.fileCount,
+    ]),
+  );
   return (
     <section className="card" aria-labelledby="categories-title">
       <div className="card-heading">
@@ -335,14 +355,22 @@ function Biggest({ overview }: { readonly overview: OverviewDto }) {
             <li key={item.id}>
               <span className="ranked-name" title={item.name}>
                 {item.name}
-                {item.kind === "Dir" ? <span className="ranked-kind"> · folder</span> : null}
+                {item.kind === "Dir" ? (
+                  <span className="ranked-kind"> · folder</span>
+                ) : null}
               </span>
-              <span className="ranked-value">{formatBytes(item.sizeAlloc)}</span>
-              <span className="ranked-share">{formatPercent(total > 0 ? item.sizeAlloc / total : 0)}</span>
+              <span className="ranked-value">
+                {formatBytes(item.sizeAlloc)}
+              </span>
+              <span className="ranked-share">
+                {formatPercent(total > 0 ? item.sizeAlloc / total : 0)}
+              </span>
               <span
                 className="ranked-bar"
                 aria-hidden="true"
-                style={{ width: `${largest > 0 ? (item.sizeAlloc / largest) * 100 : 0}%` }}
+                style={{
+                  width: `${largest > 0 ? (item.sizeAlloc / largest) * 100 : 0}%`,
+                }}
               />
             </li>
           ))}
@@ -353,7 +381,7 @@ function Biggest({ overview }: { readonly overview: OverviewDto }) {
 }
 
 function Wins({ rules }: { readonly rules: Rules }) {
-  const wins = rules.kind === "ready" ? topWins(rules.rules) : [];
+  const wins = rules.kind === "ready" ? topWins(rules.rules.groups) : [];
   return (
     <section className="card" aria-labelledby="wins-title">
       <h2 id="wins-title" className="card-title">
@@ -361,7 +389,9 @@ function Wins({ rules }: { readonly rules: Rules }) {
       </h2>
       {rules.kind === "loading" ? <p className="card-note">Loading…</p> : null}
       {rules.kind === "unavailable" ? (
-        <p className="card-note">Cleanup recommendations arrive with the cleanup rules.</p>
+        <p className="card-note">
+          Cleanup recommendations arrive with the cleanup rules.
+        </p>
       ) : null}
       {rules.kind === "ready" && wins.length === 0 ? (
         <p className="card-note">Nothing to clean up. Nice.</p>

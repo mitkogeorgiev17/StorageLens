@@ -3,7 +3,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { CategoryDto, RuleGroupDto, VolumeDto } from "../src/lib/api.ts";
+import type {
+  CategoryDto,
+  RiskLevel,
+  RuleGroupDto,
+  VolumeDto,
+} from "../src/lib/api.ts";
 import {
   capacitySegments,
   categorySegments,
@@ -42,7 +47,10 @@ test("gauge segments add up to the volume's capacity", () => {
     ],
   );
   assert.equal(gauge.clamped, false);
-  const fractions = gauge.segments.reduce((total, segment) => total + segment.fraction, 0);
+  const fractions = gauge.segments.reduce(
+    (total, segment) => total + segment.fraction,
+    0,
+  );
   assert.ok(Math.abs(fractions - 1) < 1e-12);
 });
 
@@ -65,7 +73,11 @@ function category(name: CategoryDto["category"], bytes: number): CategoryDto {
 }
 
 test("category segments add up to the scan total, biggest first", () => {
-  const categories = [category("images", 30), category("video", 50), category("other", 20)];
+  const categories = [
+    category("images", 30),
+    category("video", 50),
+    category("other", 20),
+  ];
   const segments = categorySegments(categories, 100);
   assert.equal(sum(segments), 100);
   assert.deepEqual(
@@ -75,31 +87,63 @@ test("category segments add up to the scan total, biggest first", () => {
 });
 
 test("a gap between categories and the total is shown, not hidden", () => {
-  const segments = categorySegments([category("images", 30), category("code", 0)], 100);
+  const segments = categorySegments(
+    [category("images", 30), category("code", 0)],
+    100,
+  );
   assert.equal(sum(segments), 100);
   assert.equal(segments.at(-1)?.key, "unaccounted");
   assert.equal(segments.at(-1)?.bytes, 70);
-  assert.ok(!segments.some((segment) => segment.key === "code"), "empty categories are skipped");
+  assert.ok(
+    !segments.some((segment) => segment.key === "code"),
+    "empty categories are skipped",
+  );
 });
 
-function rule(id: string, risk: string, bytes: number): RuleGroupDto {
-  return { ruleId: id, title: id, risk, bytes, paths: [] };
+function rule(
+  id: string,
+  risk: RiskLevel,
+  bytes: number,
+  deletable = true,
+): RuleGroupDto {
+  return {
+    ruleId: id,
+    title: id,
+    kind: "regenerable",
+    risk,
+    explain: "",
+    command: null,
+    deletable,
+    bytes,
+    items: [],
+  };
 }
 
-test("reclaim splits safe from review and never counts 'never'", () => {
+test("reclaim uses the engine's figures: safe × 1 + review × 0.5", () => {
+  const reclaim = reclaimSummary({
+    reclaimSafe: 5 * GB,
+    reclaimReview: 10 * GB,
+  });
+  assert.equal(reclaim.safe, 5 * GB);
+  assert.equal(reclaim.review, 10 * GB);
+  assert.equal(reclaim.score, 10 * GB);
+  assert.deepEqual(reclaimSummary({ reclaimSafe: -1, reclaimReview: 0 }), {
+    safe: 0,
+    review: 0,
+    score: 0,
+  });
+});
+
+test("wins are the biggest deletable safe or review cards", () => {
   const rules = [
     rule("caches", "safe", 4 * GB),
     rule("downloads", "review", 10 * GB),
-    rule("system", "never", 50 * GB),
+    rule("system", "never", 50 * GB, false),
+    rule("docker", "review", 60 * GB, false),
     rule("logs", "safe", 1 * GB),
   ];
-  const reclaim = reclaimSummary(rules);
-  assert.equal(reclaim.safe, 5 * GB);
-  assert.equal(reclaim.review, 10 * GB);
-  assert.equal(reclaim.score, 10 * GB, "safe × 1 + review × 0.5");
   assert.deepEqual(
     topWins(rules, 2).map((win) => win.ruleId),
     ["downloads", "caches"],
   );
-  assert.deepEqual(reclaimSummary([]), { safe: 0, review: 0, score: 0 });
 });

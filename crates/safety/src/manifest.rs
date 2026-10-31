@@ -38,6 +38,8 @@ pub enum Status {
     Skipped,
     /// The move was attempted and failed.
     Failed,
+    /// The deletion was cancelled before this item; never moved.
+    Cancelled,
 }
 
 /// One item of a deletion.

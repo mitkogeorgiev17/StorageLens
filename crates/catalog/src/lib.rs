@@ -18,6 +18,7 @@ pub mod rollup;
 pub mod rule_hits;
 pub mod schema;
 pub mod search;
+pub mod trash_log;
 pub mod util;
 pub mod writer;
 
@@ -29,4 +30,5 @@ pub use listing::{file_order, modified_times, slice, FileSort, UNKNOWN_TIME};
 pub use model::{CategoryTotal, Platform, ScanSession, SizeCursor, StoredEntry};
 pub use rule_hits::RuleHitRow;
 pub use search::{index_names, match_expression, SearchCursor, SearchHit};
+pub use trash_log::TrashLogRow;
 pub use writer::{EntryWriter, DEFAULT_BATCH_SIZE};
