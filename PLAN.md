@@ -1085,6 +1085,62 @@ elapsed         4.31 s
 peak rss        212 MB
 ```
 
+`allocated` and `logical` use binary units: whole numbers at 100 and above, two
+decimals below (`48.21 GB`, `212 MB`). Counts are thousands-grouped. `skipped` lists
+the commonest reason first.
+
+```text
+scanbench <PATH> [--json] [--budget] [--db PATH]
+scanbench --fixtures [--json] [--budget]
+```
+
+- `--fixtures` scans the generated tree and compares every count and byte total with
+  its manifest. `--db PATH` keeps the catalog instead of using a temporary one.
+- Every run persists through the real `Catalog` + `EntryWriter`, then asserts that the
+  stored row count equals the number of entries the walker produced.
+- `--json` replaces the table with the document below, and `--budget` appends a
+  `budget` line (and exits `1` on a miss).
+- Exit codes: `0` ok, `1` over budget, `2` scan, catalog, or fixture-validation
+  failure. A fixture mismatch wins over an over-budget result.
+
+`--json` is stable within `schema_version`. New keys may be added; existing keys keep
+their name, type, and meaning. `fixture` and `budget` appear only when requested.
+
+```json
+{
+  "schema_version": 1,
+  "path": "/Users/me/Documents",
+  "status": "partial",
+  "files": 184203,
+  "dirs": 12884,
+  "links": 120,
+  "entries": 197327,
+  "allocated_bytes": 51765093335,
+  "logical_bytes": 54835994951,
+  "skipped": [
+    { "path": "/Users/me/Documents/private", "reason": "permission_denied" }
+  ],
+  "skipped_by_reason": { "permission_denied": 37 },
+  "elapsed_ms": 4310,
+  "peak_rss_bytes": 222298112,
+  "db": "/tmp/scanbench/scanbench.db",
+  "fixture": { "ok": true, "mismatches": [] },
+  "budget": {
+    "ok": true,
+    "checks": [
+      { "name": "peak_rss", "limit": 419430400, "actual": 222298112, "ok": true }
+    ]
+  }
+}
+```
+
+`elapsed_ms` covers the walk only, not catalog open or session bookkeeping.
+`peak_rss_bytes` is the highest sampled resident set size (`0` if the OS refuses to
+report it). `skipped_by_reason` uses the `SkipReason` names from `crates/core`.
+
+The elapsed-time budget applies only to scans large enough to compare: `≤ 90 s` at
+`≥ 1M` files and `≤ 240 s` at `≥ 3M`. Peak RSS (`≤ 400 MB`) is checked on every run.
+
 ### Cross-check harness
 
 | Platform | Compare against | Tolerance |
