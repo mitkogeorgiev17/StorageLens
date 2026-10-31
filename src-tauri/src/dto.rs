@@ -416,11 +416,37 @@ pub struct SatelliteDto {
     pub bytes: u64,
 }
 
-/// A set of identical files.
+/// A set of byte-identical files, two or more still on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DupGroupDto {
+    /// BLAKE3, hex.
     pub hash: String,
+    pub size_logical: u64,
+    /// Freed by keeping one copy.
+    pub reclaimable: u64,
+    pub files: Vec<DupFileDto>,
+}
+
+/// One copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DupFileDto {
+    pub path: String,
     pub size_alloc: u64,
-    pub paths: Vec<String>,
+    /// Unix seconds, as scanned.
+    pub modified: Option<i64>,
+}
+
+/// What a duplicate search found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DupesDto {
+    pub scan_id: i64,
+    /// Largest reclaimable first.
+    pub groups: Vec<DupGroupDto>,
+    /// Files that could not be read or changed since the scan.
+    pub unreadable: u64,
+    /// The search was stopped; only finished groups are listed.
+    pub cancelled: bool,
 }

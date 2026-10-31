@@ -47,6 +47,8 @@ pub use attrlist::{AttrSet, Request};
 pub use parse::{ObjType, ParseError, RawEntry};
 
 #[cfg(target_os = "macos")]
+pub use ffi::throttle_current_thread;
+#[cfg(target_os = "macos")]
 pub use ffi::{DirReader, BUFFER_BYTES};
 #[cfg(target_os = "macos")]
 pub use stamp::stamp;

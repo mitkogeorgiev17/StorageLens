@@ -21,6 +21,7 @@ import SearchBar from "./components/SearchBar";
 import AppsScreen from "./routes/Apps";
 import CleanupScreen from "./routes/Cleanup";
 import CollectionsScreen from "./routes/Collections";
+import DuplicatesScreen from "./routes/Duplicates";
 import LargeFilesScreen from "./routes/LargeFiles";
 import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
@@ -125,7 +126,7 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
     label: "Duplicates",
     title: "Duplicates",
     purpose: "Identical files, grouped, with a keep-one choice per group.",
-    empty: "Duplicate detection is not built yet.",
+    empty: "Duplicate files are listed here after a search."
   },
   history: {
     label: "History",
@@ -215,6 +216,7 @@ const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
   collections: CollectionsScreen,
   apps: AppsScreen,
   cleanup: CleanupScreen,
+  duplicates: DuplicatesScreen,
 };
 
 function Screen({ id }: { readonly id: RouteId }) {

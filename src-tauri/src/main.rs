@@ -55,6 +55,8 @@ fn main() {
             ipc::list_apps,
             ipc::preview_app_removal,
             ipc::find_duplicates,
+            ipc::cancel_duplicates,
+            ipc::preview_duplicate_removal,
             ipc::check_full_disk_access,
             ipc::open_full_disk_access_settings,
         ])

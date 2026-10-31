@@ -1892,3 +1892,77 @@ body {
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+/* Duplicates (#40) */
+
+.dupes-screen {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.dupes-group {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.dupes-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.dupes-group-title {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.dupes-reclaim,
+.dupes-meta,
+.dupes-suggest {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.dupes-suggest {
+  margin: 0;
+}
+
+.dupes-files {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dupes-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.dupes-file label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.dupes-file[data-ticked="true"] .rule-path {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.dupes-pages {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+}
