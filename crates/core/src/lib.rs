@@ -10,12 +10,19 @@
 
 pub mod categories;
 pub mod error;
+#[cfg(feature = "fixtures")]
+pub mod fixtures;
 pub mod scanner;
 pub mod tags;
 pub mod types;
 
 pub use categories::{extension_of, sniff_category, Category};
 pub use error::{Result, ScanError};
+#[cfg(feature = "fixtures")]
+pub use fixtures::{
+    allocated_bytes, CategorySample, FixtureError, FixturePaths, FixtureResult, FixtureTree,
+    Manifest, DEEP_DEPTH, LONG_NAME_BYTES, SPARSE_LOGICAL_BYTES,
+};
 pub use scanner::{CancelToken, EntrySink, StorageScanner};
 pub use tags::Tags;
 pub use types::{
