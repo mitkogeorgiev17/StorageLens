@@ -589,6 +589,10 @@ impl Builder {
     }
 
     /// Write a file that exists but must not appear in the expected totals.
+    ///
+    /// Only the Unix denied-directory case needs this; on Windows the deny ACL
+    /// is skipped, so the helper would be dead code.
+    #[cfg(unix)]
     fn file_uncounted(&mut self, path: &Path, bytes: &[u8]) -> FixtureResult<()> {
         fs::write(path, bytes).ctx(path)
     }
@@ -669,7 +673,9 @@ mod tests {
 
     fn walk(root: &Path) -> Walked {
         let mut walked = Walked::default();
-        let mut inodes = HashSet::new();
+        // Annotated because the non-Unix branch never inserts, leaving the type
+        // unconstrained on Windows.
+        let mut inodes: HashSet<(u64, u64)> = HashSet::new();
         let mut stack = vec![root.to_path_buf()];
 
         while let Some(path) = stack.pop() {
