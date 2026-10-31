@@ -108,7 +108,8 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     }
   };
 
-  // Open on the scan root.
+  // Open on the scan root (unless a search result is being opened instead:
+  // its effect runs after this one and takes over the navigation ticket).
   useEffect(() => {
     mounted.current = true;
     const ticket = ++navigation.current;
@@ -133,15 +134,59 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     };
   }, [scanId, load]);
 
-  /** Show `next` as the map's folder; `trail` is the breadcrumb that leads to it. */
-  const show = (next: TreeNodeDto, trail: readonly Crumb[], from: number | null) => {
+  /**
+   * Show `next` as the map's folder; `trail` is the breadcrumb that leads to
+   * it. `from` is the folder just left (zoomed out of), `select` what to
+   * select (defaults to `from`).
+   */
+  const show = (
+    next: TreeNodeDto,
+    trail: readonly Crumb[],
+    from: number | null,
+    select: number | null = from,
+  ) => {
     setCrumbs(trail);
     setTree(next);
     setEnterFrom(from);
-    setSelectedId(from);
+    setSelectedId(select);
     setHovered(null);
     setError(null);
   };
+
+  // "Show in Map" from search: open the entry's folder (or the folder itself)
+  // with the entry selected. The request is cleared only once applied, so a
+  // remount (StrictMode, or navigating away and back mid-load) retries it.
+  const focus = useAppStore((state) => state.mapFocus);
+  const mapFocusHandled = useAppStore((state) => state.mapFocusHandled);
+  useEffect(() => {
+    if (focus === null) {
+      return;
+    }
+    const ticket = ++navigation.current;
+    cancelClick();
+    api
+      .getAncestors(scanId, focus.entryId)
+      .then(async (chain) => {
+        const trail = focus.isDirectory ? chain : chain.slice(0, -1);
+        const folder = trail[trail.length - 1];
+        if (folder === undefined) {
+          return;
+        }
+        const next = await load(folder.id);
+        if (mounted.current && ticket === navigation.current) {
+          show(next, trail, null, focus.isDirectory ? null : focus.entryId);
+          mapFocusHandled(focus.nonce);
+        }
+      })
+      .catch((cause: unknown) => {
+        if (mounted.current && ticket === navigation.current) {
+          setNotice(message(cause));
+          mapFocusHandled(focus.nonce);
+        }
+      });
+    // `show` and `cancelClick` only set state and clear a timer, so they are
+    // left out of the dependencies.
+  }, [focus, scanId, load, mapFocusHandled]);
 
   const zoomInto = async (id: number) => {
     if (index === null) {

@@ -15,6 +15,7 @@ pub mod model;
 pub mod query;
 pub mod rollup;
 pub mod schema;
+pub mod search;
 pub mod util;
 pub mod writer;
 
@@ -23,4 +24,5 @@ pub use db::Catalog;
 pub use error::{CatalogError, Result};
 pub use listing::{file_order, modified_times, slice, FileSort, UNKNOWN_TIME};
 pub use model::{CategoryTotal, Platform, ScanSession, SizeCursor, StoredEntry};
+pub use search::{index_names, match_expression, SearchCursor, SearchHit};
 pub use writer::{EntryWriter, DEFAULT_BATCH_SIZE};

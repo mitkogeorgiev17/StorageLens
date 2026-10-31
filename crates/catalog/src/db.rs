@@ -184,6 +184,22 @@ impl Catalog {
         query::largest(&self.conn, scan_id, min_size, after, limit)
     }
 
+    /// Index a finished scan's names for search, once (see [`crate::search`]).
+    pub fn index_names(&self, scan_id: i64) -> Result<()> {
+        crate::search::index_names(&self.conn, scan_id)
+    }
+
+    /// Entries whose name matches `query`, biggest first (see [`crate::search`]).
+    pub fn search(
+        &self,
+        scan_id: i64,
+        query: &str,
+        after: Option<crate::search::SearchCursor>,
+        limit: u32,
+    ) -> Result<Vec<crate::search::SearchHit>> {
+        crate::search::search(&self.conn, scan_id, query, after, limit)
+    }
+
     /// Allocated bytes and file counts per primary category.
     pub fn category_totals(&self, scan_id: i64) -> Result<Vec<CategoryTotal>> {
         query::category_totals(&self.conn, scan_id)

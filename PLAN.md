@@ -1012,6 +1012,18 @@ Never `OFFSET` at scale. Never load a million rows into JS.
 
 SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
 
+- External-content table (schema v3): tokens only, no second copy of the names.
+  `unicode61 remove_diacritics 2` plus the M*, So and Sk categories, so accents fold
+  and combining scripts and emoji are searchable. Prefix indexes on 1–3 characters.
+- Each scan is indexed in one bulk insert when it finishes, tracked by
+  `scan_session.names_indexed`. Per-row triggers cost ~35 s per million entries,
+  the bulk insert ~5 s.
+- Every term becomes a quoted prefix phrase, ANDed, so user input is never FTS
+  syntax. Results rank by size (a folder by its rollup) and then by recency,
+  paged with a keyset cursor.
+- Measured on 1M names: 1 ms for specific terms, under 50 ms for terms that
+  match 17% of all files.
+
 ---
 
 ## 14. Tauri command surface
@@ -1035,8 +1047,9 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
     start: u64, count: u32) -> Result<FileRange, String>;   // positional, ≤ 200 rows
 #[tauri::command] async fn get_largest(scan_id: u32, min_size: u64, cursor: Option<u64>)
     -> Result<Page<FileRow>, String>;
-#[tauri::command] async fn search(scan_id: u32, query: String, cursor: Option<u32>)
-    -> Result<Page<FileRow>, String>;
+#[tauri::command] async fn search(scan_id: u32, query: String, cursor: Option<SearchCursor>)
+    -> Result<Page<FileRow>, String>;   // 50 per page, biggest then most recent
+#[tauri::command] async fn get_ancestors(scan_id: u32, entry_id: u32) -> Result<Vec<Crumb>, String>;
 
 #[tauri::command] async fn get_rules(scan_id: u32) -> Result<Vec<RuleGroup>, String>;
 #[tauri::command] async fn preview_deletion(paths: Vec<String>) -> Result<DeletionPlan, String>;
