@@ -10,6 +10,7 @@
 pub mod arena;
 pub mod db;
 pub mod error;
+pub mod listing;
 pub mod model;
 pub mod query;
 pub mod rollup;
@@ -20,5 +21,6 @@ pub mod writer;
 pub use arena::{Arena, Node, NodeIndex, NIL};
 pub use db::Catalog;
 pub use error::{CatalogError, Result};
+pub use listing::{file_order, modified_times, slice, FileSort, UNKNOWN_TIME};
 pub use model::{CategoryTotal, Platform, ScanSession, SizeCursor, StoredEntry};
 pub use writer::{EntryWriter, DEFAULT_BATCH_SIZE};

@@ -135,6 +135,16 @@ export interface FileRowDto {
   readonly modified: number | null;
 }
 
+/** Natural directions: size largest first, modified oldest first, type by category. */
+export type FileSort = "size" | "modified" | "type";
+
+export interface FileRangeDto {
+  /** Rows in the whole listing (after the size filter). */
+  readonly total: number;
+  readonly start: number;
+  readonly items: readonly FileRowDto[];
+}
+
 export interface SizeCursor {
   readonly sizeAlloc: number;
   readonly id: number;
@@ -242,6 +252,15 @@ export const api = {
   /** Quick Look on macOS; on Windows, reveal in Explorer (no system preview). */
   previewEntry: (scanId: number, entryId: number) =>
     call<void>("preview_entry", { scanId, entryId }),
+  /** Rows `start ..` of every file, positional; at most 200 per call. */
+  getFiles: (
+    scanId: number,
+    sort: FileSort,
+    reversed: boolean,
+    minSize: number,
+    start: number,
+    count: number,
+  ) => call<FileRangeDto>("get_files", { scanId, sort, reversed, minSize, start, count }),
   getLargest: (scanId: number, minSize: number, cursor?: SizeCursor) =>
     call<Page<FileRowDto, SizeCursor>>("get_largest", {
       scanId,

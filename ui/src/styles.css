@@ -877,3 +877,142 @@ body {
 .dialog-close:hover {
   background: var(--nav-active-bg);
 }
+
+/* --- Large Files ----------------------------------------------------------------- */
+
+.content[data-route="large-files"] {
+  overflow: hidden;
+  padding: var(--space-4) var(--space-6);
+}
+
+.files-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
+  min-height: 0;
+}
+
+.files-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.files-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.select {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-md);
+}
+
+.files-count {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.files-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.file-table {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.file-table:focus-visible,
+.select:focus-visible,
+.sort-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.file-list {
+  flex: 1;
+  min-height: 0;
+}
+
+.file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) 96px 120px 120px minmax(0, 3fr);
+  gap: var(--space-3);
+  align-items: center;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  cursor: default;
+}
+
+.file-row[aria-selected="true"] {
+  background: var(--nav-active-bg);
+  color: var(--nav-active-text);
+}
+
+.file-header {
+  height: 32px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.file-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-cell-size,
+.file-cell-date {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.file-header .file-cell-size,
+.file-header .file-cell-date {
+  text-align: right;
+}
+
+.file-cell-path {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.file-row[aria-selected="true"] .file-cell-path {
+  color: inherit;
+}
+
+.sort-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.placeholder {
+  display: block;
+  width: 40%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--gauge-free);
+}

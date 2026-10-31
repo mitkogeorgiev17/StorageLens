@@ -3,7 +3,7 @@
  * screen inside an error boundary, and a status line for the scan session.
  *
  * Screens without a component yet are placeholders with honest empty states
- * until their own issues land (Large Files #23, Cleanup #29+,
+ * until their own issues land (Cleanup #29+,
  * Apps #36+, Duplicates #39+). Each issue adds its component to `COMPONENTS`.
  */
 
@@ -17,6 +17,7 @@ import {
 } from "react";
 
 import ScanPicker from "./components/ScanPicker";
+import LargeFilesScreen from "./routes/LargeFiles";
 import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
 import { formatBytes, formatCount, formatDuration } from "./lib/format";
@@ -151,6 +152,7 @@ function Sidebar() {
 const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
   overview: OverviewScreen,
   map: MapScreen,
+  "large-files": LargeFilesScreen,
 };
 
 function Screen({ id }: { readonly id: RouteId }) {

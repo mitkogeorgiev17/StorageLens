@@ -109,3 +109,20 @@ export function formatPercent(fraction: number): string {
   }
   return `${(fraction * 100).toFixed(1)}%`;
 }
+
+const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+
+/**
+ * Unix seconds → a short local date (`Mar 4, 2024` in en-US). `null`, 0, or a
+ * non-finite time is unknown: platforms report 0 when they have no answer.
+ */
+export function formatDate(unixSeconds: number | null): string {
+  if (unixSeconds === null || !Number.isFinite(unixSeconds) || unixSeconds === 0) {
+    return UNKNOWN;
+  }
+  return DATE_FORMAT.format(new Date(unixSeconds * 1000));
+}
