@@ -1,0 +1,1076 @@
+//! The Tauri command surface (PLAN §14): every UI action is exactly one typed
+//! call here, mirrored in `ui/src/lib/api.ts`.
+//!
+//! # Shape
+//!
+//! Each `#[tauri::command]` is a thin wrapper over a plain function taking
+//! [`AppState`] (and, for scans, an [`Emit`]), so the logic is tested without a
+//! running app. Errors cross the boundary as `String` — the message the UI shows.
+//! Nothing here panics on input: every lookup, lock, and conversion is fallible.
+//!
+//! # Not built yet
+//!
+//! Grouping, search, rules, deletion, apps, and duplicates are declared with
+//! their final types and return [`not_built`] until their issues land. The
+//! preview-before-execute rule is enforced **now**: `execute_deletion` refuses a
+//! plan id that no `preview_deletion` produced (AGENTS.md invariant 10).
+//!
+//! # Scans
+//!
+//! One scan runs at a time (the catalog has a single writer). It runs on its own
+//! thread with its own SQLite connection; the command returns its id
+//! immediately, progress arrives as `scan://progress`, and the end as
+//! `scan://done` or `scan://error`. When it ends, the arena is loaded and
+//! `dir_rollup` written before `scan://done` is sent, so the UI can query the
+//! moment it hears it.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use serde::Serialize;
+use storagelens_catalog::{
+    rollup, Arena, Catalog, EntryWriter, NodeIndex, Platform, ScanSession, SizeCursor,
+    DEFAULT_BATCH_SIZE,
+};
+use storagelens_core::{CancelToken, EntryKind, Progress, ScanOptions, ScanResult, ScanStatus};
+use tauri::{AppHandle, State};
+
+use crate::dto::{
+    AppRowDto, CategoryDto, ChildDto, DeletionPlanDto, DeletionResultDto, DupGroupDto, FileRowDto,
+    FilterDto, Grouping, OverviewDto, Page, RuleGroupDto, ScanStatusDto, SizeCursorDto,
+    SyntheticNodeDto, VolumeDto,
+};
+use crate::events::{
+    self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
+};
+
+/// Rows per page for flat lists (AGENTS.md §8: no component holds more than
+/// ~200 rows).
+pub const PAGE_SIZE: u32 = 200;
+
+/// Default and maximum children returned by `get_children`.
+pub const DEFAULT_CHILDREN: u32 = 500;
+pub const MAX_CHILDREN: u32 = 5_000;
+
+/// Largest children shown on the Overview.
+const OVERVIEW_BIGGEST: usize = 10;
+
+type CommandResult<T> = Result<T, String>;
+
+/// The error for a command whose backend is not built yet.
+pub fn not_built(feature: &str, issue: &str) -> String {
+    format!("{feature} is not available yet (built in {issue})")
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> CommandResult<MutexGuard<'_, T>> {
+    mutex
+        .lock()
+        .map_err(|_| "internal state is unavailable after an earlier failure".to_owned())
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The scan currently running.
+struct RunningScan {
+    scan_id: i64,
+    root: PathBuf,
+    cancel: CancelToken,
+    progress: Arc<Mutex<Progress>>,
+}
+
+/// Everything the commands share. Managed by Tauri as `Arc<AppState>` so a scan
+/// thread can hold it too.
+pub struct AppState {
+    catalog_path: PathBuf,
+    catalog: Mutex<Catalog>,
+    running: Mutex<Option<RunningScan>>,
+    /// Scanned paths, for scans started by this app run. The catalog stores only
+    /// the root's name, so older scans report paths relative to it.
+    roots: Mutex<HashMap<i64, PathBuf>>,
+    /// The most recently used arena.
+    arena: Mutex<Option<Arc<Arena>>>,
+    /// Final results of scans finished in this run, for `elevated` and skips.
+    results: Mutex<HashMap<i64, ScanResult>>,
+    /// Dry-run receipts, by plan id.
+    plans: Mutex<HashMap<String, DeletionPlanDto>>,
+    next_plan: AtomicU64,
+}
+
+impl AppState {
+    /// Open (or create) the catalog at `catalog_path`.
+    pub fn open(catalog_path: PathBuf) -> CommandResult<Self> {
+        let catalog = Catalog::open(&catalog_path).map_err(|error| error.to_string())?;
+        Ok(Self {
+            catalog_path,
+            catalog: Mutex::new(catalog),
+            running: Mutex::new(None),
+            roots: Mutex::new(HashMap::new()),
+            arena: Mutex::new(None),
+            results: Mutex::new(HashMap::new()),
+            plans: Mutex::new(HashMap::new()),
+            next_plan: AtomicU64::new(1),
+        })
+    }
+
+    fn session(&self, scan_id: i64) -> CommandResult<ScanSession> {
+        lock(&self.catalog)?
+            .session(scan_id)
+            .map_err(|error| error.to_string())
+    }
+
+    /// The arena of `scan_id`, loading and caching it if needed.
+    fn arena(&self, scan_id: i64) -> CommandResult<Arc<Arena>> {
+        if let Some(arena) = lock(&self.arena)?.as_ref() {
+            if arena.scan_id() == scan_id {
+                return Ok(Arc::clone(arena));
+            }
+        }
+        if self.running_id()? == Some(scan_id) {
+            return Err(format!("scan {scan_id} is still running"));
+        }
+        let arena = {
+            let catalog = lock(&self.catalog)?;
+            Arena::load(catalog.connection(), scan_id).map_err(|error| error.to_string())?
+        };
+        let arena = Arc::new(arena);
+        *lock(&self.arena)? = Some(Arc::clone(&arena));
+        Ok(arena)
+    }
+
+    fn running_id(&self) -> CommandResult<Option<i64>> {
+        Ok(lock(&self.running)?.as_ref().map(|running| running.scan_id))
+    }
+
+    fn root_of(&self, scan_id: i64) -> Option<PathBuf> {
+        lock(&self.roots).ok()?.get(&scan_id).cloned()
+    }
+}
+
+// --- Scans -------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+fn platform() -> Option<Platform> {
+    Some(Platform::Macos)
+}
+
+#[cfg(windows)]
+fn platform() -> Option<Platform> {
+    Some(Platform::Windows)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn platform() -> Option<Platform> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn elevated_now() -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn elevated_now() -> bool {
+    storagelens_scan_windows::elevation::is_elevated()
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn elevated_now() -> bool {
+    false
+}
+
+fn run_platform_scanner(
+    root: &Path,
+    sink: &mut EntryWriter,
+    cancel: CancelToken,
+    progress: &(dyn Fn(Progress) + Send + Sync),
+) -> storagelens_core::Result<ScanResult> {
+    use storagelens_core::StorageScanner;
+    let roots = [root.to_path_buf()];
+    let options = ScanOptions::default();
+
+    #[cfg(target_os = "macos")]
+    {
+        storagelens_scan_macos::MacScanner::new(options).scan(&roots, sink, cancel, progress)
+    }
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::WinScanner::new(options).scan(&roots, sink, cancel, progress)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (roots, options, sink, cancel, progress);
+        Err(storagelens_core::ScanError::Unsupported("this platform"))
+    }
+}
+
+/// Validate the roots, open a session, and start the scan thread.
+pub fn start_scan(
+    state: &Arc<AppState>,
+    emitter: Arc<dyn Emit>,
+    roots: Vec<String>,
+) -> CommandResult<i64> {
+    let root = match roots.as_slice() {
+        [root] => PathBuf::from(root),
+        [] => return Err("choose a folder or volume to scan".to_owned()),
+        _ => return Err("scan one folder or volume at a time".to_owned()),
+    };
+    if root.as_os_str().is_empty() || !root.is_absolute() {
+        return Err(format!("not an absolute path: {}", root.display()));
+    }
+    // One check that the root exists, so the error names it. The scan itself
+    // enumerates through the scanner (AGENTS.md invariant 4).
+    if !root.exists() {
+        return Err(format!("does not exist: {}", root.display()));
+    }
+    let platform = platform().ok_or_else(|| "scanning is not supported here".to_owned())?;
+
+    let mut running = lock(&state.running)?;
+    if let Some(current) = running.as_ref() {
+        return Err(format!(
+            "scan {} of {} is still running",
+            current.scan_id,
+            current.root.display()
+        ));
+    }
+
+    let scan_id = lock(&state.catalog)?
+        .begin_session(platform, elevated_now())
+        .map_err(|error| error.to_string())?;
+    let cancel = CancelToken::new();
+    let progress = Arc::new(Mutex::new(Progress::default()));
+    *running = Some(RunningScan {
+        scan_id,
+        root: root.clone(),
+        cancel: cancel.clone(),
+        progress: Arc::clone(&progress),
+    });
+    drop(running);
+    lock(&state.roots)?.insert(scan_id, root.clone());
+
+    let thread_state = Arc::clone(state);
+    let spawned = std::thread::Builder::new()
+        .name(format!("storagelens-scan-{scan_id}"))
+        .spawn(move || {
+            run_scan(
+                &thread_state,
+                emitter.as_ref(),
+                scan_id,
+                &root,
+                cancel,
+                &progress,
+            );
+        });
+    if let Err(error) = spawned {
+        *lock(&state.running)? = None;
+        return Err(format!("could not start the scan thread: {error}"));
+    }
+    Ok(scan_id)
+}
+
+/// The scan thread: scan, record, load the arena, write rollups, announce.
+fn run_scan(
+    state: &AppState,
+    emitter: &dyn Emit,
+    scan_id: i64,
+    root: &Path,
+    cancel: CancelToken,
+    progress: &Arc<Mutex<Progress>>,
+) {
+    let started = Instant::now();
+    let outcome = scan_and_record(state, emitter, scan_id, root, cancel, progress);
+
+    // Clear `running` before announcing, so a UI reacting to the event can start
+    // the next scan immediately.
+    if let Ok(mut running) = state.running.lock() {
+        *running = None;
+    }
+
+    match outcome {
+        Ok(status) => events::emit(
+            emitter,
+            events::SCAN_DONE,
+            &ScanDoneEvent {
+                scan_id,
+                status,
+                duration_ms: started.elapsed().as_millis() as u64,
+            },
+        ),
+        Err(message) => {
+            // The session has no "failed" status; record it as cancelled so it is
+            // not left looking like it is still running.
+            if let Ok(catalog) = state.catalog.lock() {
+                let _ = catalog.finish_session(scan_id, ScanStatus::Cancelled, 0, 0, 0);
+            }
+            events::emit(
+                emitter,
+                events::SCAN_ERROR,
+                &ScanErrorEvent { scan_id, message },
+            );
+        }
+    }
+}
+
+fn scan_and_record(
+    state: &AppState,
+    emitter: &dyn Emit,
+    scan_id: i64,
+    root: &Path,
+    cancel: CancelToken,
+    progress: &Arc<Mutex<Progress>>,
+) -> CommandResult<ScanStatus> {
+    let mut writer = EntryWriter::open(&state.catalog_path, scan_id, DEFAULT_BATCH_SIZE)
+        .map_err(|error| error.to_string())?;
+
+    let throttle = Throttle::new(PROGRESS_INTERVAL);
+    let shared = Arc::clone(progress);
+    let on_progress = move |snapshot: Progress| {
+        if let Ok(mut cell) = shared.lock() {
+            *cell = snapshot.clone();
+        }
+        if throttle.ready() {
+            let seconds = (snapshot.elapsed_ms as f64 / 1000.0).max(0.001);
+            events::emit(
+                emitter,
+                events::SCAN_PROGRESS,
+                &ScanProgressEvent {
+                    scan_id,
+                    files: snapshot.files,
+                    dirs: snapshot.dirs,
+                    bytes_alloc: snapshot.bytes_alloc.get(),
+                    elapsed_ms: snapshot.elapsed_ms,
+                    current_path: snapshot
+                        .current_path
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    rate: snapshot.files as f64 / seconds,
+                },
+            );
+        }
+    };
+
+    let result = run_platform_scanner(root, &mut writer, cancel, &on_progress)
+        .map_err(|error| error.to_string())?;
+    drop(writer);
+
+    {
+        let catalog = lock(&state.catalog)?;
+        catalog
+            .finish_session(
+                scan_id,
+                result.status,
+                result.files,
+                result.bytes_alloc.get(),
+                result.skipped.len() as u64,
+            )
+            .map_err(|error| error.to_string())?;
+
+        let arena =
+            Arena::load(catalog.connection(), scan_id).map_err(|error| error.to_string())?;
+        rollup::write(catalog.connection(), &arena).map_err(|error| error.to_string())?;
+        drop(catalog);
+        *lock(&state.arena)? = Some(Arc::new(arena));
+    }
+
+    let status = result.status;
+    lock(&state.results)?.insert(scan_id, result);
+    Ok(status)
+}
+
+pub fn cancel_scan(state: &AppState, scan_id: i64) -> CommandResult<()> {
+    match lock(&state.running)?.as_ref() {
+        Some(running) if running.scan_id == scan_id => {
+            running.cancel.cancel();
+            Ok(())
+        }
+        _ => Err(format!("scan {scan_id} is not running")),
+    }
+}
+
+fn elevated_for(session: &ScanSession) -> Option<bool> {
+    (session.platform == Platform::Windows).then_some(session.elevated)
+}
+
+pub fn scan_status(state: &AppState, scan_id: i64) -> CommandResult<ScanStatusDto> {
+    if let Some(running) = lock(&state.running)?.as_ref() {
+        if running.scan_id == scan_id {
+            let progress = lock(&running.progress)?.clone();
+            return Ok(ScanStatusDto {
+                scan_id,
+                status: ScanStatus::Running,
+                root: Some(running.root.display().to_string()),
+                files: progress.files,
+                dirs: progress.dirs,
+                bytes_alloc: progress.bytes_alloc.get(),
+                elapsed_ms: progress.elapsed_ms,
+                skipped_dirs: 0,
+                elevated: None,
+            });
+        }
+    }
+
+    let session = state.session(scan_id)?;
+    let result = lock(&state.results)?.get(&scan_id).cloned();
+    let elapsed_ms = match (&result, session.finished_at) {
+        (Some(result), _) => result.elapsed_ms,
+        (None, Some(finished)) => (finished - session.started_at).max(0) as u64 * 1000,
+        (None, None) => 0,
+    };
+    Ok(ScanStatusDto {
+        scan_id,
+        status: session.status,
+        root: state
+            .root_of(scan_id)
+            .map(|root| root.display().to_string()),
+        files: session.files_seen,
+        dirs: result.as_ref().map_or(0, |result| result.dirs),
+        bytes_alloc: session.bytes_seen,
+        elapsed_ms,
+        skipped_dirs: session.dirs_skipped,
+        elevated: result
+            .as_ref()
+            .and_then(|result| result.elevated)
+            .or_else(|| elevated_for(&session)),
+    })
+}
+
+// --- Reading a finished scan ----------------------------------------------------
+
+fn child_dto(arena: &Arena, index: NodeIndex) -> Option<ChildDto> {
+    let node = arena.node(index)?;
+    Some(ChildDto {
+        id: arena.entry_id(index)?,
+        name: arena.name(index)?.to_owned(),
+        kind: node.kind(),
+        category: node.category(),
+        size_alloc: if node.kind() == EntryKind::File {
+            node.size_alloc
+        } else {
+            node.total_alloc
+        },
+        file_count: arena.file_count(index).unwrap_or(0),
+        has_children: node.first_child != storagelens_catalog::NIL,
+        hardlink_dup: node.is_hardlink_dup(),
+    })
+}
+
+/// One directory listing, biggest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildrenDto {
+    pub items: Vec<ChildDto>,
+    /// Children beyond `limit`: how many, and their combined size, so a treemap
+    /// can draw them as one "smaller items" block.
+    pub remaining_count: u64,
+    pub remaining_bytes: u64,
+}
+
+fn sorted_children(arena: &Arena, index: NodeIndex) -> Vec<ChildDto> {
+    let mut children: Vec<ChildDto> = arena
+        .children(index)
+        .filter_map(|child| child_dto(arena, child))
+        .collect();
+    children.sort_by(|left, right| {
+        right
+            .size_alloc
+            .cmp(&left.size_alloc)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    children
+}
+
+pub fn get_children(
+    state: &AppState,
+    scan_id: i64,
+    parent_id: i64,
+    limit: Option<u32>,
+) -> CommandResult<ChildrenDto> {
+    let arena = state.arena(scan_id)?;
+    let index = arena
+        .index_of(parent_id)
+        .ok_or_else(|| format!("entry {parent_id} is not part of scan {scan_id}"))?;
+    let limit = limit.unwrap_or(DEFAULT_CHILDREN).clamp(1, MAX_CHILDREN) as usize;
+
+    let mut items = sorted_children(&arena, index);
+    let rest = items.split_off(items.len().min(limit));
+    Ok(ChildrenDto {
+        items,
+        remaining_count: rest.len() as u64,
+        remaining_bytes: rest
+            .iter()
+            .filter(|child| !child.hardlink_dup)
+            .map(|child| child.size_alloc)
+            .sum(),
+    })
+}
+
+fn volume_for(root: Option<&Path>) -> Option<VolumeDto> {
+    let root = root?;
+    #[cfg(target_os = "macos")]
+    let volumes = storagelens_scan_macos::volumes();
+    #[cfg(not(target_os = "macos"))]
+    let volumes: Vec<storagelens_core::Volume> = Vec::new();
+
+    volumes
+        .into_iter()
+        .filter(|volume| root.starts_with(&volume.mount_point))
+        .max_by_key(|volume| volume.mount_point.as_os_str().len())
+        .map(|volume| VolumeDto {
+            name: volume.name,
+            mount_point: volume.mount_point.display().to_string(),
+            total: volume.total.get(),
+            available: volume.available.get(),
+            used: volume.total.get().saturating_sub(volume.available.get()),
+        })
+}
+
+pub fn get_categories(state: &AppState, scan_id: i64) -> CommandResult<Vec<CategoryDto>> {
+    // Fail with "not found" for an unknown scan rather than an empty list.
+    state.session(scan_id)?;
+    let totals = lock(&state.catalog)?
+        .category_totals(scan_id)
+        .map_err(|error| error.to_string())?;
+    Ok(totals
+        .into_iter()
+        .map(|total| CategoryDto {
+            category: total.category,
+            label: total.category.label(),
+            bytes_alloc: total.bytes_alloc,
+            file_count: total.file_count,
+        })
+        .collect())
+}
+
+pub fn get_overview(state: &AppState, scan_id: i64) -> CommandResult<OverviewDto> {
+    let scan = scan_status(state, scan_id)?;
+    let arena = state.arena(scan_id)?;
+    let root = arena.root();
+    let mut biggest = sorted_children(&arena, root);
+    biggest.truncate(OVERVIEW_BIGGEST);
+
+    Ok(OverviewDto {
+        root_id: arena.entry_id(root).ok_or("the scan has no root")?,
+        root_name: arena.name(root).unwrap_or_default().to_owned(),
+        volume: volume_for(state.root_of(scan_id).as_deref()),
+        categories: get_categories(state, scan_id)?,
+        biggest,
+        scan,
+    })
+}
+
+fn path_of(state: &AppState, arena: &Arena, scan_id: i64, index: NodeIndex) -> String {
+    let mut path = state
+        .root_of(scan_id)
+        .unwrap_or_else(|| PathBuf::from(arena.name(arena.root()).unwrap_or_default()));
+    for name in arena.path_names(index) {
+        path.push(name);
+    }
+    path.display().to_string()
+}
+
+pub fn get_largest(
+    state: &AppState,
+    scan_id: i64,
+    min_size: u64,
+    cursor: Option<SizeCursorDto>,
+) -> CommandResult<Page<FileRowDto, SizeCursorDto>> {
+    let arena = state.arena(scan_id)?;
+    let rows = lock(&state.catalog)?
+        .largest(
+            scan_id,
+            min_size,
+            cursor.map(|cursor| SizeCursor {
+                size_alloc: cursor.size_alloc,
+                id: cursor.id,
+            }),
+            PAGE_SIZE,
+        )
+        .map_err(|error| error.to_string())?;
+
+    let next_cursor = (rows.len() == PAGE_SIZE as usize)
+        .then(|| rows.last())
+        .flatten()
+        .map(|row| SizeCursorDto {
+            size_alloc: row.size_alloc,
+            id: row.id,
+        });
+    let items = rows
+        .into_iter()
+        .map(|row| FileRowDto {
+            path: arena
+                .index_of(row.id)
+                .map(|index| path_of(state, &arena, scan_id, index))
+                .unwrap_or_else(|| row.name.clone()),
+            id: row.id,
+            name: row.name,
+            category: row.category,
+            size_alloc: row.size_alloc,
+            size_logical: row.size_logical,
+            modified: row.modified,
+        })
+        .collect();
+    Ok(Page { items, next_cursor })
+}
+
+// --- Deletion: the receipt rule is enforced now, execution comes with #30 -------
+
+pub fn preview_deletion(state: &AppState, paths: Vec<String>) -> CommandResult<DeletionPlanDto> {
+    if paths.is_empty() {
+        return Err("nothing selected to delete".to_owned());
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for path in &paths {
+        if !Path::new(path).is_absolute() {
+            return Err(format!("not an absolute path: {path}"));
+        }
+        if !unique.insert(path.as_str()) {
+            return Err(format!("listed twice: {path}"));
+        }
+    }
+
+    let number = state.next_plan.fetch_add(1, Ordering::Relaxed);
+    let plan = DeletionPlanDto {
+        plan_id: format!("plan-{number}-{}", now_unix()),
+        paths,
+        created_at: now_unix(),
+    };
+    lock(&state.plans)?.insert(plan.plan_id.clone(), plan.clone());
+    Ok(plan)
+}
+
+pub fn execute_deletion(state: &AppState, plan_id: &str) -> CommandResult<DeletionResultDto> {
+    if !lock(&state.plans)?.contains_key(plan_id) {
+        return Err(format!(
+            "no dry-run receipt for plan '{plan_id}': call preview_deletion first"
+        ));
+    }
+    Err(not_built("Moving files to the Trash", "#30"))
+}
+
+// --- Full Disk Access --------------------------------------------------------------
+
+/// What the Full Disk Access probe found. Off macOS there is no such permission.
+// Each platform constructs only its own variants (macOS the first three,
+// everything else `NotApplicable`), but the wire type is shared.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiskAccess {
+    Granted,
+    Denied,
+    /// The probe could not tell (no protected folder to try on this machine).
+    Unknown,
+    /// Off macOS.
+    NotApplicable,
+}
+
+pub fn check_full_disk_access() -> DiskAccess {
+    #[cfg(target_os = "macos")]
+    {
+        use storagelens_scan_macos::FullDiskAccess;
+        match storagelens_scan_macos::full_disk_access() {
+            FullDiskAccess::Granted => DiskAccess::Granted,
+            FullDiskAccess::Denied => DiskAccess::Denied,
+            FullDiskAccess::Unknown => DiskAccess::Unknown,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        DiskAccess::NotApplicable
+    }
+}
+
+// --- Tauri wrappers ---------------------------------------------------------------
+
+/// The `#[tauri::command]` functions, named exactly as PLAN §14 and `api.ts`
+/// call them. Each one only unwraps Tauri's arguments and delegates.
+pub mod ipc {
+    use super::*;
+
+    type AppStateRef<'a> = State<'a, Arc<AppState>>;
+
+    #[tauri::command]
+    pub async fn start_scan(
+        app: AppHandle,
+        state: AppStateRef<'_>,
+        roots: Vec<String>,
+    ) -> CommandResult<i64> {
+        super::start_scan(state.inner(), Arc::new(app), roots)
+    }
+
+    #[tauri::command]
+    pub async fn cancel_scan(state: AppStateRef<'_>, scan_id: i64) -> CommandResult<()> {
+        super::cancel_scan(state.inner(), scan_id)
+    }
+
+    #[tauri::command]
+    pub async fn scan_status(state: AppStateRef<'_>, scan_id: i64) -> CommandResult<ScanStatusDto> {
+        super::scan_status(state.inner(), scan_id)
+    }
+
+    #[tauri::command]
+    pub async fn latest_scan(state: AppStateRef<'_>) -> CommandResult<Option<ScanStatusDto>> {
+        let latest = lock(&state.catalog)?
+            .latest_session()
+            .map_err(|error| error.to_string())?;
+        latest
+            .map(|session| super::scan_status(state.inner(), session.id))
+            .transpose()
+    }
+
+    #[tauri::command]
+    pub async fn get_overview(state: AppStateRef<'_>, scan_id: i64) -> CommandResult<OverviewDto> {
+        super::get_overview(state.inner(), scan_id)
+    }
+
+    #[tauri::command]
+    pub async fn get_categories(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+    ) -> CommandResult<Vec<CategoryDto>> {
+        super::get_categories(state.inner(), scan_id)
+    }
+
+    #[tauri::command]
+    pub async fn get_grouping(
+        scan_id: i64,
+        by: Grouping,
+        filter: Option<FilterDto>,
+    ) -> CommandResult<SyntheticNodeDto> {
+        let _ = (scan_id, by, filter);
+        Err(not_built("Grouping views", "#25"))
+    }
+
+    #[tauri::command]
+    pub async fn get_children(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        parent_id: i64,
+        limit: Option<u32>,
+    ) -> CommandResult<ChildrenDto> {
+        super::get_children(state.inner(), scan_id, parent_id, limit)
+    }
+
+    #[tauri::command]
+    pub async fn get_largest(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        min_size: u64,
+        cursor: Option<SizeCursorDto>,
+    ) -> CommandResult<Page<FileRowDto, SizeCursorDto>> {
+        super::get_largest(state.inner(), scan_id, min_size, cursor)
+    }
+
+    #[tauri::command]
+    pub async fn search(
+        scan_id: i64,
+        query: String,
+        cursor: Option<SizeCursorDto>,
+    ) -> CommandResult<Page<FileRowDto, SizeCursorDto>> {
+        let _ = (scan_id, query, cursor);
+        Err(not_built("Search", "#24"))
+    }
+
+    #[tauri::command]
+    pub async fn get_rules(scan_id: i64) -> CommandResult<Vec<RuleGroupDto>> {
+        let _ = scan_id;
+        Err(not_built("Cleanup rules", "#31"))
+    }
+
+    #[tauri::command]
+    pub async fn preview_deletion(
+        state: AppStateRef<'_>,
+        paths: Vec<String>,
+    ) -> CommandResult<DeletionPlanDto> {
+        super::preview_deletion(state.inner(), paths)
+    }
+
+    #[tauri::command]
+    pub async fn execute_deletion(
+        state: AppStateRef<'_>,
+        plan_id: String,
+    ) -> CommandResult<DeletionResultDto> {
+        super::execute_deletion(state.inner(), &plan_id)
+    }
+
+    #[tauri::command]
+    pub async fn undo_deletion(manifest_id: String) -> CommandResult<()> {
+        let _ = manifest_id;
+        Err(not_built("Undo", "#30"))
+    }
+
+    #[tauri::command]
+    pub async fn list_apps(scan_id: i64) -> CommandResult<Vec<AppRowDto>> {
+        let _ = scan_id;
+        Err(not_built("App inventory", "#36"))
+    }
+
+    #[tauri::command]
+    pub async fn find_duplicates(scan_id: i64, min_size: u64) -> CommandResult<Vec<DupGroupDto>> {
+        let _ = (scan_id, min_size);
+        Err(not_built("Duplicate detection", "#39"))
+    }
+
+    #[tauri::command]
+    pub async fn check_full_disk_access() -> CommandResult<DiskAccess> {
+        Ok(super::check_full_disk_access())
+    }
+
+    #[tauri::command]
+    pub async fn open_full_disk_access_settings() -> CommandResult<()> {
+        #[cfg(target_os = "macos")]
+        {
+            storagelens_scan_macos::open_full_disk_access_settings()
+                .map_err(|error| error.to_string())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err("Full Disk Access is a macOS setting".to_owned())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::events::testing::Recorder;
+
+    fn state(dir: &tempfile::TempDir) -> Arc<AppState> {
+        Arc::new(AppState::open(dir.path().join("catalog.db")).expect("open state"))
+    }
+
+    /// A small tree: two directories, four files, one of them large.
+    fn tree(dir: &tempfile::TempDir) -> PathBuf {
+        let root = fs::canonicalize(dir.path())
+            .expect("canonical")
+            .join("scanned");
+        fs::create_dir_all(root.join("photos/2024")).expect("dirs");
+        fs::create_dir_all(root.join("docs")).expect("dirs");
+        fs::write(root.join("photos/2024/a.jpg"), vec![1u8; 300_000]).expect("file");
+        fs::write(root.join("photos/b.png"), vec![2u8; 20_000]).expect("file");
+        fs::write(root.join("docs/c.pdf"), vec![3u8; 5_000]).expect("file");
+        fs::write(root.join("notes.txt"), b"hi").expect("file");
+        // Windows paths come back from canonicalize with a verbatim prefix.
+        let text = root.display().to_string();
+        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    }
+
+    /// Start a scan and wait for its terminal event.
+    fn scan(state: &Arc<AppState>, root: &Path) -> (i64, Arc<Recorder>) {
+        let recorder = Arc::new(Recorder::default());
+        let scan_id = start_scan(
+            state,
+            Arc::clone(&recorder) as Arc<dyn Emit>,
+            vec![root.display().to_string()],
+        )
+        .expect("start");
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while recorder.named(events::SCAN_DONE).is_empty()
+            && recorder.named(events::SCAN_ERROR).is_empty()
+        {
+            assert!(Instant::now() < deadline, "the scan never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            recorder.named(events::SCAN_ERROR).is_empty(),
+            "scan failed: {:?}",
+            recorder.named(events::SCAN_ERROR)
+        );
+        (scan_id, recorder)
+    }
+
+    #[test]
+    fn a_scan_runs_end_to_end_and_every_read_command_returns_typed_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let (scan_id, recorder) = scan(&state, &root);
+
+        let done = recorder.named(events::SCAN_DONE);
+        assert_eq!(done.len(), 1, "exactly one done event");
+        assert_eq!(done[0]["scanId"], scan_id);
+        assert_eq!(done[0]["status"], "complete");
+
+        let status = scan_status(&state, scan_id).expect("status");
+        assert_eq!(status.status, ScanStatus::Complete);
+        assert_eq!(status.files, 4);
+        assert_eq!(status.dirs, 3);
+        assert_eq!(
+            status.root.as_deref(),
+            Some(root.display().to_string().as_str())
+        );
+
+        let overview = get_overview(&state, scan_id).expect("overview");
+        assert_eq!(overview.root_name, "scanned");
+        assert_eq!(overview.scan.bytes_alloc, status.bytes_alloc);
+        assert_eq!(overview.biggest[0].name, "photos", "biggest child first");
+        let category_total: u64 = overview.categories.iter().map(|c| c.bytes_alloc).sum();
+        assert_eq!(category_total, status.bytes_alloc, "invariant 11");
+
+        let children = get_children(&state, scan_id, overview.root_id, None).expect("children");
+        let names: Vec<&str> = children.items.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names.len(), 3);
+        assert_eq!(names[0], "photos");
+        let photos = &children.items[0];
+        assert!(photos.has_children);
+        assert_eq!(photos.file_count, 2);
+
+        let limited = get_children(&state, scan_id, overview.root_id, Some(1)).expect("limited");
+        assert_eq!(limited.items.len(), 1);
+        assert_eq!(limited.remaining_count, 2);
+        assert_eq!(
+            limited.items[0].size_alloc + limited.remaining_bytes,
+            status.bytes_alloc,
+            "the remainder accounts for every byte"
+        );
+
+        let page = get_largest(&state, scan_id, 0, None).expect("largest");
+        assert_eq!(page.items.len(), 4);
+        assert!(page.next_cursor.is_none(), "one page holds four files");
+        assert_eq!(page.items[0].name, "a.jpg");
+        assert_eq!(
+            page.items[0].path,
+            root.join("photos")
+                .join("2024")
+                .join("a.jpg")
+                .display()
+                .to_string()
+        );
+        assert!(page
+            .items
+            .windows(2)
+            .all(|pair| pair[0].size_alloc >= pair[1].size_alloc));
+    }
+
+    #[test]
+    fn bad_input_is_an_error_never_a_panic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let recorder: Arc<dyn Emit> = Arc::new(Recorder::default());
+
+        for roots in [
+            vec![],
+            vec!["relative/path".to_owned()],
+            vec![String::new()],
+            vec!["/a".to_owned(), "/b".to_owned()],
+            vec![dir.path().join("missing").display().to_string()],
+        ] {
+            assert!(
+                start_scan(&state, Arc::clone(&recorder), roots.clone()).is_err(),
+                "{roots:?}"
+            );
+        }
+
+        assert!(scan_status(&state, 999).is_err());
+        assert!(get_overview(&state, 999).is_err());
+        assert!(get_categories(&state, 999).is_err());
+        assert!(get_children(&state, 999, 1, None).is_err());
+        assert!(get_largest(&state, 999, 0, None).is_err());
+        assert!(cancel_scan(&state, 999).is_err());
+
+        let root = tree(&dir);
+        let (scan_id, _) = scan(&state, &root);
+        assert!(
+            get_children(&state, scan_id, -5, None).is_err(),
+            "an id outside the scan"
+        );
+        assert!(get_children(&state, scan_id, i64::MAX, Some(0)).is_err());
+    }
+
+    #[test]
+    fn execute_deletion_requires_a_preview() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+
+        let error = execute_deletion(&state, "plan-made-up").expect_err("no receipt");
+        assert!(error.contains("preview_deletion"), "{error}");
+
+        assert!(preview_deletion(&state, vec![]).is_err());
+        assert!(preview_deletion(&state, vec!["relative".to_owned()]).is_err());
+        let absolute = dir.path().join("x").display().to_string();
+        assert!(preview_deletion(&state, vec![absolute.clone(), absolute.clone()]).is_err());
+
+        let plan = preview_deletion(&state, vec![absolute]).expect("preview");
+        let error = execute_deletion(&state, &plan.plan_id).expect_err("not built yet");
+        assert!(
+            !error.contains("preview_deletion"),
+            "a previewed plan passes the receipt check: {error}"
+        );
+        assert!(error.contains("#30"), "{error}");
+    }
+
+    #[test]
+    fn progress_events_are_throttled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = fs::canonicalize(dir.path())
+            .expect("canonical")
+            .join("many");
+        for index in 0..300 {
+            let sub = root.join(format!("d{index}"));
+            fs::create_dir_all(&sub).expect("dir");
+            for file in 0..20 {
+                fs::write(sub.join(format!("f{file}")), b"x").expect("file");
+            }
+        }
+        let text = root.display().to_string();
+        let root = PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text));
+
+        let started = Instant::now();
+        let (_, recorder) = scan(&state, &root);
+        let elapsed = started.elapsed();
+        let progress = recorder.named(events::SCAN_PROGRESS).len();
+
+        // One event per 100 ms at most, plus the final snapshot.
+        let ceiling = (elapsed.as_millis() / 100) as usize + 2;
+        assert!(
+            progress <= ceiling,
+            "{progress} progress events in {elapsed:?} (ceiling {ceiling})"
+        );
+    }
+
+    #[test]
+    fn only_one_scan_runs_at_a_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+
+        // Pretend a scan is running.
+        *state.running.lock().expect("lock") = Some(RunningScan {
+            scan_id: 41,
+            root: root.clone(),
+            cancel: CancelToken::new(),
+            progress: Arc::new(Mutex::new(Progress::default())),
+        });
+        let recorder: Arc<dyn Emit> = Arc::new(Recorder::default());
+        let error =
+            start_scan(&state, recorder, vec![root.display().to_string()]).expect_err("busy");
+        assert!(error.contains("still running"), "{error}");
+
+        assert_eq!(
+            scan_status(&state, 41).expect("live").status,
+            ScanStatus::Running
+        );
+        assert!(cancel_scan(&state, 41).is_ok());
+        assert!(get_overview(&state, 41).is_err(), "no arena while running");
+    }
+
+    #[test]
+    fn unbuilt_features_name_their_issue() {
+        assert_eq!(
+            not_built("Search", "#24"),
+            "Search is not available yet (built in #24)"
+        );
+    }
+}
