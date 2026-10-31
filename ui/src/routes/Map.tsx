@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import Breadcrumb from "../components/Breadcrumb";
 import FilterBar from "../components/FilterBar";
 import GroupingSelector from "../components/GroupingSelector";
+import Sunburst from "../components/Sunburst";
 import Treemap, {
   type ActivationSource,
   type TreemapHandle,
@@ -48,7 +49,14 @@ import {
   toTreemapInput,
   type Crumb,
 } from "../lib/mapTree";
-import { cleared, isFiltered, toFilter, viewKey, type MapView as View } from "../lib/mapView";
+import {
+  CHARTS,
+  cleared,
+  isFiltered,
+  toFilter,
+  viewKey,
+  type MapView as View,
+} from "../lib/mapView";
 import { CATEGORY_LABELS } from "../lib/treemap";
 import { hasScan, useAppStore, type ScanSummary } from "../store";
 
@@ -460,16 +468,50 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   // Only a filtered view can be empty; an empty folder is just an empty map.
   const empty = tree !== null && !plain && isFiltered(view) && crumbs.length === 1 && tree.sizeAlloc === 0;
 
+  const sunburst = view.chart === "sunburst";
+  const keys = sunburst
+    ? "Left and right arrows move between neighbours, down goes outward, up inward, Enter opens, Escape goes up."
+    : "Arrow keys select, Enter opens a folder, Escape goes up.";
   const label =
     tree === null
       ? "Storage map, loading"
-      : `Storage map of ${tree.name}: ${formatBytes(tree.sizeAlloc)} in ${formatCount(
-          tree.fileCount,
-        )} files. Arrow keys select, Enter opens a folder, Escape goes up.`;
+      : `Storage ${sunburst ? "sunburst" : "map"} of ${tree.name}: ${formatBytes(
+          tree.sizeAlloc,
+        )} in ${formatCount(tree.fileCount)} files. ${keys}`;
+  const chartProps = {
+    ref: treemapRef,
+    root: input,
+    selectedId,
+    enterFrom,
+    onActivate: activate,
+    onReveal: reveal,
+    onSelectionChange: (hit: TreemapHit) => setSelectedId(hit.id),
+    onHover: setHovered,
+    label,
+  };
 
   return (
     <div className="map-screen" onKeyDown={onKeyDown}>
       <div className="map-controls">
+        <fieldset className="segmented">
+          <legend className="visually-hidden">Chart</legend>
+          {CHARTS.map(({ id, label: name }) => (
+            <label key={id} className="segment" data-checked={view.chart === id}>
+              <input
+                type="radio"
+                name="map-chart"
+                value={id}
+                checked={view.chart === id}
+                onChange={() => {
+                  // The new chart starts on the whole folder, not mid-zoom.
+                  setEnterFrom(null);
+                  setMapView({ ...view, chart: id });
+                }}
+              />
+              {name}
+            </label>
+          ))}
+        </fieldset>
         <GroupingSelector value={view.by} onChange={chooseGrouping} />
         <FilterBar view={view} onChange={(next) => setMapView(next)} />
       </div>
@@ -484,17 +526,7 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
       </div>
 
       <div ref={stageRef} className="map-stage" onPointerMove={onPointerMove}>
-        <Treemap
-          ref={treemapRef}
-          root={input}
-          selectedId={selectedId}
-          enterFrom={enterFrom}
-          onActivate={activate}
-          onReveal={reveal}
-          onSelectionChange={(hit) => setSelectedId(hit.id)}
-          onHover={setHovered}
-          label={label}
-        />
+        {sunburst ? <Sunburst {...chartProps} onBack={goUp} /> : <Treemap {...chartProps} />}
         {empty ? (
           <div className="map-empty">
             <p>Nothing in this scan matches these filters.</p>
@@ -545,7 +577,8 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
           </span>
         ) : (
           <>
-            Click {grouped ? "a group" : "a folder"} to zoom · Double-click to show in {FILE_MANAGER} ·{" "}
+            Click {sunburst ? "an arc" : grouped ? "a group" : "a folder"} to zoom
+            {sunburst ? " · Click the centre to go up" : ""} · Double-click to show in {FILE_MANAGER} ·{" "}
             {IS_MAC ? "Space for Quick Look" : "Space to show in Explorer"} · Esc or{" "}
             {IS_MAC ? "⌘↑" : "Alt+↑"} to go up
           </>

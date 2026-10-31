@@ -16,6 +16,7 @@ import {
 import { useAppStore } from "../src/store.ts";
 
 const busy: MapView = {
+  chart: "sunburst",
   by: "type",
   categories: ["video", "images"],
   minSize: "1g",
@@ -41,7 +42,7 @@ test("filters compose into one backend filter", () => {
 
 test("a grouping alone is not a filter, and clearing keeps the grouping", () => {
   assert.equal(isFiltered({ ...DEFAULT_VIEW, by: "age" }), false);
-  assert.deepEqual(cleared(busy), { ...DEFAULT_VIEW, by: "type" });
+  assert.deepEqual(cleared(busy), { ...DEFAULT_VIEW, chart: "sunburst", by: "type" });
 });
 
 test("the Folder view ignores a location: its breadcrumb is the location", () => {
@@ -58,6 +59,14 @@ test("a view survives the hash, names with spaces and symbols included", () => {
   // Categories come back in canonical order; the view is otherwise equal.
   assert.deepEqual(back.view, { ...busy, categories: ["images", "video"] });
   assert.equal(viewKey(back.view), viewKey(busy));
+});
+
+test("the chart is in the hash but not in the data key", () => {
+  const treemap: MapView = { ...busy, chart: "treemap" };
+  assert.equal(viewKey(treemap), viewKey(busy));
+  assert.match(toHash("map", busy), /chart=sunburst/);
+  assert.equal(fromHash(toHash("map", busy)).view.chart, "sunburst");
+  assert.equal(fromHash("#map?chart=pie").view.chart, "treemap");
 });
 
 test("the key does not depend on the order types were picked in", () => {
@@ -77,11 +86,11 @@ test("a hand-edited or stale hash falls back instead of failing", () => {
 
 const store = () => useAppStore.getState();
 
-test("showing a search result in the Map resets the view to plain folders", () => {
+test("showing a search result in the Map resets to plain folders, keeping the chart", () => {
   store().reset();
   store().setMapView(busy);
   store().showInMap(7, false);
-  assert.deepEqual(store().mapView, DEFAULT_VIEW);
+  assert.deepEqual(store().mapView, { ...DEFAULT_VIEW, chart: "sunburst" });
   assert.equal(store().route, "map");
 });
 

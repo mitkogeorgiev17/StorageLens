@@ -16,7 +16,16 @@ export interface Location {
   readonly name: string;
 }
 
+/** How the Map draws the tree (#27). Not part of what is loaded. */
+export type Chart = "treemap" | "sunburst";
+
+export const CHARTS: readonly { readonly id: Chart; readonly label: string }[] = [
+  { id: "treemap", label: "Treemap" },
+  { id: "sunburst", label: "Sunburst" },
+];
+
 export interface MapView {
+  readonly chart: Chart;
   readonly by: Grouping;
   /** Empty means every type. */
   readonly categories: readonly Category[];
@@ -28,6 +37,7 @@ export interface MapView {
 }
 
 export const DEFAULT_VIEW: MapView = {
+  chart: "treemap",
   by: "folder",
   categories: [],
   minSize: null,
@@ -101,18 +111,24 @@ export function toFilter(view: MapView): Filter {
   };
 }
 
-/** The view without any filter, keeping the grouping. */
+/** The view without any filter, keeping the grouping and the chart. */
 export function cleared(view: MapView): MapView {
-  return { ...DEFAULT_VIEW, by: view.by };
+  return { ...DEFAULT_VIEW, chart: view.chart, by: view.by };
 }
 
-/** A stable key: equal views, equal keys (categories in canonical order). */
+/**
+ * A stable key for what the view loads: equal data, equal keys (categories in
+ * canonical order). The chart is left out — both draw the same tree.
+ */
 export function viewKey(view: MapView): string {
-  return toQuery(view).toString();
+  return toQuery({ ...view, chart: "treemap" }).toString();
 }
 
 function toQuery(view: MapView): URLSearchParams {
   const query = new URLSearchParams();
+  if (view.chart !== "treemap") {
+    query.set("chart", view.chart);
+  }
   if (view.by !== "folder") {
     query.set("by", view.by);
   }
@@ -143,7 +159,9 @@ function parseView(query: URLSearchParams): MapView {
   const size = query.get("size");
   const age = query.get("age");
   const location = /^(\d+):(.*)$/s.exec(query.get("in") ?? "");
+  const chart = CHARTS.find((entry) => entry.id === query.get("chart"))?.id ?? "treemap";
   return {
+    chart,
     by: grouping,
     categories: CATEGORIES.filter((category) => types.has(category)),
     minSize: isKey(SIZE_OPTIONS, size) ? size : null,
