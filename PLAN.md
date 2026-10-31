@@ -221,6 +221,11 @@ pub trait StorageScanner: Send + Sync {
 
 Everything above this trait — schema, rules, rollups, dedupe, safety, UI — is written once.
 
+Scanners do not return a `Vec<Entry>`. They stream entries into an `EntrySink`
+(implemented by the catalog's batched writer), so a million-file scan never holds the
+whole tree in memory before the first row reaches SQLite. `ScanResult` carries only the
+summary and the list of skipped directories.
+
 ---
 
 ## 5. Data model
