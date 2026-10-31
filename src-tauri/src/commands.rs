@@ -10,7 +10,7 @@
 //!
 //! # Not built yet
 //!
-//! Grouping, rules, deletion, apps, and duplicates are declared with
+//! Rules, deletion, apps, and duplicates are declared with
 //! their final types and return [`not_built`] until their issues land. The
 //! preview-before-execute rule is enforced **now**: `execute_deletion` refuses a
 //! plan id that no `preview_deletion` produced (AGENTS.md invariant 10).
@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use storagelens_analysis::{FileFilter, SyntheticTree};
 use storagelens_catalog::{
     file_order, modified_times, rollup, slice, Arena, Catalog, EntryWriter, FileSort, NodeIndex,
     Platform, ScanSession, SearchCursor, SizeCursor, DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
@@ -41,8 +42,8 @@ use tauri::{AppHandle, State};
 use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, CrumbDto, DeletionPlanDto, DeletionResultDto, DupGroupDto,
     FileRangeDto, FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page, RuleGroupDto,
-    ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, SyntheticNodeDto,
-    TreeNodeDto, VolumeDto,
+    ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, TreeNodeDto,
+    VolumeDto,
 };
 use crate::events::{
     self, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle, PROGRESS_INTERVAL,
@@ -97,6 +98,15 @@ struct Listing {
     order: Arc<Vec<NodeIndex>>,
 }
 
+/// The grouping last built: rebuilding costs 10–60 ms per million files, so
+/// zooming through one view reuses it.
+struct GroupingCache {
+    scan_id: i64,
+    by: Grouping,
+    filter: FilterDto,
+    tree: Arc<SyntheticTree>,
+}
+
 /// The scan currently running.
 struct RunningScan {
     scan_id: i64,
@@ -118,6 +128,7 @@ pub struct AppState {
     /// Dry-run receipts, by plan id.
     plans: Mutex<HashMap<String, DeletionPlanDto>>,
     listing: Mutex<Option<Listing>>,
+    grouping: Mutex<Option<GroupingCache>>,
     next_plan: AtomicU64,
 }
 
@@ -133,6 +144,7 @@ impl AppState {
             results: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
             listing: Mutex::new(None),
+            grouping: Mutex::new(None),
             next_plan: AtomicU64::new(1),
         })
     }
@@ -618,6 +630,238 @@ fn assemble(node: ChildDto, expanded: &mut HashMap<i64, Expansion>) -> TreeNodeD
         size_alloc: node.size_alloc,
         file_count: node.file_count,
         has_children: node.has_children,
+        children,
+        remaining_count,
+        remaining_bytes,
+    }
+}
+
+// --- Grouping views ---------------------------------------------------------------
+
+/// Modified times of `arena`'s scan, loaded once and shared with the file
+/// listing.
+fn cached_times(state: &AppState, arena: &Arena, scan_id: i64) -> CommandResult<Arc<Vec<i64>>> {
+    let mut listing = lock(&state.listing)?;
+    if let Some(times) = listing
+        .as_ref()
+        .filter(|current| current.scan_id == scan_id)
+        .and_then(|current| current.times.clone())
+    {
+        return Ok(times);
+    }
+    let loaded = {
+        let catalog = lock(&state.catalog)?;
+        Arc::new(modified_times(catalog.connection(), arena).map_err(|error| error.to_string())?)
+    };
+    match listing
+        .as_mut()
+        .filter(|current| current.scan_id == scan_id)
+    {
+        Some(current) => current.times = Some(Arc::clone(&loaded)),
+        None => {
+            *listing = Some(Listing {
+                scan_id,
+                times: Some(Arc::clone(&loaded)),
+                key: None,
+                order: Arc::new(Vec::new()),
+            });
+        }
+    }
+    Ok(loaded)
+}
+
+const DAY_SECONDS: i64 = 86_400;
+
+fn grouping_tree(
+    state: &AppState,
+    arena: &Arena,
+    scan_id: i64,
+    by: Grouping,
+    filter: &FilterDto,
+) -> CommandResult<Arc<SyntheticTree>> {
+    if let Some(cached) = lock(&state.grouping)?.as_ref() {
+        if cached.scan_id == scan_id && cached.by == by && &cached.filter == filter {
+            return Ok(Arc::clone(&cached.tree));
+        }
+    }
+    let times = cached_times(state, arena, scan_id)?;
+    let root = state.root_of(scan_id);
+    let now = now_unix();
+    let file_filter = FileFilter {
+        categories: filter.categories.clone(),
+        min_size: filter.min_size.unwrap_or(0),
+        modified_before: filter
+            .older_than_days
+            .map(|days| now - i64::from(days) * DAY_SECONDS),
+    };
+    let input = storagelens_analysis::GroupingInput {
+        arena,
+        root_path: root.as_deref(),
+        modified: Some(&times),
+        now,
+        // Rule verdicts arrive with the rules engine (#31).
+        risk: None,
+        filter: &file_filter,
+    };
+    let kind = match by {
+        Grouping::Folder => storagelens_analysis::Grouping::Folder,
+        Grouping::Type => storagelens_analysis::Grouping::Type,
+        Grouping::App => storagelens_analysis::Grouping::App,
+        Grouping::Age => storagelens_analysis::Grouping::Age,
+        Grouping::Size => storagelens_analysis::Grouping::Size,
+        Grouping::Cleanliness => storagelens_analysis::Grouping::Cleanliness,
+    };
+    let tree = Arc::new(storagelens_analysis::build(kind, &input));
+    *lock(&state.grouping)? = Some(GroupingCache {
+        scan_id,
+        by,
+        filter: filter.clone(),
+        tree: Arc::clone(&tree),
+    });
+    Ok(tree)
+}
+
+/// The id a group goes by: its folder's entry id when it stands for one
+/// (so it can be revealed), otherwise a negative id, `-(index + 1)`.
+fn group_id(tree: &SyntheticTree, arena: &Arena, group: u32) -> i64 {
+    tree.groups[group as usize]
+        .entry
+        .and_then(|entry| arena.entry_id(entry))
+        .unwrap_or(-(i64::from(group) + 1))
+}
+
+/// One child of an expanded group: a subgroup or a file.
+#[derive(Clone, Copy)]
+enum Item {
+    Group(u32),
+    File(NodeIndex),
+}
+
+/// A group's biggest `limit` children (subgroups and files together), and
+/// what is left over.
+fn top_items(
+    tree: &SyntheticTree,
+    arena: &Arena,
+    group: u32,
+    limit: usize,
+) -> (Vec<Item>, u64, u64) {
+    let source = &tree.groups[group as usize];
+    let size_of = |file: NodeIndex| arena.node(file).map_or(0, |node| node.size_alloc);
+    let mut files = source.files.clone();
+    if files.len() > limit {
+        files.select_nth_unstable_by(limit, |&a, &b| size_of(b).cmp(&size_of(a)).then(a.cmp(&b)));
+        files.truncate(limit);
+    }
+    let mut items: Vec<(u64, Item)> = source
+        .children
+        .iter()
+        .map(|&child| (tree.groups[child as usize].size, Item::Group(child)))
+        .chain(
+            files
+                .into_iter()
+                .map(|file| (size_of(file), Item::File(file))),
+        )
+        .collect();
+    // Stable sort keeps a bucketed view's natural order among equal sizes.
+    items.sort_by_key(|item| std::cmp::Reverse(item.0));
+    let total_items = source.children.len() + source.files.len();
+    items.truncate(limit);
+    let kept: u64 = items.iter().map(|(size, _)| size).sum();
+    (
+        items.into_iter().map(|(_, item)| item).collect(),
+        (total_items - total_items.min(limit)) as u64,
+        source.size.saturating_sub(kept),
+    )
+}
+
+/// `parent_id`'s part of a grouping (the root when `None`), as the same tree
+/// shape `get_tree` returns — so the treemap draws every view unchanged.
+pub fn get_grouping(
+    state: &AppState,
+    scan_id: i64,
+    by: Grouping,
+    filter: FilterDto,
+    parent_id: Option<i64>,
+    depth: Option<u32>,
+) -> CommandResult<TreeNodeDto> {
+    let arena = state.arena(scan_id)?;
+    let tree = grouping_tree(state, &arena, scan_id, by, &filter)?;
+    let start = match parent_id {
+        None => 0,
+        Some(id) if id < 0 => u32::try_from(-(id + 1))
+            .ok()
+            .filter(|&group| (group as usize) < tree.groups.len())
+            .ok_or_else(|| format!("group {id} is not part of this view"))?,
+        Some(id) => arena
+            .index_of(id)
+            .and_then(|entry| tree.group_of_entry(entry))
+            .ok_or_else(|| format!("entry {id} is not a group of this view"))?,
+    };
+    let max_depth = depth.unwrap_or(DEFAULT_TREE_DEPTH).clamp(1, MAX_TREE_DEPTH);
+
+    // Breadth-first under one node budget, like `get_tree`.
+    let mut expanded: HashMap<u32, (Vec<Item>, u64, u64)> = HashMap::new();
+    let mut queue = VecDeque::from([(start, 0u32)]);
+    let mut budget = TREE_BUDGET;
+    while let Some((group, level)) = queue.pop_front() {
+        if level >= max_depth || budget == 0 {
+            continue;
+        }
+        let (items, remaining_count, remaining_bytes) =
+            top_items(&tree, &arena, group, TREE_PER_DIR.min(budget));
+        budget -= items.len();
+        for item in &items {
+            if let Item::Group(child) = item {
+                queue.push_back((*child, level + 1));
+            }
+        }
+        expanded.insert(group, (items, remaining_count, remaining_bytes));
+    }
+    Ok(assemble_group(&tree, &arena, start, &mut expanded))
+}
+
+fn assemble_group(
+    tree: &SyntheticTree,
+    arena: &Arena,
+    group: u32,
+    expanded: &mut HashMap<u32, (Vec<Item>, u64, u64)>,
+) -> TreeNodeDto {
+    let source = &tree.groups[group as usize];
+    let (children, remaining_count, remaining_bytes) = match expanded.remove(&group) {
+        Some((items, count, bytes)) => (
+            Some(
+                items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Item::Group(child) => Some(assemble_group(tree, arena, child, expanded)),
+                        Item::File(file) => child_dto(arena, file).map(|child| TreeNodeDto {
+                            id: child.id,
+                            name: child.name,
+                            kind: child.kind,
+                            category: child.category,
+                            size_alloc: child.size_alloc,
+                            file_count: child.file_count,
+                            has_children: false,
+                            children: None,
+                            remaining_count: 0,
+                            remaining_bytes: 0,
+                        }),
+                    })
+                    .collect(),
+            ),
+            count,
+            bytes,
+        ),
+        None => (None, 0, 0),
+    };
+    TreeNodeDto {
+        id: group_id(tree, arena, group),
+        name: source.label.clone(),
+        kind: EntryKind::Dir,
+        category: source.category.unwrap_or(storagelens_core::Category::Other),
+        size_alloc: source.size,
+        file_count: source.file_count,
+        has_children: !source.children.is_empty() || !source.files.is_empty(),
         children,
         remaining_count,
         remaining_bytes,
@@ -1194,12 +1438,21 @@ pub mod ipc {
 
     #[tauri::command]
     pub async fn get_grouping(
+        state: AppStateRef<'_>,
         scan_id: i64,
         by: Grouping,
         filter: Option<FilterDto>,
-    ) -> CommandResult<SyntheticNodeDto> {
-        let _ = (scan_id, by, filter);
-        Err(not_built("Grouping views", "#25"))
+        parent_id: Option<i64>,
+        depth: Option<u32>,
+    ) -> CommandResult<TreeNodeDto> {
+        super::get_grouping(
+            state.inner(),
+            scan_id,
+            by,
+            filter.unwrap_or_default(),
+            parent_id,
+            depth,
+        )
     }
 
     #[tauri::command]
@@ -1791,6 +2044,122 @@ mod tests {
         let names: Vec<&str> = chain.iter().map(|crumb| crumb.name.as_str()).collect();
         assert_eq!(names, ["scanned", "photos", "2024", "a.jpg"]);
         assert!(get_ancestors(&state, scan_id, i64::MAX).is_err());
+    }
+
+    fn tree_sum(node: &TreeNodeDto) -> u64 {
+        node.children.as_ref().map_or(node.size_alloc, |children| {
+            let total: u64 = children.iter().map(|child| child.size_alloc).sum();
+            assert_eq!(
+                total + node.remaining_bytes,
+                node.size_alloc,
+                "{}",
+                node.name
+            );
+            children.iter().for_each(|child| {
+                tree_sum(child);
+            });
+            node.size_alloc
+        })
+    }
+
+    #[test]
+    fn every_grouping_view_totals_the_scan_and_zooms_by_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let root = tree(&dir);
+        let (scan_id, _) = scan(&state, &root);
+        let total = scan_status(&state, scan_id).expect("status").bytes_alloc;
+
+        for by in [
+            Grouping::Folder,
+            Grouping::Type,
+            Grouping::App,
+            Grouping::Age,
+            Grouping::Size,
+            Grouping::Cleanliness,
+        ] {
+            let view =
+                get_grouping(&state, scan_id, by, FilterDto::default(), None, None).expect("view");
+            assert_eq!(view.size_alloc, total, "{by:?}");
+            tree_sum(&view);
+        }
+
+        let by_type = get_grouping(
+            &state,
+            scan_id,
+            Grouping::Type,
+            FilterDto::default(),
+            None,
+            Some(1),
+        )
+        .expect("type");
+        let images = by_type
+            .children
+            .as_ref()
+            .expect("expanded")
+            .iter()
+            .find(|child| child.name == "Images")
+            .expect("images")
+            .clone();
+        assert!(images.id < 0, "synthetic groups have negative ids");
+        let zoomed = get_grouping(
+            &state,
+            scan_id,
+            Grouping::Type,
+            FilterDto::default(),
+            Some(images.id),
+            None,
+        )
+        .expect("zoom");
+        assert_eq!(zoomed.size_alloc, images.size_alloc);
+
+        // Folder groups go by their entry id.
+        let folders = get_grouping(
+            &state,
+            scan_id,
+            Grouping::Folder,
+            FilterDto::default(),
+            None,
+            Some(1),
+        )
+        .expect("folder");
+        let photos = folders.children.as_ref().expect("expanded")[0].clone();
+        assert_eq!(photos.name, "photos");
+        assert!(photos.id > 0);
+        let inside = get_grouping(
+            &state,
+            scan_id,
+            Grouping::Folder,
+            FilterDto::default(),
+            Some(photos.id),
+            None,
+        )
+        .expect("zoom folder");
+        assert_eq!(inside.name, "photos");
+
+        let filtered = get_grouping(
+            &state,
+            scan_id,
+            Grouping::Size,
+            FilterDto {
+                min_size: Some(100_000),
+                ..FilterDto::default()
+            },
+            None,
+            None,
+        )
+        .expect("filtered");
+        assert!(filtered.size_alloc >= 300_000 && filtered.size_alloc < total);
+
+        assert!(get_grouping(
+            &state,
+            scan_id,
+            Grouping::Type,
+            FilterDto::default(),
+            Some(-9999),
+            None
+        )
+        .is_err());
     }
 
     #[test]

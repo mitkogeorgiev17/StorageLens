@@ -177,13 +177,6 @@ export interface Filter {
   readonly olderThanDays?: number;
 }
 
-export interface SyntheticNodeDto {
-  readonly label: string;
-  readonly sizeAlloc: number;
-  readonly fileCount: number;
-  readonly children: readonly SyntheticNodeDto[];
-}
-
 export interface RuleGroupDto {
   readonly ruleId: string;
   readonly title: string;
@@ -254,8 +247,25 @@ export const api = {
 
   getOverview: (scanId: number) => call<OverviewDto>("get_overview", { scanId }),
   getCategories: (scanId: number) => call<readonly CategoryDto[]>("get_categories", { scanId }),
-  getGrouping: (scanId: number, by: Grouping, filter?: Filter) =>
-    call<SyntheticNodeDto>("get_grouping", { scanId, by, filter: filter ?? null }),
+  /**
+   * One of the six grouping views (PLAN §9.6), as the same tree shape as
+   * {@link api.getTree}: `parentId` zooms into a group (negative ids are
+   * synthetic groups, positive ones folders or files).
+   */
+  getGrouping: (
+    scanId: number,
+    by: Grouping,
+    filter?: Filter,
+    parentId?: number,
+    depth?: number,
+  ) =>
+    call<TreeNodeDto>("get_grouping", {
+      scanId,
+      by,
+      filter: filter ?? null,
+      parentId: parentId ?? null,
+      depth: depth ?? null,
+    }),
   getChildren: (scanId: number, parentId: number, limit?: number) =>
     call<ChildrenDto>("get_children", { scanId, parentId, limit: limit ?? null }),
   getTree: (scanId: number, parentId: number, depth?: number) =>

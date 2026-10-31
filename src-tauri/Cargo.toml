@@ -23,6 +23,7 @@ serde_json = "=1.0.154"
 # Cargo workspace so it can embed the built frontend (AGENTS.md §4).
 storagelens-core = { path = "../crates/core" }
 storagelens-catalog = { path = "../crates/catalog" }
+storagelens-analysis = { path = "../crates/analysis" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 storagelens-scan-macos = { path = "../crates/scan-macos" }
