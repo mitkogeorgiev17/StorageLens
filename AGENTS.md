@@ -23,7 +23,7 @@ not for hypothetical other users.
 
 ### Current state
 
-Planning complete, backlog filed. The Cargo workspace has not been scaffolded yet.
+Planning complete, backlog filed, workspace scaffolded. Implementation is in **M0**.
 
 **Work is tracked as GitHub issues, not as tasks in this file.** 40 issues across 8
 milestones. Start at M0 (`#1`), and follow the dependency links in each issue.
@@ -73,6 +73,7 @@ crates/safety/         path guards, trash service, manifests, undo
 crates/scanbench/      CLI binary — no UI, used to validate the scanners
 src-tauri/             Tauri app, #[tauri::command] surface, event emitters
 ui/                    React + TypeScript frontend
+package.json           root npm workspace: Tauri CLI + scripts (owns ui/)
 ```
 
 **Dependency direction is one-way:** `scan-*` → `core` ← `analysis` → `safety`.
@@ -83,30 +84,42 @@ directly.
 
 ## 4. Build and test
 
-> Scaffolding not yet created. These are the target commands; update this section at M0.
+One-time setup (Node 22+, Rust stable via `rustup`):
 
 ```bash
-# Rust workspace
+npm install          # root workspace — installs the Tauri CLI and ui/
+```
+
+```bash
+# Rust workspace (7 crates, no frontend needed)
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 
 # Scanner validation (no UI) — the important one
-cargo run -p scanbench --release -- ~/Documents
-
-# App (dev)
-cd ui && npm install
-npm run tauri dev
+cargo run -p storagelens-scanbench --release -- ~/Documents
 
 # UI only
-cd ui && npm run typecheck && npm run lint
+npm run typecheck
+npm run build
+
+# App (dev) — starts Vite, then the Tauri window
+npm run tauri dev
 
 # Release build
 npm run tauri build
 ```
 
-CI runs `fmt`, `clippy -D warnings`, and `test`. Keep it green.
+`src-tauri/` is its own Cargo workspace on purpose: it embeds the built frontend, so
+`cargo build --manifest-path src-tauri/Cargo.toml` requires `npm run build` first.
+The root `cargo build --workspace` never touches it.
+
+Crate package names are prefixed (`storagelens-core`, `storagelens-scan-macos`, …) so
+they never collide with the standard `core` crate. The binary is plain `scanbench`.
+
+CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy -D warnings`, `test` on macOS and
+Windows, plus UI typecheck/build and a Tauri compile. Keep it green.
 
 ---
 

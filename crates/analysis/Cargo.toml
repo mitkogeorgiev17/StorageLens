@@ -1,0 +1,22 @@
+[package]
+name = "storagelens-analysis"
+description = "Rules engine, duplicate detection, and app inventory analysis."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+storagelens-core = { workspace = true }
+storagelens-catalog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

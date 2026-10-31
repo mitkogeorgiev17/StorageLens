@@ -1,0 +1,19 @@
+[package]
+name = "storagelens-catalog"
+description = "SQLite schema, migrations, queries, and the in-memory tree arena."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+storagelens-core = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

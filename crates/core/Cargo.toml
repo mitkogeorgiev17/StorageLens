@@ -1,0 +1,24 @@
+[package]
+name = "storagelens-core"
+description = "Domain types, categories, grouping, and the StorageScanner trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dependencies.tempfile]
+workspace = true
+optional = true
+
+[features]
+# Test-fixture tree generator. Off by default so it never ships in the app.
+fixtures = ["dep:tempfile"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
