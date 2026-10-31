@@ -695,21 +695,27 @@ mod tests {
                     walked.dirs += 1;
                     stack.push(child);
                 } else {
+                    // Hard links share one inode, so count the inode once — the
+                    // same rule a correct scanner follows. Stable `std` exposes
+                    // no file identity on Windows, so the walker counts every
+                    // name there and the test folds the extras back in.
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::MetadataExt;
                         if inodes.insert((metadata.dev(), metadata.ino())) {
                             walked.files += 1;
-                            walked.bytes_alloc += metadata.blocks() * 512;
                             walked.bytes_logical += metadata.len();
+                            walked.bytes_alloc += metadata.blocks() * 512;
                         }
                     }
                     #[cfg(not(unix))]
                     {
                         let _ = &mut inodes;
                         walked.files += 1;
-                        walked.bytes_alloc += metadata.len();
                         walked.bytes_logical += metadata.len();
+                        // `allocated_bytes` also falls back to the logical size
+                        // where the OS exposes no allocation size.
+                        walked.bytes_alloc += metadata.len();
                     }
                 }
             }
@@ -718,22 +724,50 @@ mod tests {
         walked
     }
 
+    /// Hard-link names the walker counts but the manifest folds into one file.
+    ///
+    /// Zero on Unix, where the walker dedupes by inode. On Windows stable `std`
+    /// has no file identity, so every name is counted and the comparison adds
+    /// the extras back.
+    fn hardlink_extras(manifest: &Manifest) -> (u64, u64) {
+        #[cfg(unix)]
+        {
+            let _ = manifest;
+            (0, 0)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let extras = manifest.hardlink_names.saturating_sub(1);
+            let size = fs::metadata(&manifest.paths.hardlinks[0])
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            (extras, extras.saturating_mul(size))
+        }
+    }
+
     #[test]
     fn manifest_matches_a_real_walk() {
         let tree = FixtureTree::generate().expect("generate");
         let manifest = tree.manifest();
         let walked = walk(tree.root());
+        let (extra_files, extra_bytes) = hardlink_extras(manifest);
 
-        assert_eq!(manifest.files, walked.files, "file count");
+        assert_eq!(manifest.files + extra_files, walked.files, "file count");
         assert_eq!(manifest.dirs, walked.dirs, "dir count");
         assert_eq!(
             manifest.symlinks + manifest.junctions,
             walked.links,
             "link count"
         );
-        assert_eq!(manifest.bytes_alloc, walked.bytes_alloc, "allocated bytes");
         assert_eq!(
-            manifest.bytes_logical, walked.bytes_logical,
+            manifest.bytes_alloc + extra_bytes,
+            walked.bytes_alloc,
+            "allocated bytes"
+        );
+        assert_eq!(
+            manifest.bytes_logical + extra_bytes,
+            walked.bytes_logical,
             "logical bytes"
         );
     }
