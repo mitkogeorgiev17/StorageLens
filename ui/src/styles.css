@@ -40,6 +40,7 @@
   --nav-active-bg: #dde5fb;
   --nav-active-text: #1a3f9c;
   --danger: #b42318;
+  --warning: #b54708;
   --risk-safe-bg: #e3f4e8;
   --risk-safe-text: #1f6b37;
   --risk-review-bg: #fdf1d8;
@@ -63,6 +64,7 @@
     --nav-active-bg: #26304d;
     --nav-active-text: #c7d6ff;
     --danger: #ff8a7a;
+    --warning: #fdb022;
     --risk-safe-bg: #18341f;
     --risk-safe-text: #8fdba5;
     --risk-review-bg: #3a2c10;
@@ -1821,8 +1823,43 @@ body {
   white-space: nowrap;
 }
 
-.apps-actions .link-button + .link-button {
-  margin-left: var(--space-3);
+.apps-actions .pill-action + .pill-action {
+  margin-left: var(--space-2);
+}
+
+/* Row actions in Apps: outlined pills, tinted by what they do. */
+.pill-action {
+  --pill: var(--accent);
+  padding: 2px var(--space-3);
+  border: 1px solid var(--pill);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--pill) 10%, transparent);
+  color: var(--pill);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pill-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pill) 20%, transparent);
+}
+
+.pill-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pill-accent {
+  --pill: var(--accent);
+}
+
+.pill-warn {
+  --pill: var(--warning);
+}
+
+.pill-danger {
+  --pill: var(--danger);
 }
 
 .startup-actions {
