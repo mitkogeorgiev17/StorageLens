@@ -20,7 +20,6 @@ import {
   type DupesDto,
   type DupesProgressEvent,
   type DupGroupDto,
-  type UndoResultDto,
 } from "../lib/api";
 import {
   canSelect,
@@ -33,8 +32,8 @@ import {
   type DupSelection,
 } from "../lib/duplicates";
 import { formatBytes, formatCount, formatDate } from "../lib/format";
+import { afterTrash } from "../lib/rescan";
 import { useAppStore } from "../store";
-import { ResultPanel } from "./Cleanup";
 
 /** Groups rendered per page (AGENTS.md §8: keep rendered rows bounded). */
 const PAGE = 50;
@@ -53,15 +52,11 @@ export default function DuplicatesScreen() {
   const [selection, setSelection] = useState<DupSelection>(new Map());
   const [page, setPage] = useState(0);
   const [plan, setPlan] = useState<DeletionPlanDto | null>(null);
-  const [result, setResult] = useState<DeletionResultDto | null>(null);
-  const [undone, setUndone] = useState<UndoResultDto | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setFound(null);
     setSelection(new Map());
-    setResult(null);
-    setUndone(null);
     setPage(0);
   }, [scanId]);
 
@@ -141,24 +136,8 @@ export default function DuplicatesScreen() {
 
   const finished = (moved: DeletionResultDto) => {
     setPlan(null);
-    setResult(moved);
-    setUndone(null);
+    afterTrash(moved);
     void load(scanId, false);
-  };
-
-  const undo = () => {
-    if (result === null) {
-      return;
-    }
-    setBusy(true);
-    api
-      .undoDeletion(result.manifestId)
-      .then((report) => {
-        setUndone(report);
-        return load(scanId, false);
-      })
-      .catch((cause: unknown) => setError(message(cause)))
-      .finally(() => setBusy(false));
   };
 
   return (
@@ -212,15 +191,6 @@ export default function DuplicatesScreen() {
           {found.unreadable === 1 ? "file was" : "files were"} skipped:
           unreadable, or changed since the scan.
         </p>
-      ) : null}
-
-      {result !== null ? (
-        <ResultPanel
-          result={result}
-          undone={undone}
-          busy={busy}
-          onUndo={undo}
-        />
       ) : null}
 
       {found !== null && groups.length === 0 && !searching ? (

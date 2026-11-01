@@ -86,3 +86,73 @@ test("show in map routes to the map and is cleared only by the request it made",
   store().scanStarted(99, "/scan");
   assert.equal(store().mapFocus, null, "a new scan drops focus requests for the old one");
 });
+
+const PROGRESS = { files: 5, dirs: 1, bytesAlloc: 4096, elapsedMs: 5, currentPath: null };
+
+test("a refresh keeps the finished scan on screen until the new one is done", () => {
+  store().reset();
+  store().scanFinished(summary(1));
+  assert.equal(store().refreshRequested(), true);
+  store().refreshStarted(2);
+  store().scanProgressed(PROGRESS);
+  const during = store().scan;
+  assert.ok(during.kind === "done" && during.summary.scanId === 1, "old data stays");
+  assert.equal(store().refresh?.progress.files, 5);
+  store().scanFinished(summary(2));
+  const after = store().scan;
+  assert.ok(after.kind === "done" && after.summary.scanId === 2);
+  assert.equal(store().refresh, null);
+  assert.equal(store().staleReason, null);
+});
+
+test("a second change while refreshing queues one more instead of starting", () => {
+  store().reset();
+  store().scanFinished(summary(1));
+  assert.equal(store().refreshRequested(), true);
+  store().refreshStarted(2);
+  assert.equal(store().refreshRequested(), false);
+  assert.equal(store().refreshRequested(), false);
+  assert.equal(store().refresh?.queued, true);
+});
+
+test("a stopped or failed refresh keeps the old data and says why", () => {
+  store().reset();
+  store().scanFinished(summary(1));
+  store().refreshRequested();
+  store().refreshStarted(2);
+  store().scanFinished(summary(2, "cancelled"));
+  const stopped = store().scan;
+  assert.ok(stopped.kind === "done" && stopped.summary.scanId === 1);
+  assert.match(store().staleReason ?? "", /stopped/);
+
+  store().refreshRequested();
+  store().refreshStarted(3);
+  store().scanFailed("disk gone");
+  assert.equal(store().scan.kind, "done");
+  assert.match(store().staleReason ?? "", /disk gone/);
+});
+
+test("a refresh that finishes before start_scan returns is not left running", () => {
+  store().reset();
+  store().scanFinished(summary(1));
+  store().refreshRequested();
+  store().scanFinished(summary(2));
+  store().refreshStarted(2);
+  assert.equal(store().refresh, null);
+  const scan = store().scan;
+  assert.ok(scan.kind === "done" && scan.summary.scanId === 2);
+});
+
+test("an older scan's late result never replaces a newer one", () => {
+  store().reset();
+  store().scanFinished(summary(5));
+  store().scanFinished(summary(4));
+  const scan = store().scan;
+  assert.ok(scan.kind === "done" && scan.summary.scanId === 5);
+});
+
+test("nothing to refresh without a finished scan", () => {
+  store().reset();
+  assert.equal(store().refreshRequested(), false);
+  assert.equal(store().refresh, null);
+});

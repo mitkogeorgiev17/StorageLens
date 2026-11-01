@@ -5,6 +5,7 @@ import App from "./App";
 import { api, bridgeScanEvents, toSummary } from "./lib/api";
 import { refreshCollections } from "./lib/collectionActions";
 import { installHistory } from "./lib/history";
+import { installRescanQueue } from "./lib/rescan";
 import { useAppStore } from "./store";
 import "./styles.css";
 
@@ -43,6 +44,7 @@ connectBackend().catch((error: unknown) => {
 
 // Back/forward over screens and the Map's view (#26).
 installHistory();
+installRescanQueue();
 
 createRoot(container).render(
   <StrictMode>
