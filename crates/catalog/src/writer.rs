@@ -12,12 +12,14 @@
 //! stream entries in pre-order: a parent is always accepted before its children,
 //! and the first entry is the scanned root (arena index `0`, SQL `parent_id` `0`).
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection};
 
 use storagelens_core::{
-    extension_of, Category, Entry, EntrySink, Result as CoreResult, ScanError, Tags,
+    extension_of, location, Category, Entry, EntryKind, EntrySink, Locations, Result as CoreResult,
+    ScanError, Tags,
 };
 
 use crate::error::{CatalogError, Result};
@@ -65,6 +67,55 @@ pub struct EntryWriter {
     next_id: i64,
     id_by_index: Vec<i64>,
     written: u64,
+    places: Option<Places>,
+}
+
+/// Location categories while writing (#95): each directory's category by
+/// entry index, and the paths of the directories whose children still need
+/// the rules (unclassified or App data). Directories under a final category
+/// keep no path: their children inherit without looking.
+struct Places {
+    root: PathBuf,
+    rules: Locations,
+    category: Vec<Option<Category>>,
+    paths: HashMap<u32, PathBuf>,
+}
+
+impl Places {
+    /// The category an entry takes from where it is, recording what its
+    /// children will need. Called once per entry, in index order.
+    fn place(&mut self, entry: &Entry) -> Option<Category> {
+        let index = self.category.len() as u32;
+        let is_root = index == 0;
+        let parent = if is_root {
+            None
+        } else {
+            self.category.get(entry.parent as usize).copied().flatten()
+        };
+        if entry.kind != EntryKind::Dir {
+            self.category.push(None);
+            return parent;
+        }
+        let path = if is_root {
+            Some(self.root.clone())
+        } else {
+            self.paths
+                .get(&entry.parent)
+                .map(|parent| parent.join(&entry.name))
+        };
+        let own = match &path {
+            Some(path) => self.rules.for_dir(parent, &location::components(path)),
+            // The parent is final: inherit.
+            None => parent,
+        };
+        if let Some(path) = path {
+            if matches!(own, None | Some(Category::AppData)) {
+                self.paths.insert(index, path);
+            }
+        }
+        self.category.push(own);
+        own
+    }
 }
 
 impl EntryWriter {
@@ -93,7 +144,22 @@ impl EntryWriter {
             next_id,
             id_by_index: Vec::new(),
             written: 0,
+            places: None,
         })
+    }
+
+    /// Apply location categories (#95) to this scan of `root` (absolute):
+    /// a file under a classified directory takes that directory's category,
+    /// whatever its extension. Without this, extensions alone decide.
+    #[must_use]
+    pub fn with_locations(mut self, root: &Path, rules: Locations) -> Self {
+        self.places = Some(Places {
+            root: root.to_path_buf(),
+            rules,
+            category: Vec::new(),
+            paths: HashMap::new(),
+        });
+        self
     }
 
     /// The scan this writer belongs to.
@@ -173,7 +239,8 @@ impl EntryWriter {
 
         let name_path = Path::new(&entry.name);
         let ext = extension_of(name_path);
-        let category = Category::for_path(name_path);
+        let placed = self.places.as_mut().and_then(|places| places.place(&entry));
+        let category = placed.unwrap_or_else(|| Category::for_path(name_path));
 
         self.id_by_index.push(id);
         self.pending.push(PendingRow {
@@ -296,6 +363,57 @@ mod tests {
         assert_eq!(files[0].ext.as_deref(), Some("jpg"));
         assert_eq!(files[0].category, Category::Images);
         assert!(files[0].tags.contains(Tags::IMAGE));
+    }
+
+    #[test]
+    fn location_wins_over_extension_below_a_classified_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (catalog, scan_id) = catalog_with_session(&dir);
+        let rules = Locations::with(Some(vec!["Users".into(), "me".into()]), false);
+        let mut writer = catalog
+            .writer(scan_id)
+            .expect("writer")
+            .with_locations(Path::new("/Users/me"), rules);
+        // 0 /Users/me, 1 Library, 2 Caches, 3 spotify, 4 data (in 3),
+        // 5 photo.jpg (in 0), 6 Pictures, 7 cached.jpg (in 3),
+        // 8 app.app (in 6), 9 icon.png (in 8), 10 shot.jpg (in 6)
+        for (parent, name, kind) in [
+            (0, "/Users/me", EntryKind::Dir),
+            (0, "Library", EntryKind::Dir),
+            (1, "Caches", EntryKind::Dir),
+            (2, "com.spotify.client", EntryKind::Dir),
+            (3, "data", EntryKind::File),
+            (0, "photo.jpg", EntryKind::File),
+            (0, "Pictures", EntryKind::Dir),
+            (3, "cached.jpg", EntryKind::File),
+            (6, "Tool.app", EntryKind::Dir),
+            (8, "icon.png", EntryKind::File),
+            (6, "shot.jpg", EntryKind::File),
+        ] {
+            writer.push(entry(parent, name, kind, 4_096)).expect("push");
+        }
+        writer.flush_batch().expect("flush");
+
+        let conn = Connection::open(catalog.path()).expect("read");
+        let category = |name: &str| {
+            conn.query_row(
+                "SELECT category FROM entries WHERE scan_id = ?1 AND name = ?2",
+                params![scan_id, name],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|text| Category::from_name(&text))
+        };
+        assert_eq!(category("data"), Some(Category::Caches));
+        assert_eq!(
+            category("cached.jpg"),
+            Some(Category::Caches),
+            "location wins"
+        );
+        assert_eq!(category("photo.jpg"), Some(Category::Images));
+        assert_eq!(category("shot.jpg"), Some(Category::Images));
+        assert_eq!(category("icon.png"), Some(Category::Apps));
+        assert_eq!(category("com.spotify.client"), Some(Category::Caches));
     }
 
     #[test]

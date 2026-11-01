@@ -122,10 +122,14 @@ impl Tags {
             Category::Archives => Self::ARCHIVE,
             Category::Code => Self::CODE,
             Category::Apps => Self::APP,
+            Category::Caches => Self::CACHE,
+            Category::Developer => Self::DEV_ARTIFACT,
+            Category::System => Self::SYSTEM,
             Category::Data
             | Category::Fonts
             | Category::ThreeD
             | Category::DiskImages
+            | Category::AppData
             | Category::Other => Self::NONE,
         }
     }

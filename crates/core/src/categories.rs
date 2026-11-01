@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 /// certainly not in the table.
 const MAX_EXTENSION_LEN: usize = 32;
 
-/// The 14 top-level buckets from PLAN §9.5. Keep this list small and stable.
+/// The 18 top-level buckets from PLAN §9.5: 14 by extension, 4 by location
+/// (#95). Keep this list small and stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Category {
@@ -57,13 +58,21 @@ pub enum Category {
     Apps,
     /// Disk images.
     DiskImages,
+    /// Location (#95, [`crate::location`]): app and system caches, temp files.
+    Caches,
+    /// Location: apps' own data (`~/Library/Application Support`, `AppData`).
+    AppData,
+    /// Location: the operating system's own files.
+    System,
+    /// Location: build output, dependencies and toolchains.
+    Developer,
     /// Everything unclassified. Always visible in the UI.
     Other,
 }
 
 impl Category {
     /// Every category, in display order. `Other` last, always.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 18] = [
         Self::Images,
         Self::Video,
         Self::Audio,
@@ -77,10 +86,22 @@ impl Category {
         Self::ThreeD,
         Self::Apps,
         Self::DiskImages,
+        Self::Caches,
+        Self::AppData,
+        Self::System,
+        Self::Developer,
         Self::Other,
     ];
 
     /// Stable identifier, written to the `category` column and sent over IPC.
+    /// Set by where a file lives (#95), never by its extension.
+    pub const fn by_location(self) -> bool {
+        matches!(
+            self,
+            Self::Caches | Self::AppData | Self::System | Self::Developer
+        )
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Images => "images",
@@ -96,6 +117,10 @@ impl Category {
             Self::ThreeD => "3d",
             Self::Apps => "apps",
             Self::DiskImages => "disk-images",
+            Self::Caches => "caches",
+            Self::AppData => "app-data",
+            Self::System => "system",
+            Self::Developer => "developer",
             Self::Other => "other",
         }
     }
@@ -116,6 +141,10 @@ impl Category {
             Self::ThreeD => "3D / CAD",
             Self::Apps => "Apps",
             Self::DiskImages => "Disk images",
+            Self::Caches => "Caches",
+            Self::AppData => "App data",
+            Self::System => "System",
+            Self::Developer => "Developer",
             Self::Other => "Other",
         }
     }
@@ -136,6 +165,10 @@ impl Category {
             "3d" => Self::ThreeD,
             "apps" => Self::Apps,
             "disk-images" => Self::DiskImages,
+            "caches" => Self::Caches,
+            "app-data" => Self::AppData,
+            "system" => Self::System,
+            "developer" => Self::Developer,
             "other" => Self::Other,
             _ => return None,
         })

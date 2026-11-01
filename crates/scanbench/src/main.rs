@@ -138,7 +138,12 @@ fn run(cli: &Cli) -> Result<u8, Box<dyn Error>> {
 
     let catalog = Catalog::open(&db_path)?;
     let scan_id = catalog.begin_session(Platform::current(), false, &root)?;
-    let mut writer = catalog.writer(scan_id)?;
+    // Location categories as the app applies them (#95).
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(std::path::PathBuf::from);
+    let mut writer = catalog
+        .writer(scan_id)?
+        .with_locations(&root, storagelens_core::Locations::new(home.as_deref()));
 
     let cancel = CancelToken::new();
     let options = ScanOptions::default();

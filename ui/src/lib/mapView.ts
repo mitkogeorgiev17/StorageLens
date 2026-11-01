@@ -90,6 +90,10 @@ const CATEGORIES: readonly Category[] = [
   "three-d",
   "apps",
   "disk-images",
+  "caches",
+  "app-data",
+  "system",
+  "developer",
   "other",
 ];
 export const ALL_CATEGORIES = CATEGORIES;
