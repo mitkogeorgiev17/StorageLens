@@ -130,7 +130,7 @@ export default function CleanupScreen() {
       ) : null}
 
       {cleanup === null && error === null ? (
-        <p className="collections-status">Looking for things to clean up…</p>
+        <p className="screen-status">Looking for things to clean up…</p>
       ) : null}
       {cleanup !== null && groups.length === 0 ? (
         <section className="empty" aria-labelledby="cleanup-none">

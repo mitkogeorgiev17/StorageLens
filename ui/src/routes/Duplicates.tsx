@@ -143,7 +143,7 @@ export default function DuplicatesScreen() {
   return (
     <div className="dupes-screen">
       <div className="apps-toolbar">
-        <span className="collections-status" aria-live="polite">
+        <span className="screen-status" aria-live="polite">
           {searching
             ? progress === null
               ? "Grouping files by size…"

@@ -24,7 +24,7 @@ not for hypothetical other users.
 ### Current state
 
 **v1 is feature-complete** (2026-11-01): M0–M6 are merged. Both scanners, the
-catalog, the Overview, Map, Large Files, Collections, Apps, Cleanup and Duplicates
+catalog, the Overview, Map, Large Files, Apps, Cleanup and Duplicates
 screens, the rules engine, and the safety layer (guards, Trash, undo) exist and pass
 the local suite on macOS. The **History** screen is still a placeholder with no
 issue filed; undo is offered on the result panel right after each move.
@@ -46,7 +46,7 @@ as tested until that happens.
 | M1 — macOS scanner | #7–#11 | `getattrlistbulk`, dedupe, FDA, 2% accuracy gate |
 | M2 — Windows scanner | #12–#15 | Bulk directory query, sizes, registry, accuracy gate (#16 parked) |
 | M3 — Catalog & treemap | #17–#24 | Arena, IPC, React shell, canvas treemap |
-| M3b — Categorization & grouping | #25–#28 | Six groupings, filters, sunburst, collections |
+| M3b — Categorization & grouping | #25–#28 | Six groupings, filters, sunburst (collections dropped) |
 | M4 — Cleanup & safety | #29–#35 | Guards, trash + undo, rules, catalogs, UI |
 | M5 — App inventory | #36–#38 | Installed apps, usage, footprint, removal |
 | M6 — Duplicates | #39–#40 | Hash pipeline, keep-one UI |

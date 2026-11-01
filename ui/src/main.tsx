@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 
 import App from "./App";
 import { api, bridgeScanEvents, toSummary } from "./lib/api";
-import { refreshCollections } from "./lib/collectionActions";
 import { installHistory } from "./lib/history";
 import { installRescanQueue } from "./lib/rescan";
 import { useAppStore } from "./store";
@@ -24,10 +23,6 @@ async function connectBackend(): Promise<void> {
   }
   const store = useAppStore.getState();
   await bridgeScanEvents(store);
-  // Saved collections for the sidebar; a failure only leaves the list empty.
-  refreshCollections().catch((error: unknown) => {
-    console.error("could not load collections", error);
-  });
 
   // Reopen on the last finished scan, so the app is useful before scanning.
   const latest = await api.latestScan();

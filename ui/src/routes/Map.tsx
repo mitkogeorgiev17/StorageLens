@@ -32,7 +32,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import Breadcrumb from "../components/Breadcrumb";
 import FilterBar from "../components/FilterBar";
 import GroupingSelector from "../components/GroupingSelector";
-import SaveCollection from "../components/SaveCollection";
 import Sunburst from "../components/Sunburst";
 import Treemap, {
   type ActivationSource,
@@ -104,7 +103,6 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   /** A confirmation, not a problem (e.g. "Saved as …"). */
-  const [info, setInfo] = useState<string | null>(null);
 
   const view = useAppStore((state) => state.mapView);
   const setMapView = useAppStore((state) => state.setMapView);
@@ -218,7 +216,6 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     setSelectedId(select);
     setHovered(null);
     setError(null);
-    setInfo(null);
     setLoading(false);
   };
 
@@ -365,23 +362,6 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     run("reveal", hit.id);
   };
 
-  /** The folder a saved view keeps, by path: where the Folder view is, or
-   * the folder a grouped view is limited to. */
-  const folderPath = async (): Promise<string | null> => {
-    if (summary.root === "") {
-      return null;
-    }
-    if (view.by === "folder") {
-      return crumbs.length > 1
-        ? joinPath(summary.root, crumbs.slice(1).map((crumb) => crumb.name))
-        : null;
-    }
-    if (view.within === null) {
-      return null;
-    }
-    const chain = await api.getAncestors(scanId, view.within.id);
-    return joinPath(summary.root, chain.slice(1).map((crumb) => crumb.name));
-  };
 
   const chooseGrouping = (by: Grouping) => {
     if (by === view.by) {
@@ -552,14 +532,6 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
         </fieldset>
         <GroupingSelector value={view.by} onChange={chooseGrouping} />
         <FilterBar view={view} onChange={(next) => setMapView(next)} />
-        <SaveCollection
-          view={view}
-          folderPath={folderPath}
-          onSaved={(text) => {
-            setNotice(null);
-            setInfo(text);
-          }}
-        />
       </div>
       <div className="map-toolbar">
         {current === undefined ? <span className="map-loading">Loading…</span> : null}
@@ -621,8 +593,6 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
           <span className="map-notice" role="alert">
             {notice}
           </span>
-        ) : info !== null ? (
-          <span role="status">{info}</span>
         ) : (
           <>
             Click {sunburst ? "an arc" : grouped ? "a group" : "a folder"} to zoom

@@ -11,7 +11,7 @@ use rusqlite::{params, Connection};
 use crate::error::{CatalogError, Result};
 
 /// Highest schema version this build knows how to apply.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// The version table itself. Created outside the first migration so the runner can
 /// always read the current version.
@@ -148,6 +148,8 @@ CREATE TABLE collection (
   updated_at INTEGER NOT NULL
 );
 ",
+    // v5 — collections dropped from the product.
+    "DROP TABLE collection;",
 ];
 
 /// Create the version table if needed and apply every missing migration.
@@ -311,7 +313,6 @@ mod tests {
             "dir_rollup",
             "rule_hit",
             "trash_log",
-            "collection",
         ] {
             let found: i64 = conn
                 .query_row(

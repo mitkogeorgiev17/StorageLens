@@ -186,38 +186,6 @@ export interface Filter {
   readonly within?: number;
 }
 
-/** A saved Map query (#28); mirrors `catalog::CollectionQuery`. */
-export interface CollectionQuery {
-  readonly v: 1;
-  readonly by: Grouping;
-  readonly chart: "treemap" | "sunburst";
-  readonly categories: readonly Category[];
-  readonly minSize: number | null;
-  readonly olderThanDays: number | null;
-  /** An absolute folder path, resolved against each scan. */
-  readonly within: string | null;
-}
-
-export interface CollectionDto {
-  readonly id: number;
-  readonly name: string;
-  /** `null` when this build cannot read the stored query; see `problem`. */
-  readonly query: CollectionQuery | null;
-  readonly problem: string | null;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-}
-
-/** A collection evaluated against one scan. */
-export interface CollectionResultDto {
-  readonly collectionId: number;
-  readonly scanId: number;
-  readonly bytes: number;
-  readonly files: number;
-  readonly within: CrumbDto | null;
-  readonly problem: string | null;
-}
-
 /** What the Cleanup screen shows for one scan (#34). */
 export interface CleanupDto {
   readonly scanId: number;
@@ -483,15 +451,6 @@ export const api = {
       query,
       cursor: cursor ?? null,
     }),
-  listCollections: () => call<readonly CollectionDto[]>("list_collections"),
-  createCollection: (name: string, query: CollectionQuery) =>
-    call<CollectionDto>("create_collection", { name, query }),
-  renameCollection: (id: number, name: string) =>
-    call<CollectionDto>("rename_collection", { id, name }),
-  deleteCollection: (id: number) => call<void>("delete_collection", { id }),
-  /** What the collection totals in this scan. */
-  evaluateCollection: (scanId: number, id: number) =>
-    call<CollectionResultDto>("evaluate_collection", { scanId, id }),
   /** The folders from the scan root down to the entry, inclusive. */
   getAncestors: (scanId: number, entryId: number) =>
     call<readonly CrumbDto[]>("get_ancestors", { scanId, entryId }),

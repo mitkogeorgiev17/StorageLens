@@ -8,7 +8,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod arena;
-pub mod collections;
 pub mod db;
 pub mod error;
 pub mod listing;
@@ -23,7 +22,6 @@ pub mod util;
 pub mod writer;
 
 pub use arena::{Arena, Node, NodeIndex, NIL};
-pub use collections::{Collection, CollectionQuery, QUERY_VERSION};
 pub use db::Catalog;
 pub use error::{CatalogError, Result};
 pub use listing::{file_order, modified_times, slice, FileSort, UNKNOWN_TIME};

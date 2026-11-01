@@ -30,7 +30,7 @@ export interface MapView {
   /** Empty means every type. */
   readonly categories: readonly Category[];
   /** Allocated bytes, at least. Usually a {@link SIZE_OPTIONS} preset; a
-   * collection may carry any value. */
+   * view restored from history may carry any value. */
   readonly minSize: number | null;
   /** Days since last modified, at least. Usually an {@link AGE_OPTIONS} preset. */
   readonly olderThan: number | null;
