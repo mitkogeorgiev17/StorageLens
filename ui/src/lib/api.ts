@@ -596,6 +596,9 @@ export const api = {
   checkFullDiskAccess: () => call<DiskAccess>("check_full_disk_access"),
   openFullDiskAccessSettings: () =>
     call<void>("open_full_disk_access_settings"),
+  /** macOS: one harmless Apple Event to Finder, so the Automation prompt
+   *  appears at launch. `true` when allowed; always `true` elsewhere. */
+  requestFinderAccess: () => call<boolean>("request_finder_access"),
 } as const;
 
 // --- Events ------------------------------------------------------------------------

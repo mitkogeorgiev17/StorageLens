@@ -65,6 +65,7 @@ fn main() {
             ipc::preview_duplicate_removal,
             ipc::check_full_disk_access,
             ipc::open_full_disk_access_settings,
+            ipc::request_finder_access,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start StorageLens");

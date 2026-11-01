@@ -19,6 +19,7 @@ import {
 
 import logo from "./assets/logo.png";
 import NavIcon from "./components/NavIcon";
+import Permissions from "./components/Permissions";
 import SearchBar from "./components/SearchBar";
 import AppsScreen from "./routes/Apps";
 import CleanupScreen from "./routes/Cleanup";
@@ -354,6 +355,7 @@ export default function App() {
           </div>
         </header>
         <main className="content" data-route={route}>
+          <Permissions />
           <ErrorBoundary resetKey={route}>
             <Freshness />
             <LastTrash />
