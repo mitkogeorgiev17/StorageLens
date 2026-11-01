@@ -4,12 +4,13 @@
  * Rule cards grouped by kind, each with its explanation and risk; a running
  * total of what is selected; a receipt listing every path before anything
  * moves; then, item by item, what moved, what was skipped and why — with
- * undo. Every move goes to the Trash through the safety crate's guard and
+ * undo. Duplicate files are a section at the end (#112). Every move goes to the Trash through the safety crate's guard and
  * preflight re-stat; nothing here deletes anything itself.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import DuplicatesSection from "../components/DuplicatesSection";
 import Receipt from "../components/Receipt";
 import RuleCard from "../components/RuleCard";
 import {
@@ -129,85 +130,89 @@ export default function CleanupScreen() {
         </p>
       ) : null}
 
-      {cleanup === null && error === null ? (
-        <p className="screen-status">Looking for things to clean up…</p>
-      ) : null}
-      {cleanup !== null && groups.length === 0 ? (
-        <section className="empty" aria-labelledby="cleanup-none">
-          <h2 id="cleanup-none">Nothing to clean up</h2>
-          <p className="empty-text">
-            No cleanup rule matched anything in this scan.
-          </p>
-        </section>
-      ) : null}
-
-      {KIND_ORDER.map((kind) => {
-        const cards = groups.filter((group) => group.kind === kind);
-        if (cards.length === 0) {
-          return null;
-        }
-        return (
-          <section
-            key={kind}
-            className="cleanup-kind"
-            aria-labelledby={`kind-${kind}`}
-          >
-            <h2 id={`kind-${kind}`} className="cleanup-kind-title">
-              {KIND_LABELS[kind].title}
-            </h2>
-            <p className="cleanup-kind-hint">{KIND_LABELS[kind].hint}</p>
-            {cards.map((group) => (
-              <RuleCard
-                key={group.ruleId}
-                group={group}
-                selection={selection}
-                onToggleItem={(path) =>
-                  setSelection((current) => toggleItem(current, path))
-                }
-                onToggleGroup={(card) =>
-                  setSelection((current) => toggleGroup(current, card))
-                }
-              />
-            ))}
-          </section>
-        );
-      })}
-
-      {cleanup !== null &&
-      (cleanup.refused > 0 || cleanup.problems.length > 0) ? (
-        <details className="cleanup-notes">
-          <summary>About these suggestions</summary>
-          {cleanup.refused > 0 ? (
-            <p>
-              {formatCount(cleanup.refused)}{" "}
-              {cleanup.refused === 1 ? "match was" : "matches were"} held back
-              by the safety checks (system folders, app bundles, protected
-              folders) and are not offered.
+      <div className="cleanup-rules">
+        {cleanup === null && error === null ? (
+          <p className="screen-status">Looking for things to clean up…</p>
+        ) : null}
+        {cleanup !== null && groups.length === 0 ? (
+          <section className="empty" aria-labelledby="cleanup-none">
+            <h2 id="cleanup-none">Nothing to clean up</h2>
+            <p className="empty-text">
+              No cleanup rule matched anything in this scan.
             </p>
-          ) : null}
-          {cleanup.problems.map((problem) => (
-            <p key={problem}>Skipped rule: {problem}</p>
-          ))}
-        </details>
-      ) : null}
+          </section>
+        ) : null}
 
-      {groups.some((group) => group.deletable) ? (
-        <footer className="cleanup-footer">
-          <span className="cleanup-total" aria-live="polite">
-            {total.items === 0
-              ? "Nothing selected"
-              : `${formatCount(total.items)} selected · ${formatBytes(total.bytes)}`}
-          </span>
-          <button
-            type="button"
-            className="button"
-            disabled={total.items === 0 || busy}
-            onClick={review}
-          >
-            Review and move to Trash…
-          </button>
-        </footer>
-      ) : null}
+        {KIND_ORDER.map((kind) => {
+          const cards = groups.filter((group) => group.kind === kind);
+          if (cards.length === 0) {
+            return null;
+          }
+          return (
+            <section
+              key={kind}
+              className="cleanup-kind"
+              aria-labelledby={`kind-${kind}`}
+            >
+              <h2 id={`kind-${kind}`} className="cleanup-kind-title">
+                {KIND_LABELS[kind].title}
+              </h2>
+              <p className="cleanup-kind-hint">{KIND_LABELS[kind].hint}</p>
+              {cards.map((group) => (
+                <RuleCard
+                  key={group.ruleId}
+                  group={group}
+                  selection={selection}
+                  onToggleItem={(path) =>
+                    setSelection((current) => toggleItem(current, path))
+                  }
+                  onToggleGroup={(card) =>
+                    setSelection((current) => toggleGroup(current, card))
+                  }
+                />
+              ))}
+            </section>
+          );
+        })}
+
+        {cleanup !== null &&
+        (cleanup.refused > 0 || cleanup.problems.length > 0) ? (
+          <details className="cleanup-notes">
+            <summary>About these suggestions</summary>
+            {cleanup.refused > 0 ? (
+              <p>
+                {formatCount(cleanup.refused)}{" "}
+                {cleanup.refused === 1 ? "match was" : "matches were"} held back
+                by the safety checks (system folders, app bundles, protected
+                folders) and are not offered.
+              </p>
+            ) : null}
+            {cleanup.problems.map((problem) => (
+              <p key={problem}>Skipped rule: {problem}</p>
+            ))}
+          </details>
+        ) : null}
+
+        {groups.some((group) => group.deletable) ? (
+          <footer className="cleanup-footer">
+            <span className="cleanup-total" aria-live="polite">
+              {total.items === 0
+                ? "Nothing selected"
+                : `${formatCount(total.items)} selected · ${formatBytes(total.bytes)}`}
+            </span>
+            <button
+              type="button"
+              className="button"
+              disabled={total.items === 0 || busy}
+              onClick={review}
+            >
+              Review and move to Trash…
+            </button>
+          </footer>
+        ) : null}
+      </div>
+
+      <DuplicatesSection />
 
       {plan !== null ? (
         <Receipt plan={plan} onCancel={() => setPlan(null)} onDone={finished} />

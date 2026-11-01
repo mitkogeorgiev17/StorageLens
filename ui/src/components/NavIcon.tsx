@@ -19,7 +19,6 @@ const PATHS: Readonly<Record<RouteId, readonly string[]>> = {
   // A sparkle: safe to clean.
   cleanup: ["M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z", "M19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7z"],
   // Two overlapping copies.
-  duplicates: ["M8 8h12v12H8z", "M16 8V4H4v12h4"],
   // A clock turning back.
   history: ["M3 12a9 9 0 1 0 3-6.7", "M3 4v5h5", "M12 7v5l3 2"],
 };

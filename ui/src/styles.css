@@ -1825,6 +1825,12 @@ body {
 
 /* Duplicates (#40) */
 
+.cleanup-rules {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
 .dupes-screen {
   display: grid;
   gap: var(--space-4);
