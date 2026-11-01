@@ -35,6 +35,7 @@ import {
   topLevel,
   type Selection,
 } from "../lib/cleanup";
+import { afterTrash } from "../lib/rescan";
 import { formatBytes, formatCount } from "../lib/format";
 import { useAppStore } from "../store";
 
@@ -65,8 +66,6 @@ export default function CleanupScreen() {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(new Set());
   const [plan, setPlan] = useState<DeletionPlanDto | null>(null);
-  const [result, setResult] = useState<DeletionResultDto | null>(null);
-  const [undone, setUndone] = useState<UndoResultDto | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback((id: number) => {
@@ -82,8 +81,6 @@ export default function CleanupScreen() {
 
   useEffect(() => {
     setCleanup(null);
-    setResult(null);
-    setUndone(null);
     if (scanId !== null) {
       void load(scanId);
     }
@@ -116,26 +113,11 @@ export default function CleanupScreen() {
       .finally(() => setBusy(false));
   };
 
+  // The result and its undo live above every screen (App, #97); the rescan
+  // that follows replaces this list.
   const finished = (moved: DeletionResultDto) => {
     setPlan(null);
-    setResult(moved);
-    setUndone(null);
-    void load(scanId);
-  };
-
-  const undo = () => {
-    if (result === null) {
-      return;
-    }
-    setBusy(true);
-    api
-      .undoDeletion(result.manifestId)
-      .then((report) => {
-        setUndone(report);
-        return load(scanId);
-      })
-      .catch((cause: unknown) => setError(message(cause)))
-      .finally(() => setBusy(false));
+    afterTrash(moved);
   };
 
   const groups = cleanup?.groups ?? [];
@@ -145,15 +127,6 @@ export default function CleanupScreen() {
         <p className="map-notice" role="alert">
           {error}
         </p>
-      ) : null}
-
-      {result !== null ? (
-        <ResultPanel
-          result={result}
-          undone={undone}
-          busy={busy}
-          onUndo={undo}
-        />
       ) : null}
 
       {cleanup === null && error === null ? (
@@ -249,11 +222,13 @@ export function ResultPanel({
   undone,
   busy,
   onUndo,
+  onDismiss,
 }: {
   readonly result: DeletionResultDto;
   readonly undone: UndoResultDto | null;
   readonly busy: boolean;
   readonly onUndo: () => void;
+  readonly onDismiss: () => void;
 }) {
   const notMoved = result.items.filter((item) => item.status !== "trashed");
   const notBack =
@@ -266,11 +241,21 @@ export function ResultPanel({
       aria-labelledby="cleanup-result-title"
       role="status"
     >
-      <h2 id="cleanup-result-title">
-        {result.trashed === 0
-          ? "Nothing was moved"
-          : `Moved ${formatCount(result.trashed)} ${result.trashed === 1 ? "item" : "items"} (${formatBytes(result.trashedBytes)}) to the Trash`}
-      </h2>
+      <div className="cleanup-result-head">
+        <h2 id="cleanup-result-title">
+          {result.trashed === 0
+            ? "Nothing was moved"
+            : `Moved ${formatCount(result.trashed)} ${result.trashed === 1 ? "item" : "items"} (${formatBytes(result.trashedBytes)}) to the Trash`}
+        </h2>
+        <button
+          type="button"
+          className="dialog-close"
+          aria-label="Dismiss"
+          onClick={onDismiss}
+        >
+          ×
+        </button>
+      </div>
       <p className="cleanup-counts">
         {countBy(result.items, (item) => item.status, STATUS_ORDER)
           .map(

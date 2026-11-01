@@ -3,8 +3,10 @@
  * screen inside an error boundary, and a status line for the scan session.
  *
  * Screens without a component yet are placeholders with honest empty states
- * until their own issues land (Cleanup #29+,
- * Apps #36+, Duplicates #39+). Each issue adds its component to `COMPONENTS`.
+ * until their own issues land. Each issue adds its component to `COMPONENTS`.
+ *
+ * Above every screen: the last move to the Trash with its undo, and the
+ * rescan that follows it (#97), so neither is lost by switching screens.
  */
 
 import {
@@ -27,6 +29,9 @@ import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
 import { formatBytes, formatCount, formatDuration } from "./lib/format";
 import { openCollection } from "./lib/collectionActions";
+import { api } from "./lib/api";
+import { afterUndo, stopRefresh } from "./lib/rescan";
+import { ResultPanel } from "./routes/Cleanup";
 import { ROUTE_IDS, type RouteId, type ScanState, useAppStore } from "./store";
 
 /** Collections listed in the sidebar before "N more". */
@@ -264,12 +269,78 @@ function StatusBar() {
   );
 }
 
+/** The refresh after a cleanup, or why the data on screen is from before it. */
+function Freshness() {
+  const refresh = useAppStore((state) => state.refresh);
+  const staleReason = useAppStore((state) => state.staleReason);
+  if (refresh !== null) {
+    return (
+      <div className="banner banner-refresh" role="status" aria-live="polite">
+        <p>
+          <strong>Refreshing after the cleanup.</strong> Rescanning ·{" "}
+          {formatCount(refresh.progress.files)} files · {formatBytes(refresh.progress.bytesAlloc)}. What
+          you see is from before it until the scan finishes.
+        </p>
+        <button
+          type="button"
+          className="button button-secondary"
+          disabled={refresh.scanId === null}
+          onClick={stopRefresh}
+        >
+          Stop
+        </button>
+      </div>
+    );
+  }
+  if (staleReason !== null) {
+    return (
+      <div className="banner" role="note">
+        <p>{staleReason} Sizes may include what was moved to the Trash.</p>
+      </div>
+    );
+  }
+  return null;
+}
+
+/** The last move to the Trash, with its undo, on every screen. */
+function LastTrash() {
+  const last = useAppStore((state) => state.lastTrash);
+  const dismiss = useAppStore((state) => state.trashDismissed);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (last === null) {
+    return null;
+  }
+  const undo = () => {
+    setBusy(true);
+    setError(null);
+    api
+      .undoDeletion(last.result.manifestId)
+      .then(afterUndo)
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <>
+      {error !== null ? (
+        <p className="map-notice" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <ResultPanel result={last.result} undone={last.undone} busy={busy} onUndo={undo} onDismiss={dismiss} />
+    </>
+  );
+}
+
 /**
  * "New scan" in the header, once there is a scan to replace. A native modal
  * `<dialog>`: it traps focus and closes on Esc; focus goes back to the button.
  */
 function NewScan() {
-  const scanKind = useAppStore((state) => state.scan.kind);
+  const scanKind = useAppStore((state) =>
+    // One scan at a time: no new scan while a refresh runs (Stop it first).
+    state.refresh === null ? state.scan.kind : "refreshing",
+  );
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -329,6 +400,8 @@ export default function App() {
         </header>
         <main className="content" data-route={route}>
           <ErrorBoundary resetKey={route}>
+            <Freshness />
+            <LastTrash />
             <Screen id={route} />
           </ErrorBoundary>
         </main>

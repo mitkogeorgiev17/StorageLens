@@ -1971,3 +1971,21 @@ body {
   justify-content: center;
   gap: var(--space-3);
 }
+
+/* After a cleanup (#97): the rescan, and the last move to the Trash. */
+.banner-refresh {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.cleanup-result-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.content > .banner,
+.content > .cleanup-result {
+  margin-bottom: var(--space-3);
+}

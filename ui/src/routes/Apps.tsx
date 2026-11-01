@@ -19,7 +19,6 @@ import {
   type AppRowDto,
   type DeletionPlanDto,
   type DeletionResultDto,
-  type UndoResultDto,
 } from "../lib/api";
 import {
   STATUS_LABELS,
@@ -30,8 +29,8 @@ import {
   type AppSortKey,
 } from "../lib/apps";
 import { formatBytes, formatCount, formatDate } from "../lib/format";
+import { afterTrash } from "../lib/rescan";
 import { useAppStore } from "../store";
-import { ResultPanel } from "./Cleanup";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -60,8 +59,6 @@ export default function AppsScreen() {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [removing, setRemoving] = useState<AppRowDto | null>(null);
   const [plan, setPlan] = useState<DeletionPlanDto | null>(null);
-  const [result, setResult] = useState<DeletionResultDto | null>(null);
-  const [undone, setUndone] = useState<UndoResultDto | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback((refresh: boolean) => {
@@ -74,9 +71,10 @@ export default function AppsScreen() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Again after each rescan: a move to the Trash or an undo changes the list.
   useEffect(() => {
     void load(false);
-  }, [load]);
+  }, [load, scanId]);
 
   const sorted = useMemo(() => sortApps(rows ?? [], sort), [rows, sort]);
 
@@ -111,24 +109,8 @@ export default function AppsScreen() {
 
   const finished = (moved: DeletionResultDto) => {
     setPlan(null);
-    setResult(moved);
-    setUndone(null);
+    afterTrash(moved);
     void load(false);
-  };
-
-  const undo = () => {
-    if (result === null) {
-      return;
-    }
-    setBusy(true);
-    api
-      .undoDeletion(result.manifestId)
-      .then((report) => {
-        setUndone(report);
-        return load(false);
-      })
-      .catch((cause: unknown) => setError(message(cause)))
-      .finally(() => setBusy(false));
   };
 
   return (
@@ -163,15 +145,6 @@ export default function AppsScreen() {
           Removing an app needs a finished scan of the disk it is on. Start one
           from the Overview.
         </p>
-      ) : null}
-
-      {result !== null ? (
-        <ResultPanel
-          result={result}
-          undone={undone}
-          busy={busy}
-          onUndo={undo}
-        />
       ) : null}
 
       {removing !== null ? (
