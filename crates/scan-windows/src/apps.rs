@@ -99,6 +99,11 @@ pub struct Evidence {
     pub startup_links: Vec<String>,
     /// Executables behind the user's default-handler ProgIds.
     pub handlers: Vec<String>,
+    /// `Run` values (#159): `(full key path, value name, command)`.
+    pub run_values: Vec<(String, String, String)>,
+    /// The user's file types (#159): `(full key path under
+    /// HKCU\Software\Classes, open command)`.
+    pub class_commands: Vec<(String, String)>,
 }
 
 /// Lowercase with `\` separators and no trailing separator.
@@ -480,10 +485,18 @@ pub fn assemble(
                         .any(|name| name.strip_suffix(".exe") == Some(link.as_str()))
             };
 
-            let registry_keys = crate::leftover_keys::candidates(
+            let mut registry_keys = crate::leftover_keys::candidates(
                 &[entry.name.as_str(), file_name(&shown)],
                 entry.publisher.as_deref(),
             );
+            let exes: Vec<&str> = unique.iter().map(|name| name.as_str()).collect();
+            registry_keys.extend(crate::leftover_keys::pointing_into(
+                &entry.key,
+                dir.as_deref(),
+                &exes,
+                &evidence.run_values,
+                &evidence.class_commands,
+            ));
             AppInfo {
                 id: entry.key.clone(),
                 name: entry.name.trim().to_owned(),
@@ -1059,6 +1072,57 @@ pub(crate) mod sys {
             .collect()
     }
 
+    fn hive_name(hive: HKEY) -> &'static str {
+        if hive == HKEY_LOCAL_MACHINE {
+            "HKEY_LOCAL_MACHINE"
+        } else {
+            "HKEY_CURRENT_USER"
+        }
+    }
+
+    /// Every `Run` value: `(full key path, value name, expanded command)`.
+    fn run_values() -> Vec<(String, String, String)> {
+        RUN.iter()
+            .filter_map(|(hive, path)| Some((hive, path, Key::open(*hive, path)?)))
+            .flat_map(|(hive, path, key)| {
+                key.values()
+                    .into_iter()
+                    .filter_map(|(name, _)| {
+                        let command = key.string(&name)?;
+                        Some((
+                            format!(r"{}\{path}", hive_name(*hive)),
+                            name,
+                            expand_env(&command, &env),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The user's file types and their open commands.
+    fn class_commands() -> Vec<(String, String)> {
+        const CLASSES: &str = r"Software\Classes";
+        let Some(classes) = Key::open(HKEY_CURRENT_USER, CLASSES) else {
+            return Vec::new();
+        };
+        classes
+            .subkeys()
+            .into_iter()
+            .filter_map(|class| {
+                let command = Key::open(
+                    HKEY_CURRENT_USER,
+                    &format!(r"{CLASSES}\{class}\shell\open\command"),
+                )?
+                .string("")?;
+                Some((
+                    format!(r"HKEY_CURRENT_USER\{CLASSES}\{class}"),
+                    expand_env(&command, &env),
+                ))
+            })
+            .collect()
+    }
+
     fn run_keys() -> Vec<String> {
         RUN.iter()
             .filter_map(|(hive, path)| Key::open(*hive, path))
@@ -1261,6 +1325,8 @@ pub(crate) mod sys {
             autostart,
             startup_links: startup_links(),
             handlers: handlers(),
+            run_values: run_values(),
+            class_commands: class_commands(),
         };
 
         let is_dir = |path: &str| Path::new(path).is_dir();
@@ -1506,6 +1572,7 @@ mod tests {
             autostart: vec![r"C:\Program Files\Foo\tray.exe".into()],
             startup_links: vec!["bar".into()],
             handlers: vec![r"c:\program files\foo\foo.exe".into()],
+            ..Evidence::default()
         };
         let exe_names = |dir: &str| match dir {
             r"c:\program files\foo" => vec!["foo.exe".into(), "update.exe".into()],
