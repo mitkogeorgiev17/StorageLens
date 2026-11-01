@@ -123,15 +123,32 @@ test("reclaim uses the engine's figures: safe × 1 + review × 0.5", () => {
   const reclaim = reclaimSummary({
     reclaimSafe: 5 * GB,
     reclaimReview: 10 * GB,
+    groups: [],
   });
   assert.equal(reclaim.safe, 5 * GB);
   assert.equal(reclaim.review, 10 * GB);
   assert.equal(reclaim.score, 10 * GB);
-  assert.deepEqual(reclaimSummary({ reclaimSafe: -1, reclaimReview: 0 }), {
-    safe: 0,
-    review: 0,
-    score: 0,
+  assert.deepEqual(
+    reclaimSummary({ reclaimSafe: -1, reclaimReview: 0, groups: [] }),
+    { safe: 0, review: 0, score: 0, manual: 0, manualTitles: [] },
+  );
+});
+
+test("report-only safe or review cards are freed by hand, biggest first", () => {
+  const reclaim = reclaimSummary({
+    reclaimSafe: 0,
+    reclaimReview: 0,
+    groups: [
+      rule("trash", "review", 2 * GB, false),
+      rule("docker", "review", 15 * GB, false),
+      rule("swap", "never", 2 * GB, false),
+      rule("caches", "safe", 4 * GB),
+      rule("snapshots", "safe", 0, false),
+    ],
   });
+  assert.equal(reclaim.manual, 17 * GB);
+  assert.deepEqual(reclaim.manualTitles, ["docker", "trash"]);
+  assert.equal(reclaim.score, 0);
 });
 
 test("wins are the biggest deletable safe or review cards", () => {

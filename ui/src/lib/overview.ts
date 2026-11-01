@@ -84,16 +84,38 @@ export interface Reclaim {
   readonly review: number;
   /** PLAN §10's score: safe × 1.0 + review × 0.5. */
   readonly score: number;
+  /**
+   * Bytes of report-only cards (safe or review) the person frees themselves,
+   * such as the Trash or Docker. Not in the score: StorageLens cannot free them.
+   */
+  readonly manual: number;
+  /** Those cards' titles, biggest first. */
+  readonly manualTitles: readonly string[];
 }
 
 /** The rules engine's figures as the headline shows them. */
 export function reclaimSummary(cleanup: {
   readonly reclaimSafe: number;
   readonly reclaimReview: number;
+  readonly groups: readonly RuleGroupDto[];
 }): Reclaim {
   const safe = Math.max(0, cleanup.reclaimSafe);
   const review = Math.max(0, cleanup.reclaimReview);
-  return { safe, review, score: safe + review * 0.5 };
+  const manual = cleanup.groups
+    .filter(
+      (group) =>
+        !group.deletable &&
+        (group.risk === "safe" || group.risk === "review") &&
+        group.bytes > 0,
+    )
+    .sort((left, right) => right.bytes - left.bytes);
+  return {
+    safe,
+    review,
+    score: safe + review * 0.5,
+    manual: manual.reduce((sum, group) => sum + group.bytes, 0),
+    manualTitles: manual.map((group) => group.title),
+  };
 }
 
 /** The biggest actionable rule groups. "never" rules are not wins. */
