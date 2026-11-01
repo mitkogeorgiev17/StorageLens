@@ -1817,6 +1817,14 @@ body {
   border: 0;
 }
 
+.apps-actions {
+  white-space: nowrap;
+}
+
+.apps-actions .link-button + .link-button {
+  margin-left: var(--space-3);
+}
+
 .apps-remove-actions {
   display: flex;
   justify-content: flex-end;

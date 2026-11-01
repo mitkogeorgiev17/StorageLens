@@ -46,9 +46,9 @@ use tauri::{AppHandle, State};
 use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CrumbDto, DeletionPlanDto,
     DeletionResultDto, DupFileDto, DupGroupDto, DupesDto, FileRangeDto, FileRowDto, FileSortDto,
-    FilterDto, Grouping, OverviewDto, Page, PlanItemDto, ResultItemDto, RuleGroupDto, RuleItemDto,
-    SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto,
-    TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
+    FilterDto, Grouping, OverviewDto, Page, PlanItemDto, QuitDto, ResultItemDto, RuleGroupDto,
+    RuleItemDto, SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto,
+    SizeCursorDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
 };
 use crate::events::{
     self, DupesProgressEvent, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle,
@@ -1817,6 +1817,45 @@ pub fn list_apps(
         .collect())
 }
 
+/// Force quit the processes of the listed app at `path` (#113). Only an app
+/// from the last inventory, never a system one, so the UI cannot name an
+/// arbitrary folder. The cached row is marked not running when every process
+/// stopped.
+pub fn force_quit_app(
+    state: &AppState,
+    path: &str,
+    quit: &dyn Fn(&Path) -> (usize, usize),
+) -> CommandResult<QuitDto> {
+    let mut apps = lock(&state.apps)?;
+    let app = apps
+        .as_mut()
+        .and_then(|apps| apps.iter_mut().find(|app| app.path == Path::new(path)))
+        .filter(|app| !app.system && !app.path.as_os_str().is_empty())
+        .ok_or_else(|| format!("{path} is not a listed app"))?;
+    let (stopped, failed) = quit(&app.path);
+    if failed == 0 {
+        app.running = false;
+    }
+    Ok(QuitDto { stopped, failed })
+}
+
+/// This platform's force quit.
+fn platform_force_quit(path: &Path) -> (usize, usize) {
+    #[cfg(target_os = "macos")]
+    {
+        storagelens_scan_macos::apps::force_quit(path)
+    }
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::apps::force_quit(path)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = path;
+        (0, 0)
+    }
+}
+
 /// Dry-run receipt for removing one app: the bundle / install directory, and
 /// with `include_data` its associated data. Executed by `execute_deletion`,
 /// so the guard, preflight re-stat, Trash and undo are the cleanup ones.
@@ -2598,6 +2637,11 @@ pub mod ipc {
     }
 
     #[tauri::command]
+    pub async fn force_quit_app(state: AppStateRef<'_>, path: String) -> CommandResult<QuitDto> {
+        super::force_quit_app(state.inner(), &path, &super::platform_force_quit)
+    }
+
+    #[tauri::command]
     pub async fn preview_app_removal(
         state: AppStateRef<'_>,
         scan_id: i64,
@@ -3064,6 +3108,15 @@ mod tests {
             error.contains("not in the app list") || error.contains("system"),
             "{error}"
         );
+
+        // Force quit (#113): only a listed, non-system app; a clean quit
+        // clears the cached running flag.
+        let quit = force_quit_app(&state, &busy, &|_| (2, 0)).expect("quit");
+        assert_eq!((quit.stopped, quit.failed), (2, 0));
+        let rows = list_apps(&state, false, &|| unreachable!("cached")).expect("list");
+        assert!(rows.iter().all(|row| !row.running));
+        assert!(force_quit_app(&state, "/System/Applications/Mail.app", &|_| (0, 0)).is_err());
+        assert!(force_quit_app(&state, "/tmp/anything", &|_| (0, 0)).is_err());
 
         let shown = bundle.display().to_string();
         let app_only = preview_app_removal(&state, scan_id, &shown, false, false, &platform_stamp)

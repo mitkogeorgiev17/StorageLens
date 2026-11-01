@@ -38,7 +38,7 @@ use storagelens_core::{AppInfo, AppStatus, Bytes, Satellite, Signature};
 use crate::ffi::filetime_to_unix;
 
 #[cfg(windows)]
-pub use sys::inventory;
+pub use sys::{force_quit, inventory};
 
 /// One `Uninstall\<key>` entry, as read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -508,7 +508,7 @@ mod sys {
     };
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        CloseHandle, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS,
+        CloseHandle, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, HANDLE,
     };
     use windows::Win32::System::ProcessStatus::EnumProcesses;
     use windows::Win32::System::Registry::{
@@ -517,13 +517,14 @@ mod sys {
         RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_ACCESS_RIGHTS,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
     };
 
     use super::{
         assemble, decode_task_file, exe_from_command, expand_env, expand_known_folder, normalize,
-        prefetch_exe, rot13, task_commands, user_assist_record, Evidence, Roots, UninstallEntry,
+        prefetch_exe, rot13, task_commands, under, user_assist_record, Evidence, Roots,
+        UninstallEntry,
     };
     use crate::walk::WinScanner;
 
@@ -790,6 +791,44 @@ mod sys {
     }
 
     fn running() -> Vec<String> {
+        processes(PROCESS_QUERY_LIMITED_INFORMATION, |_, _| ())
+            .into_iter()
+            .map(|(_, exe)| exe)
+            .collect()
+    }
+
+    /// Force quit every process whose executable is inside `dir` (#113), like
+    /// Task Manager's End task: `TerminateProcess`, so unsaved work is lost.
+    /// Returns how many were stopped and how many refused (elevated or
+    /// protected processes).
+    pub fn force_quit(dir: &Path) -> (usize, usize) {
+        let dir = normalize(&dir.display().to_string());
+        let own = std::process::id();
+        let (mut stopped, mut failed) = (0, 0);
+        processes(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+            |pid, exe_and_handle| {
+                let (exe, handle) = exe_and_handle;
+                if pid == own || !under(&normalize(exe), &dir) {
+                    return;
+                }
+                // SAFETY: `handle` is open with PROCESS_TERMINATE.
+                if unsafe { TerminateProcess(handle, 1) }.is_ok() {
+                    stopped += 1;
+                } else {
+                    failed += 1;
+                }
+            },
+        );
+        (stopped, failed)
+    }
+
+    /// Pid and image path of every process that opens with `access`; `visit`
+    /// sees each one while its handle is still open.
+    fn processes(
+        access: PROCESS_ACCESS_RIGHTS,
+        mut visit: impl FnMut(u32, (&str, HANDLE)),
+    ) -> Vec<(u32, String)> {
         let mut pids = vec![0u32; 8192];
         let mut needed = 0u32;
         // SAFETY: `pids` is writable for the byte count passed.
@@ -810,8 +849,7 @@ mod sys {
             .filter_map(|pid| {
                 // SAFETY: plain call; failure (protected or exited process) is
                 // an `Err` and skipped.
-                let handle =
-                    unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+                let handle = unsafe { OpenProcess(access, false, pid) }.ok()?;
                 let mut size = buffer.len() as u32;
                 // SAFETY: `handle` is open; `buffer` is writable for `size` units.
                 let named = unsafe {
@@ -822,10 +860,15 @@ mod sys {
                         &mut size,
                     )
                 };
+                let exe = named
+                    .ok()
+                    .map(|()| String::from_utf16_lossy(&buffer[..size as usize]));
+                if let Some(exe) = &exe {
+                    visit(pid, (exe, handle));
+                }
                 // SAFETY: `handle` came from `OpenProcess` and is closed once.
                 let _ = unsafe { CloseHandle(handle) };
-                named.ok()?;
-                Some(String::from_utf16_lossy(&buffer[..size as usize]))
+                Some((pid, exe?))
             })
             .collect()
     }

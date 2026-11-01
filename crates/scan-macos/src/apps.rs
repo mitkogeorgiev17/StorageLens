@@ -70,7 +70,7 @@ impl Sources {
 /// Every app bundle under `sources`, with evidence and measured footprint.
 pub fn inventory(sources: &Sources) -> Vec<AppInfo> {
     let bundles = find_bundles(&sources.app_dirs);
-    let running = running_executables();
+    let running: Vec<PathBuf> = processes().into_iter().map(|(_, exe)| exe).collect();
     let jobs = launchd_jobs(&sources.launchd_dirs);
     let handlers = default_handlers(&sources.library);
 
@@ -309,8 +309,28 @@ fn signature(app: &Path) -> Signature {
     }
 }
 
-/// Executable path of every process we can see.
-fn running_executables() -> Vec<PathBuf> {
+/// Force quit every process whose executable is inside `app` (#113), like
+/// Activity Monitor's Force Quit: `SIGKILL`, so unsaved work is lost. Returns
+/// how many were stopped and how many refused (another user's, or protected).
+pub fn force_quit(app: &Path) -> (usize, usize) {
+    let own = i32::try_from(std::process::id()).unwrap_or(-1);
+    let (mut stopped, mut failed) = (0, 0);
+    for (pid, _) in processes()
+        .into_iter()
+        .filter(|(pid, exe)| *pid != own && exe.starts_with(app))
+    {
+        // SAFETY: plain syscall on a pid; failure is reported via the return value.
+        if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+            stopped += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    (stopped, failed)
+}
+
+/// Pid and executable path of every process we can see.
+fn processes() -> Vec<(libc::pid_t, PathBuf)> {
     // SAFETY: a null buffer of size 0 asks only for the process count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     let Ok(count) = usize::try_from(count) else {
@@ -333,7 +353,7 @@ fn running_executables() -> Vec<PathBuf> {
             let len =
                 unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
             let len = usize::try_from(len).ok().filter(|&len| len > 0)?;
-            Some(PathBuf::from(OsStr::from_bytes(buffer.get(..len)?)))
+            Some((pid, PathBuf::from(OsStr::from_bytes(buffer.get(..len)?))))
         })
         .collect()
 }
