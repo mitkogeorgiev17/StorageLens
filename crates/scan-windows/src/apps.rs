@@ -879,6 +879,9 @@ pub(crate) mod sys {
     /// The uninstall key `key` still exists in any hive (#120): `false` once
     /// the app's uninstaller has finished and removed its entry.
     pub fn is_registered(key: &str) -> bool {
+        if let Some(package) = key.strip_prefix(crate::store_apps::PREFIX) {
+            return crate::store_apps::is_installed(package);
+        }
         UNINSTALL
             .iter()
             .any(|(hive, path)| Key::open(*hive, &format!(r"{path}\{key}")).is_some())
@@ -889,6 +892,10 @@ pub(crate) mod sys {
     /// gets its UAC prompt. Returns once it has started: many uninstallers
     /// hand off to a copy of themselves, so waiting would not mean "done".
     pub fn run_uninstaller(command: &str) -> std::result::Result<(), String> {
+        // A Store app (#122): removed by Windows itself, the way Settings does.
+        if let Some(package) = command.strip_prefix(crate::store_apps::PREFIX) {
+            return crate::store_apps::remove(package);
+        }
         let (program, arguments) =
             split_command(command).ok_or_else(|| "the uninstall command is empty".to_owned())?;
         let program = wide(&program);
@@ -1166,6 +1173,8 @@ pub(crate) mod sys {
             &exe_names,
             &exists,
         );
+        // Store / MSIX apps are not in the Uninstall keys (#122).
+        apps.extend(crate::store_apps::store_apps(&evidence.running));
         for app in &mut apps {
             if !app.path.as_os_str().is_empty() {
                 app.bytes = measure(&app.path);

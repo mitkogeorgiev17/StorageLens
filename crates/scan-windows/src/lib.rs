@@ -38,6 +38,7 @@ pub mod elevation;
 pub mod leftover_keys;
 pub mod registry;
 pub mod startup;
+pub mod store_apps;
 #[cfg(windows)]
 pub mod walk;
 #[cfg(windows)]

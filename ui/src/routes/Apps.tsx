@@ -49,6 +49,9 @@ function message(error: unknown): string {
 const IS_MAC =
   typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
+/** Microsoft Store apps (#122): removed by Windows itself. */
+const isStoreApp = (row: AppRowDto) => row.id.startsWith("msix:");
+
 const COLUMNS: readonly { key: AppSortKey; label: string; numeric: boolean }[] =
   [
     { key: "name", label: "Name", numeric: false },
@@ -301,9 +304,11 @@ export default function AppsScreen() {
         <section className="apps-remove" aria-labelledby="apps-uninstall-title">
           <h2 id="apps-uninstall-title">Uninstall {uninstalling.name}?</h2>
           <p>
-            {IS_MAC
-              ? `Opens ${uninstalling.name}'s own uninstaller. It also removes helpers and background items that moving the app to the Trash leaves behind.`
-              : `Runs ${uninstalling.name}'s own uninstaller, the same one Settings → Apps → Installed apps runs. Windows may ask for administrator permission.`}
+            {isStoreApp(uninstalling)
+              ? `Windows removes ${uninstalling.name} and its app data, as Settings → Apps does. This takes a few seconds.`
+              : IS_MAC
+                ? `Opens ${uninstalling.name}'s own uninstaller. It also removes helpers and background items that moving the app to the Trash leaves behind.`
+                : `Runs ${uninstalling.name}'s own uninstaller, the same one Settings → Apps → Installed apps runs. Windows may ask for administrator permission.`}
           </p>
           <div className="apps-remove-actions">
             <button
@@ -312,7 +317,13 @@ export default function AppsScreen() {
               disabled={busy}
               onClick={() => uninstall(uninstalling)}
             >
-              {IS_MAC ? "Open uninstaller" : "Run uninstaller"}
+              {isStoreApp(uninstalling)
+                ? busy
+                  ? "Uninstalling…"
+                  : "Uninstall"
+                : IS_MAC
+                  ? "Open uninstaller"
+                  : "Run uninstaller"}
             </button>
             <button
               type="button"
@@ -437,6 +448,9 @@ export default function AppsScreen() {
                       </span>
                       {row.version !== null ? (
                         <span className="apps-version">{row.version}</span>
+                      ) : null}
+                      {isStoreApp(row) ? (
+                        <span className="apps-flag">Store</span>
                       ) : null}
                       {row.running ? (
                         <span className="apps-flag">Running</span>
