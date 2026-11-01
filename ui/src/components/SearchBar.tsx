@@ -49,6 +49,8 @@ export default function SearchBar() {
   const [notice, setNotice] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  // Collapsed to an icon until clicked; collapses again once empty and left.
+  const [expanded, setExpanded] = useState(false);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const ticket = useRef(0);
@@ -94,19 +96,22 @@ export default function SearchBar() {
     return () => window.clearTimeout(timer);
   }, [query, scanId]);
 
-  // Close when focus or a click leaves the search.
+  // Close when focus or a click leaves the search; collapse it if empty.
   useEffect(() => {
-    if (!open) {
+    if (!open && !expanded) {
       return;
     }
     const onPointerDown = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) {
         setOpen(false);
+        if (query === "") {
+          setExpanded(false);
+        }
       }
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
+  }, [open, expanded, query]);
 
   const more = () => {
     if (scanId === null || results === null || results.next === null) {
@@ -172,8 +177,10 @@ export default function SearchBar() {
     } else if (event.key === "Escape") {
       if (open && query !== "") {
         setOpen(false);
-      } else {
+      } else if (query !== "") {
         setQuery("");
+      } else {
+        setExpanded(false);
       }
     }
   };
@@ -182,9 +189,28 @@ export default function SearchBar() {
   const showPanel = open && query.trim() !== "";
   const fileManager = IS_MAC ? "Finder" : "Explorer";
 
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="search-toggle"
+        aria-label={disabled ? "Search after a scan" : "Search by name"}
+        title={disabled ? "Search after a scan" : "Search by name"}
+        disabled={disabled}
+        onClick={() => setExpanded(true)}
+      >
+        <svg viewBox="0 0 24 24" width={18} height={18} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="M20 20l-4-4" />
+        </svg>
+      </button>
+    );
+  }
+
   return (
     <div className="search" ref={rootRef}>
       <input
+        autoFocus
         className="input search-input"
         type="search"
         role="combobox"

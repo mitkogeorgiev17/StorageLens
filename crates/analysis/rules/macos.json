@@ -74,28 +74,28 @@
   {
     "id": "macos.user_caches",
     "platform": "macos",
-    "title": "App caches unused for 30 days",
+    "title": "App caches unused for 90 days",
     "glob": "~/Library/Caches/*",
     "exclude": ["~/Library/Caches/com.apple.*", "~/Library/Caches/Homebrew", "~/Library/Caches/CloudKit"],
     "match": "dir",
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.9,
-    "stale_days": 30,
-    "explain": "Files an app saved to speed itself up and has not touched for 30 days. The app downloads or rebuilds what it needs; it may be a little slower the first time. Apple's own caches are left alone."
+    "stale_days": 90,
+    "explain": "Files an app saved to speed itself up and has not touched for 90 days. The app downloads or rebuilds what it needs; it may be a little slower the first time. Apple's own caches are left alone."
   },
   {
     "id": "macos.container_caches",
     "platform": "macos",
-    "title": "Sandboxed app caches unused for 30 days",
+    "title": "Sandboxed app caches unused for 90 days",
     "glob": "~/Library/Containers/*/Data/Library/Caches",
     "exclude": ["~/Library/Containers/com.apple.*/Data/Library/Caches"],
     "match": "dir",
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.9,
-    "stale_days": 30,
-    "explain": "The cache folder of an App Store or sandboxed app, untouched for 30 days. The app recreates it as needed. Apple's own apps are left alone."
+    "stale_days": 90,
+    "explain": "The cache folder of an App Store or sandboxed app, untouched for 90 days. The app recreates it as needed. Apple's own apps are left alone."
   },
   {
     "id": "macos.logs",

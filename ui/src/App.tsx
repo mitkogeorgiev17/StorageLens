@@ -11,7 +11,6 @@
 
 import {
   Component,
-  useRef,
   useState,
   type ComponentType,
   type ErrorInfo,
@@ -19,7 +18,7 @@ import {
 } from "react";
 
 import logo from "./assets/logo.png";
-import ScanPicker from "./components/ScanPicker";
+import NavIcon from "./components/NavIcon";
 import SearchBar from "./components/SearchBar";
 import AppsScreen from "./routes/Apps";
 import CleanupScreen from "./routes/Cleanup";
@@ -206,6 +205,7 @@ function Sidebar() {
               aria-current={route === id ? "page" : undefined}
               onClick={() => navigate(id)}
             >
+              <NavIcon id={id} />
               {SCREENS[id].label}
             </button>
             {id === "collections" ? <SidebarCollections /> : null}
@@ -337,53 +337,60 @@ function LastTrash() {
 }
 
 /**
- * "New scan" in the header, once there is a scan to replace. A native modal
- * `<dialog>`: it traps focus and closes on Esc; focus goes back to the button.
+ * "New scan" in the header, once there is a scan to replace: rescans the
+ * whole startup disk straight away, no picker. Other targets stay on the
+ * empty-state picker.
  */
 function NewScan() {
   const scanKind = useAppStore((state) =>
     // One scan at a time: no new scan while a refresh runs (Stop it first).
     state.refresh === null ? state.scan.kind : "refreshing",
   );
-  const dialogRef = useRef<HTMLDialogElement | null>(null);
-  const openerRef = useRef<HTMLButtonElement | null>(null);
-  const [open, setOpen] = useState(false);
+  const scanStarted = useAppStore((state) => state.scanStarted);
+  const navigate = useAppStore((state) => state.navigate);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (scanKind !== "done") {
     return null;
   }
-  const close = () => dialogRef.current?.close();
+  const start = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const targets = await api.listScanTargets();
+      const disk = targets.find((target) => target.startup) ?? targets.find((target) => target.kind === "volume");
+      if (disk === undefined) {
+        throw new Error("No disk found to scan.");
+      }
+      scanStarted(await api.startScan(disk.path), disk.path);
+      navigate("overview");
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <>
+      {error !== null ? (
+        <span className="header-error" role="alert">
+          {error}
+        </span>
+      ) : null}
       <button
-        ref={openerRef}
         type="button"
-        className="button button-secondary"
-        onClick={() => {
-          setOpen(true);
-          dialogRef.current?.showModal();
-        }}
+        className="button button-secondary button-icon"
+        title="Scan the whole disk again"
+        disabled={busy}
+        onClick={() => void start()}
       >
-        New scan
+        <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 12a8 8 0 1 1-2.3-5.6" />
+          <path d="M20 4v5h-5" />
+        </svg>
+        {busy ? "Starting…" : "New scan"}
       </button>
-      <dialog
-        ref={dialogRef}
-        className="dialog"
-        aria-labelledby="new-scan-title"
-        onClose={() => {
-          setOpen(false);
-          openerRef.current?.focus();
-        }}
-      >
-        <div className="dialog-heading">
-          <h2 id="new-scan-title">New scan</h2>
-          <button type="button" className="dialog-close" aria-label="Close" onClick={close}>
-            ×
-          </button>
-        </div>
-        {/* Mounted only while open, so targets and access are re-checked each time. */}
-        {open ? <ScanPicker onStarted={close} /> : null}
-      </dialog>
     </>
   );
 }
