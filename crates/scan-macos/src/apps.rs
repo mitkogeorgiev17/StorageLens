@@ -45,6 +45,9 @@ pub struct Sources {
     pub library: PathBuf,
     /// Directories of launchd job plists.
     pub launchd_dirs: Vec<PathBuf>,
+    /// The user's per-app cache and temp folders under `/var/folders`
+    /// (`DARWIN_USER_CACHE_DIR`, `DARWIN_USER_TEMP_DIR`).
+    pub user_dirs: Vec<PathBuf>,
 }
 
 impl Sources {
@@ -63,8 +66,26 @@ impl Sources {
                 "/Library/LaunchDaemons".into(),
             ],
             library,
+            user_dirs: [
+                libc::_CS_DARWIN_USER_CACHE_DIR,
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+            ]
+            .into_iter()
+            .filter_map(confstr_path)
+            .collect(),
         }
     }
+}
+
+/// A `confstr` path value, such as the user's `/var/folders/…/C/`.
+fn confstr_path(name: libc::c_int) -> Option<PathBuf> {
+    let mut buf = vec![0u8; 1024];
+    // SAFETY: `buf` is writable for its full length, which is passed along.
+    let len = unsafe { libc::confstr(name, buf.as_mut_ptr().cast(), buf.len()) };
+    (len > 1 && len <= buf.len()).then(|| {
+        buf.truncate(len - 1);
+        PathBuf::from(String::from_utf8_lossy(&buf).into_owned())
+    })
 }
 
 /// Every app bundle under `sources`, with evidence and measured footprint.
@@ -84,7 +105,7 @@ pub fn inventory(sources: &Sources) -> Vec<AppInfo> {
         app.default_handler = !id.is_empty() && handlers.contains(&id);
     }
 
-    attach_satellites(&mut apps, &sources.library);
+    attach_satellites(&mut apps, &sources.library, &sources.user_dirs);
 
     // Sequential: each scan owns a thread pool already.
     for app in &mut apps {
@@ -498,10 +519,54 @@ fn handlers_from(value: &Value) -> HashSet<String> {
         .collect()
 }
 
-/// Candidate satellites by bundle id (and, for Application Support and
-/// Caches, by app name). A path claimed by two apps is ambiguous and given to
-/// neither: deleting it with one app would break the other.
-fn attach_satellites(apps: &mut [AppInfo], library: &Path) {
+/// What an app's leftovers can be named after.
+struct Owner {
+    id: String,
+    /// File name, `CFBundleName`, `CFBundleExecutable`: weaker evidence.
+    names: Vec<String>,
+    /// Code-signing team, for its group containers.
+    team: Option<String>,
+}
+
+fn owner(app: &AppInfo) -> Owner {
+    let info = app.path.join("Contents/Info.plist");
+    let mut names = vec![app.name.clone()];
+    names.extend(plist_string(&info, "CFBundleName"));
+    names.extend(plist_string(&info, "CFBundleExecutable"));
+    // Too short or too generic to be one app's.
+    names.retain(|name| {
+        name.chars().count() >= 3 && !GENERIC_NAMES.contains(&name.to_lowercase().as_str())
+    });
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    Owner {
+        id: app.id.clone(),
+        names,
+        team: team_id(&app.path),
+    }
+}
+
+/// Executable and bundle names many apps share; never evidence.
+const GENERIC_NAMES: [&str; 6] = ["electron", "app", "launcher", "helper", "main", "applet"];
+
+/// The code-signing team of `app`, from `codesign -dv`.
+fn team_id(app: &Path) -> Option<String> {
+    let output = Command::new("/usr/bin/codesign")
+        .args(["-dv".as_ref(), app.as_os_str()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .find_map(|line| line.strip_prefix("TeamIdentifier="))
+        .map(str::trim)
+        .filter(|team| !team.is_empty() && *team != "not set")
+        .map(str::to_owned)
+}
+
+/// Candidate satellites by bundle id, bundle names and signing team. A path
+/// claimed by two installed apps is ambiguous and given to neither:
+/// deleting it with one app would break the other.
+fn attach_satellites(apps: &mut [AppInfo], library: &Path, user_dirs: &[PathBuf]) {
     let groups: Vec<PathBuf> = list_dir(&library.join("Group Containers"))
         .into_iter()
         .filter(|(_, is_dir)| *is_dir)
@@ -509,12 +574,12 @@ fn attach_satellites(apps: &mut [AppInfo], library: &Path) {
         .collect();
 
     let candidates: Vec<Vec<PathBuf>> = apps
-        .iter()
+        .par_iter()
         .map(|app| {
             if app.system || app.id.is_empty() {
                 return Vec::new();
             }
-            satellite_paths(library, &app.id, &app.name, &groups)
+            satellite_paths(library, user_dirs, &owner(app), &groups)
         })
         .collect();
 
@@ -542,78 +607,132 @@ fn attach_satellites(apps: &mut [AppInfo], library: &Path) {
 }
 
 /// `name` is the bundle id `id` itself or one of its extensions or files:
-/// `<id>`, `<id>.widgetextension`, `<id>.plist`, `<id>.<host-uuid>.plist`.
-/// Never a longer id that merely starts the same (`<id>2`).
+/// `<id>`, `<id>.widgetextension`, `<id>.plist`, `<id>.<host-uuid>.plist`,
+/// and WebKit's per-app folders `com.apple.WebKit.Networking+<id>`. Never a
+/// longer id that merely starts the same (`<id>2`).
 fn own_name(name: &str, id: &str) -> bool {
     let name = name.to_lowercase();
     let id = id.to_lowercase();
+    let name = name
+        .rsplit_once('+')
+        .map_or(name.as_str(), |(_, tail)| tail);
     name == id
         || name
             .strip_prefix(&id)
             .is_some_and(|tail| tail.starts_with('.'))
 }
 
+/// Library folders where apps keep files named after their bundle id.
+const ID_FOLDERS: [&str; 12] = [
+    "Application Support",
+    "Caches",
+    "Preferences",
+    "Preferences/ByHost",
+    "Saved Application State",
+    "HTTPStorages",
+    "WebKit",
+    "Cookies",
+    "Logs",
+    "Containers",
+    "Application Scripts",
+    "LaunchAgents",
+];
+
+/// Library folders where apps keep folders named after the app itself.
+const NAME_FOLDERS: [&str; 3] = ["Application Support", "Caches", "Logs"];
+
 /// Existing satellite paths for one app, deduplicated case-insensitively
 /// (APFS is case-insensitive by default, so `Foo` and `foo` are one place).
-fn satellite_paths(library: &Path, id: &str, name: &str, groups: &[PathBuf]) -> Vec<PathBuf> {
-    let mut paths = vec![
-        library.join("Application Support").join(id),
-        library.join("Caches").join(id),
-        library.join("Preferences").join(format!("{id}.plist")),
-        library
-            .join("Saved Application State")
-            .join(format!("{id}.savedState")),
-        library.join("HTTPStorages").join(id),
-        library
-            .join("HTTPStorages")
-            .join(format!("{id}.binarycookies")),
-        library.join("WebKit").join(id),
-        library.join("Cookies").join(format!("{id}.binarycookies")),
-        library.join("Logs").join(id),
-    ];
-    if !name.is_empty() {
-        paths.push(library.join("Application Support").join(name));
-        paths.push(library.join("Caches").join(name));
-        paths.push(library.join("Logs").join(name));
-    }
-    // The app and its extensions (`<id>.widgetextension`, …). A container
-    // moves to the Trash only with Full Disk Access; macOS refuses even an
-    // administrator without it.
-    for folder in [
-        "Containers",
-        "Application Scripts",
-        "Preferences/ByHost",
-        "LaunchAgents",
-    ] {
+fn satellite_paths(
+    library: &Path,
+    user_dirs: &[PathBuf],
+    owner: &Owner,
+    groups: &[PathBuf],
+) -> Vec<PathBuf> {
+    let id = owner.id.as_str();
+    let named = |path: &Path, test: &dyn Fn(&str) -> bool| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(test)
+    };
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    // `<id>`, `<id>.*` and `…+<id>` in every Library folder and the per-user
+    // cache and temp folders. A container moves to the Trash only with Full
+    // Disk Access; macOS refuses even an administrator without it.
+    let id_dirs = ID_FOLDERS
+        .iter()
+        .map(|folder| library.join(folder))
+        .chain(user_dirs.iter().cloned());
+    for dir in id_dirs {
         paths.extend(
-            list_dir(&library.join(folder))
+            list_dir(&dir)
                 .into_iter()
                 .map(|(path, _)| path)
-                .filter(|path| {
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| own_name(name, id))
-                }),
+                .filter(|path| named(path, &|name| own_name(name, id))),
         );
     }
 
-    // `<TEAMID>.<group>`: ours when the group is the bundle id or below it.
+    // Named after the app: `Application Support/Code`, `~/.vscode`, crash
+    // reports `Code-2026-01-01-….ips`.
+    let home = library.parent();
+    let short = id.rsplit('.').next().unwrap_or_default();
+    for name in &owner.names {
+        for folder in NAME_FOLDERS {
+            paths.push(library.join(folder).join(name));
+        }
+        if let Some(home) = home {
+            let dot = name.to_lowercase().replace(' ', "");
+            paths.push(home.join(format!(".{dot}")));
+        }
+        let prefix = format!("{}-", name.to_lowercase());
+        let helper = format!("{} helper", name.to_lowercase());
+        paths.extend(
+            list_dir(&library.join("Logs/DiagnosticReports"))
+                .into_iter()
+                .map(|(path, _)| path)
+                .filter(|path| {
+                    named(path, &|file| {
+                        let file = file.to_lowercase();
+                        (file.starts_with(&prefix) || file.starts_with(&helper))
+                            && [".ips", ".crash", ".diag", ".hang"]
+                                .iter()
+                                .any(|ext| file.ends_with(ext))
+                    })
+                }),
+        );
+    }
+    if short.chars().count() >= 3 {
+        if let Some(home) = home {
+            paths.push(home.join(format!(".{}", short.to_lowercase())));
+        }
+    }
+
+    // Group containers: `<TEAM>.<id>` and below, and every group of the
+    // app's signing team (Office's `UBF8T346G9.Office`). Another installed
+    // app of the same team claims them too, which keeps them.
     let id_lower = id.to_lowercase();
+    let team = owner.team.as_deref().map(str::to_lowercase);
     paths.extend(
         groups
             .iter()
             .filter(|group| {
-                group
+                let Some((prefix, rest)) = group
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .and_then(|name| name.split_once('.'))
-                    .map(|(_, rest)| rest.to_lowercase())
-                    .is_some_and(|rest| {
-                        rest == id_lower
-                            || rest
-                                .strip_prefix(&id_lower)
-                                .is_some_and(|tail| tail.starts_with('.'))
+                    .map(str::to_lowercase)
+                    .and_then(|name| {
+                        name.split_once('.')
+                            .map(|(a, b)| (a.to_owned(), b.to_owned()))
                     })
+                else {
+                    return false;
+                };
+                team.as_deref() == Some(prefix.as_str())
+                    || rest == id_lower
+                    || rest
+                        .strip_prefix(&id_lower)
+                        .is_some_and(|tail| tail.starts_with('.'))
             })
             .cloned(),
     );
