@@ -1970,6 +1970,12 @@ pub fn preview_app_removal(
             app.name
         ));
     }
+    if app.id.starts_with(STORE_APP_PREFIX) {
+        return Err(format!(
+            "{} is a Microsoft Store app; use Uninstall, which Windows carries out",
+            app.name
+        ));
+    }
     if app.running && !allow_running {
         return Err(format!(
             "{} is running; quit it first, or confirm removing it anyway",
@@ -2035,6 +2041,10 @@ fn plan_for(
 
 // --- Leftovers after an uninstall (#120) ----------------------------------------------
 
+/// Ids of Microsoft Store apps (#122); mirrors `scan_windows::store_apps::PREFIX`,
+/// which only builds on Windows.
+const STORE_APP_PREFIX: &str = "msix:";
+
 /// The cached, non-system app `id`.
 fn listed_app(state: &AppState, id: &str) -> CommandResult<storagelens_core::AppInfo> {
     lock(&state.apps)?
@@ -2073,7 +2083,10 @@ pub fn app_leftovers(state: &AppState, id: &str) -> CommandResult<Vec<LeftoverDt
     let removed = lock(&state.removed)?.clone();
     let exists = |path: &Path| std::fs::symlink_metadata(path).is_ok();
     let mut out = Vec::new();
-    if !app.path.as_os_str().is_empty() && exists(&app.path) {
+    // A Store app's folder belongs to Windows (WindowsApps), which removes it
+    // on its own schedule (#122); never offered.
+    let store_app = app.id.starts_with(STORE_APP_PREFIX);
+    if !store_app && !app.path.as_os_str().is_empty() && exists(&app.path) {
         out.push(LeftoverDto {
             path: app.path.display().to_string(),
             bytes: app.bytes.get(),
@@ -2977,7 +2990,13 @@ pub mod ipc {
 
     #[tauri::command]
     pub async fn uninstall_app(state: AppStateRef<'_>, id: String) -> CommandResult<()> {
-        super::uninstall_app(state.inner(), &id, &super::platform_uninstaller)
+        // A Store app's removal runs to completion (seconds): off the main thread.
+        let state = Arc::clone(state.inner());
+        tauri::async_runtime::spawn_blocking(move || {
+            super::uninstall_app(&state, &id, &super::platform_uninstaller)
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     #[tauri::command]
@@ -3617,6 +3636,30 @@ mod tests {
             1
         );
         assert!(restore_registry_backups(&state, &["/etc/x.reg".to_owned()], &|_| Ok(())).is_err());
+
+        // A Store app (#122): no Trash path, no install-folder leftover.
+        {
+            let mut apps = lock(&state.apps).expect("apps");
+            let foo = apps
+                .as_mut()
+                .and_then(|apps| apps.iter_mut().find(|app| app.id == "com.example.Foo"))
+                .expect("foo");
+            foo.id = "msix:Foo_1_x64__p".into();
+        }
+        let shown_foo = bundle.display().to_string();
+        assert!(
+            preview_app_removal(&state, scan_id, &shown_foo, false, false, &platform_stamp)
+                .expect_err("store")
+                .contains("Microsoft Store")
+        );
+        let store_left = app_leftovers(&state, "msix:Foo_1_x64__p").expect("leftovers");
+        assert!(store_left.iter().all(|leftover| leftover.kind != "install"));
+        lock(&state.apps)
+            .expect("apps")
+            .as_mut()
+            .and_then(|apps| apps.iter_mut().find(|app| app.id.starts_with("msix:")))
+            .expect("store foo")
+            .id = "com.example.Foo".into();
 
         let foreign = vec![root.display().to_string()];
         assert!(preview_leftover_removal(
