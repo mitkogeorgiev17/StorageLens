@@ -8,7 +8,9 @@ import {
   canZoomInto,
   chainTo,
   indexTree,
+  isSmallerItems,
   joinPath,
+  simplifyTree,
   pathOf,
   toTreemapInput,
 } from "../src/lib/mapTree.ts";
@@ -81,4 +83,49 @@ test("treemap input keeps sizes and leaves unexpanded folders as blocks", () => 
   assert.equal(input.children?.[0]?.size, 900);
   assert.ok(canZoomInto(unexpanded), "an unexpanded folder can still be zoomed into");
   assert.ok(!canZoomInto(node(8, "f", 100)));
+});
+
+
+function total(node: TreeNodeDto): number {
+  return (node.children ?? []).reduce((sum, child) => sum + child.sizeAlloc, 0);
+}
+
+test("the drawn map folds small items into one tile and keeps every byte", () => {
+  const tiny = Array.from({ length: 50 }, (_, i) => node(100 + i, `t${i}`, 10));
+  const deep = node(3, "deep", 5_000, [node(31, "d1", 5_000, [node(311, "x", 5_000)])]);
+  const big = node(2, "big", 90_000, [node(21, "b1", 60_000), node(22, "b2", 30_000)]);
+  const root = { ...node(1, "root", 100_000, [big, deep, ...tiny]), remainingCount: 4, remainingBytes: 4_500 };
+
+  const drawn = simplifyTree(root);
+  const kids = drawn.children ?? [];
+  assert.deepEqual(
+    kids.map((child) => child.name),
+    ["big", "deep", "54 smaller items"],
+    "50 tiny files plus the backend's 4 remaining fold into one tile",
+  );
+  const smaller = kids[2];
+  assert.ok(smaller !== undefined && isSmallerItems(smaller.id));
+  assert.equal(smaller.sizeAlloc, 500 + 4_500);
+  assert.equal(total(drawn), 100_000, "no bytes lost");
+  assert.equal(drawn.remainingCount, 0);
+
+  const deepDrawn = kids[1];
+  assert.ok(deepDrawn !== undefined);
+  const d1 = deepDrawn.children?.[0];
+  assert.ok(d1 !== undefined);
+  assert.equal(d1.children, null, "only two levels drawn");
+  assert.ok(canZoomInto(d1), "a folder at the last level still opens");
+});
+
+test("a subfolder of only small items is one solid tile", () => {
+  const crumbs = Array.from({ length: 20 }, (_, i) => node(10 + i, `c${i}`, 1));
+  const root = node(1, "root", 100_000, [node(2, "big", 99_980), node(3, "crumbs", 20, crumbs)]);
+  const crumbsDrawn = simplifyTree(root).children?.find((child) => child.name === "crumbs");
+  assert.ok(crumbsDrawn === undefined || crumbsDrawn.children === null);
+});
+
+test("smaller-items ids never collide with group ids", () => {
+  assert.equal(isSmallerItems(-1), false);
+  assert.equal(isSmallerItems(-1_000_000), false);
+  assert.equal(isSmallerItems(7), false);
 });

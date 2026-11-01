@@ -45,6 +45,8 @@ import {
   canZoomInto,
   chainTo,
   indexTree,
+  isSmallerItems,
+  simplifyTree,
   joinPath,
   pathOf,
   toTreemapInput,
@@ -124,8 +126,11 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   const clickTimer = useRef<number | null>(null);
   const mounted = useRef(true);
 
-  const index = useMemo(() => (tree === null ? null : indexTree(tree)), [tree]);
-  const input = useMemo(() => (tree === null ? null : toTreemapInput(tree)), [tree]);
+  // What is drawn: two levels, small items folded into one tile (#96). The
+  // index covers the drawn tree, so its "smaller items" tiles resolve too.
+  const drawn = useMemo(() => (tree === null ? null : simplifyTree(tree)), [tree]);
+  const index = useMemo(() => (drawn === null ? null : indexTree(drawn)), [drawn]);
+  const input = useMemo(() => (drawn === null ? null : toTreemapInput(drawn)), [drawn]);
 
   // `view` is read through `key`: equal views share one cache and one loader.
   const viewRef = useRef<View>(view);
@@ -305,6 +310,10 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
   };
 
   const run = (action: "reveal" | "preview", id: number) => {
+    if (isSmallerItems(id)) {
+      setNotice("That tile stands for several small items. Large Files lists every file.");
+      return;
+    }
     if (id < 0) {
       setNotice("That is a group of files, not one file or folder. Open it to see what is inside.");
       return;
@@ -324,6 +333,13 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
       return;
     }
     cancelClick();
+    // A "smaller items" tile inside a subfolder opens that subfolder, where
+    // they are big enough to draw. At the top level there is no deeper view.
+    const parent = index?.get(hit.id)?.parent ?? null;
+    if (isSmallerItems(node.id) && parent !== null && parent !== tree?.id) {
+      void zoomInto(parent);
+      return;
+    }
     if (!canZoomInto(node)) {
       setSelectedId(node.id);
       return;
@@ -480,7 +496,7 @@ function MapView({ summary }: { readonly summary: ScanSummary }) {
     return {
       node,
       path,
-      category: id < 0 ? "Group" : node.kind === "Dir" ? "Folder" : CATEGORY_LABELS[node.category],
+      category: isSmallerItems(id) ? "Smaller items" : id < 0 ? "Group" : node.kind === "Dir" ? "Folder" : CATEGORY_LABELS[node.category],
     };
   };
   const hoverInfo = hovered === null ? null : describe(hovered.id);
