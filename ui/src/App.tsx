@@ -281,7 +281,7 @@ function LastTrash() {
 }
 
 /**
- * "New scan" in the header, once there is a scan to replace: rescans the
+ * "Scan" in the header, once there is a scan to replace: rescans the
  * whole startup disk straight away, no picker. Other targets stay on the
  * empty-state picker.
  */
@@ -330,10 +330,10 @@ function NewScan() {
         onClick={() => void start()}
       >
         <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M20 12a8 8 0 1 1-2.3-5.6" />
-          <path d="M20 4v5h-5" />
+          <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" />
+          <path d="M7 12h10" />
         </svg>
-        {busy ? "Starting…" : "New scan"}
+        {busy ? "Starting…" : "Scan"}
       </button>
     </>
   );
