@@ -893,6 +893,15 @@ without recompiling.
 its logical size, and deleting it nukes every image and container. Never delete it — show
 a card that says "run `docker system prune`" with the current `docker system df` output.
 
+**Docker contents (#168).** `docker system prune` keeps tagged unused images, volumes and
+most build cache, so Cleanup has a Docker section that lists what is inside through the
+local docker CLI (`docker system df -v`, local socket only, no network): containers,
+images, volumes, and build cache split into unused-30+-days and the rest. Unused items can
+be removed through Docker (`container rm`, `image rm`, `volume rm`, `builder prune`). It is
+permanent — Docker has no Trash — so it gets its own confirmation, and each target is
+checked against a fresh listing first. Unused and older than 30 days starts selected;
+volumes never do. `Docker.raw` itself is still never deleted.
+
 **Built (#32).** `crates/analysis/rules/macos.json` has 20 rules, each with a fixture and
 an exact byte total in `tests/rules_macos.rs`. Where it differs from the table above:
 

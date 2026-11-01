@@ -3322,6 +3322,31 @@ pub mod ipc {
         super::preview_duplicate_removal(state.inner(), scan_id, paths)
     }
 
+    /// What is inside Docker (#168). Runs the docker CLI: off the main thread.
+    #[tauri::command]
+    pub async fn docker_contents() -> CommandResult<crate::docker::DockerDto> {
+        tauri::async_runtime::spawn_blocking(|| {
+            let run = crate::docker::system_run();
+            let run = run.as_ref().map(|run| run as crate::docker::Run<'_>);
+            crate::docker::contents(run, super::now_unix())
+        })
+        .await
+        .map_err(|error| error.to_string())
+    }
+
+    /// Remove unused Docker data for good (#168).
+    #[tauri::command]
+    pub async fn remove_docker(
+        targets: Vec<crate::docker::DockerTarget>,
+    ) -> CommandResult<crate::docker::DockerRemovalDto> {
+        tauri::async_runtime::spawn_blocking(move || {
+            let run = crate::docker::system_run().ok_or("Docker is not installed")?;
+            crate::docker::remove(&run, &targets, super::now_unix())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
     #[tauri::command]
     pub async fn check_full_disk_access() -> CommandResult<DiskAccess> {
         Ok(super::check_full_disk_access())

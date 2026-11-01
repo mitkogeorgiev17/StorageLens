@@ -1968,6 +1968,11 @@ body {
   color: var(--text-muted);
 }
 
+.docker-item {
+  display: grid;
+  min-width: 0;
+}
+
 .dupes-pages {
   display: flex;
   align-items: center;

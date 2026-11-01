@@ -239,6 +239,38 @@ export interface QuitDto {
   readonly failed: number;
 }
 
+/** What is inside Docker (#168). */
+export interface DockerDto {
+  readonly status: "ready" | "missing" | "unavailable";
+  readonly message: string | null;
+  /** Containers, images, volumes, build cache; biggest first within a kind. */
+  readonly items: readonly DockerItemDto[];
+  /** Unused this many days counts as old. */
+  readonly oldDays: number;
+}
+
+export type DockerKind = "container" | "image" | "volume" | "build";
+
+export interface DockerItemDto {
+  readonly kind: DockerKind;
+  /** What removal names it by. */
+  readonly reference: string;
+  readonly name: string;
+  readonly detail: string;
+  /** What removing it frees, as Docker counts it. */
+  readonly bytes: number;
+  /** In use: never offered. */
+  readonly inUse: boolean;
+  /** Unix seconds: last use for build cache, creation otherwise. */
+  readonly when: number | null;
+  readonly selected: boolean;
+}
+
+export interface DockerRemovalDto {
+  readonly removed: readonly string[];
+  readonly failed: readonly { readonly reference: string; readonly reason: string }[];
+}
+
 /** What the Cleanup screen shows for one scan (#34). */
 export interface CleanupDto {
   readonly scanId: number;
@@ -592,6 +624,13 @@ export const api = {
    */
   previewDuplicateRemoval: (scanId: number, paths: readonly string[]) =>
     call<DeletionPlanDto>("preview_duplicate_removal", { scanId, paths }),
+
+  /** What is inside Docker, through the local docker CLI (#168). */
+  dockerContents: () => call<DockerDto>("docker_contents"),
+  /** Remove unused Docker data for good; Docker has no Trash. */
+  removeDocker: (
+    targets: readonly { readonly kind: DockerKind; readonly reference: string }[],
+  ) => call<DockerRemovalDto>("remove_docker", { targets }),
 
   checkFullDiskAccess: () => call<DiskAccess>("check_full_disk_access"),
   openFullDiskAccessSettings: () =>
