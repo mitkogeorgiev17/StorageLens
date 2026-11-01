@@ -32,6 +32,7 @@ pub mod ffi;
 mod skip;
 
 pub mod apps;
+pub mod background;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod dedupe;
 pub mod elevation;

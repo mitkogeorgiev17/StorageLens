@@ -29,6 +29,8 @@ function message(error: unknown): string {
 }
 import { formatBytes, formatCount } from "../lib/format";
 
+const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+
 export default function Leftovers({
   row,
   items,
@@ -71,7 +73,10 @@ export default function Leftovers({
       return next;
     });
   const isSystem = (item: LeftoverDto) =>
-    item.kind === "helper" || item.kind === "receipt";
+    item.kind === "helper" ||
+    item.kind === "receipt" ||
+    item.kind === "task" ||
+    item.kind === "service";
   const files = items.filter(
     (item) => item.kind !== "registry" && !isSystem(item),
   );
@@ -117,7 +122,9 @@ export default function Leftovers({
                 ? item.strong
                   ? "system helper"
                   : "system helper · vendor match"
-                : item.kind === "registry"
+                : item.kind === "task" || item.kind === "service"
+                  ? `${item.kind === "task" ? "scheduled task" : "service"}${item.strong ? "" : " · name only"}`
+                  : item.kind === "registry"
                   ? item.strong
                     ? "registry key"
                     : "registry key · name only"
@@ -158,9 +165,9 @@ export default function Leftovers({
       {system.length > 0 ? (
         <>
           <p className="apps-detail-title">
-            Left in the system by {row.name}: background jobs, helper tools and
-            installer records. Removing them asks for your administrator
-            password; files go to a folder in the Trash.
+            {IS_MAC
+              ? `Left in the system by ${row.name}: background jobs, helper tools and installer records. Removing them asks for your administrator password; files go to a folder in the Trash.`
+              : `Left in the system by ${row.name}: scheduled tasks and services. Windows asks for permission once; each is backed up first.`}
           </p>
           {list(system)}
           {systemResult === null ? (
@@ -183,14 +190,20 @@ export default function Leftovers({
                 }}
               >
                 {systemBusy
-                  ? "Waiting for the password…"
-                  : `Remove ${formatCount(chosenSystem.length)} with administrator password`}
+                  ? IS_MAC
+                    ? "Waiting for the password…"
+                    : "Waiting for Windows…"
+                  : IS_MAC
+                    ? `Remove ${formatCount(chosenSystem.length)} with administrator password`
+                    : `Remove ${formatCount(chosenSystem.length)} (asks Windows for permission)`}
               </button>
             </div>
           ) : (
             <p role="status">
-              {formatCount(systemResult.removed)} removed. Files are in the
-              Trash, in “{systemResult.trashDir.split("/").pop()}”.
+              {formatCount(systemResult.removed)} removed.{" "}
+              {IS_MAC
+                ? `Files are in the Trash, in “${systemResult.trashDir.split("/").pop() ?? ""}”.`
+                : `Backups are in ${systemResult.trashDir}.`}
             </p>
           )}
           {systemError !== null ? (

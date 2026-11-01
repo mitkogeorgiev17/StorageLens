@@ -2119,15 +2119,19 @@ type SystemItem = (String, String, bool);
 /// Removes system items into a Trash folder: `(items, trash_dir, app_name)`.
 type RemoveSystem<'a> = dyn Fn(&[SystemItem], &Path, &str) -> Result<(), String> + 'a;
 
-/// What app `id` left in the system domain (#123, macOS): launchd jobs,
-/// helper tools and installer receipts. Strong first.
+/// Finds an app's system leftovers: `(install path, id, name)`.
+type FindSystem<'a> = dyn Fn(&Path, &str, &str) -> Vec<SystemItem> + 'a;
+
+/// What app `id` left in the system domain, strong first: on macOS launchd
+/// jobs, helper tools and installer receipts (#123); on Windows scheduled
+/// tasks and services (#158).
 pub fn system_leftovers(
     state: &AppState,
     id: &str,
-    find: &dyn Fn(&Path, &str) -> Vec<SystemItem>,
+    find: &FindSystem<'_>,
 ) -> CommandResult<Vec<LeftoverDto>> {
     let app = listed_app(state, id)?;
-    let mut out: Vec<LeftoverDto> = find(&app.path, &app.id)
+    let mut out: Vec<LeftoverDto> = find(&app.path, &app.id, &app.name)
         .into_iter()
         .map(|(path, kind, strong)| LeftoverDto {
             path,
@@ -2141,17 +2145,30 @@ pub fn system_leftovers(
     Ok(out)
 }
 
-fn platform_find_system(app: &Path, bundle_id: &str) -> Vec<SystemItem> {
+fn platform_find_system(app: &Path, bundle_id: &str, name: &str) -> Vec<SystemItem> {
     #[cfg(target_os = "macos")]
     {
+        let _ = name;
         storagelens_scan_macos::system_leftovers::find(app, bundle_id)
             .into_iter()
             .map(|item| (item.path, item.kind.to_owned(), item.strong))
             .collect()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        let _ = (app, bundle_id);
+        let names: Vec<String> = [name, bundle_id]
+            .iter()
+            .chain(app.file_name().and_then(|dir| dir.to_str()).as_ref())
+            .map(|name| name.to_lowercase())
+            .collect();
+        storagelens_scan_windows::background::find(&app.display().to_string(), &names)
+            .into_iter()
+            .map(|(name, kind, strong)| (name, kind.to_owned(), strong))
+            .collect()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (app, bundle_id, name);
         Vec::new()
     }
 }
@@ -2179,10 +2196,24 @@ fn platform_remove_system(
         let owner = std::env::var("USER").map_err(|_| "no user name".to_owned())?;
         remove(&items, trash_dir, &owner, app_name)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        let _ = app_name;
+        let items: Vec<(String, &'static str)> = items
+            .iter()
+            .map(|(name, kind, _)| {
+                (
+                    name.clone(),
+                    if kind == "task" { "task" } else { "service" },
+                )
+            })
+            .collect();
+        storagelens_scan_windows::background::remove(&items, trash_dir)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (items, trash_dir, app_name);
-        Err("system leftovers are a macOS feature".to_owned())
+        Err("system leftovers are not supported here".to_owned())
     }
 }
 
@@ -2193,11 +2224,11 @@ pub fn remove_system_leftovers(
     state: &AppState,
     id: &str,
     paths: &[String],
-    find: &dyn Fn(&Path, &str) -> Vec<SystemItem>,
+    find: &FindSystem<'_>,
     remove: &RemoveSystem<'_>,
 ) -> CommandResult<SystemRemovalDto> {
     let app = listed_app(state, id)?;
-    let found = find(&app.path, &app.id);
+    let found = find(&app.path, &app.id, &app.name);
     let chosen = paths
         .iter()
         .map(|path| {
@@ -2211,7 +2242,6 @@ pub fn remove_system_leftovers(
     if chosen.is_empty() {
         return Err("nothing chosen".to_owned());
     }
-    let home = home_folder().ok_or_else(|| "no home folder".to_owned())?;
     let safe_name: String = app
         .name
         .chars()
@@ -2223,9 +2253,17 @@ pub fn remove_system_leftovers(
             }
         })
         .collect();
-    let trash_dir = home
-        .join(".Trash")
-        .join(format!("{safe_name} leftovers {}", now_unix()));
+    let folder = format!("{safe_name} leftovers {}", now_unix());
+    // macOS: a folder in the Trash. Windows: task XML and service .reg
+    // backups next to the registry backups.
+    let trash_dir = if cfg!(windows) {
+        state.data_dir().join("background-backups").join(folder)
+    } else {
+        home_folder()
+            .ok_or_else(|| "no home folder".to_owned())?
+            .join(".Trash")
+            .join(folder)
+    };
     remove(&chosen, &trash_dir, &app.name)?;
     Ok(SystemRemovalDto {
         removed: chosen.len(),
@@ -3851,7 +3889,7 @@ mod tests {
 
         // System leftovers (#123): listed from the platform, removable only as
         // listed, into a folder in the Trash, behind one admin prompt.
-        let find = |_: &Path, _: &str| -> Vec<SystemItem> {
+        let find = |_: &Path, _: &str, _: &str| -> Vec<SystemItem> {
             vec![
                 (
                     "/Library/LaunchDaemons/com.example.weak.plist".into(),

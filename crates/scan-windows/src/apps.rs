@@ -732,7 +732,7 @@ pub(crate) mod sys {
             status == ERROR_SUCCESS
         }
 
-        fn subkeys(&self) -> Vec<String> {
+        pub(crate) fn subkeys(&self) -> Vec<String> {
             let mut out = Vec::new();
             let mut name = [0u16; 256];
             for index in 0u32.. {
@@ -845,7 +845,7 @@ pub(crate) mod sys {
             (!text.trim().is_empty()).then_some(text)
         }
 
-        fn dword(&self, value: &str) -> Option<u32> {
+        pub(crate) fn dword(&self, value: &str) -> Option<u32> {
             let value = wide(value);
             let mut data = 0u32;
             let mut bytes = 4u32;
