@@ -3310,6 +3310,45 @@ pub mod ipc {
         }
     }
 
+    /// May StorageLens modify apps (App Management, #155)? `null` when it
+    /// cannot tell, and off macOS.
+    #[tauri::command]
+    pub async fn check_app_management() -> CommandResult<Option<bool>> {
+        #[cfg(target_os = "macos")]
+        {
+            tauri::async_runtime::spawn_blocking(
+                storagelens_scan_macos::apps::app_management_access,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(None)
+        }
+    }
+
+    /// Open a Privacy & Security pane (#155): `AllFiles` (Full Disk
+    /// Access), `AppBundles` (App Management) or `Automation`.
+    #[tauri::command]
+    pub async fn open_privacy_pane(pane: String) -> CommandResult<()> {
+        if !["AllFiles", "AppBundles", "Automation"].contains(&pane.as_str()) {
+            return Err(format!("unknown pane {pane}"));
+        }
+        std::process::Command::new("/usr/bin/open")
+            .arg(format!(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_{pane}"
+            ))
+            .status()
+            .map_err(|error| error.to_string())
+            .and_then(|status| {
+                status
+                    .success()
+                    .then_some(())
+                    .ok_or_else(|| "could not open System Settings".to_owned())
+            })
+    }
+
     #[tauri::command]
     pub async fn open_full_disk_access_settings() -> CommandResult<()> {
         #[cfg(target_os = "macos")]

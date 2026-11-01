@@ -1,58 +1,118 @@
 /**
- * Asks for macOS permissions at launch instead of mid-action (#149).
+ * Every macOS permission, asked for at launch (#150, #155), so nothing is
+ * asked in the middle of a scan or a removal.
  *
- * Full Disk Access cannot be requested by an app, only turned on in System
- * Settings, so a banner says so while it is off, rechecking whenever the
- * window regains focus. Automation of Finder (used to trash App Store apps)
- * is asked for once now, with one harmless Apple Event. Administrator
- * passwords stay per action: macOS has no way to grant them ahead of time.
+ * Shown while anything is missing, rechecked whenever the window regains
+ * focus (the user comes back from System Settings). Full Disk Access and
+ * App Management cannot be requested by an app, only switched on in System
+ * Settings; Finder automation is asked for with one harmless Apple Event.
+ * Administrator passwords stay per action: macOS cannot grant them ahead of
+ * time.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api, type DiskAccess } from "../lib/api";
 
-export default function Permissions() {
-  const [access, setAccess] = useState<DiskAccess>("unknown");
-  const [hidden, setHidden] = useState(false);
+const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
-  useEffect(() => {
-    const check = () => {
-      api.checkFullDiskAccess().then(setAccess).catch(() => undefined);
-    };
-    check();
-    api.requestFinderAccess().catch(() => undefined);
-    window.addEventListener("focus", check);
-    return () => window.removeEventListener("focus", check);
+type Pane = "AllFiles" | "AppBundles" | "Automation";
+
+interface Item {
+  readonly name: string;
+  readonly why: string;
+  readonly ok: boolean | null;
+  readonly pane: Pane;
+}
+
+export default function Permissions() {
+  const [disk, setDisk] = useState<DiskAccess>("unknown");
+  const [apps, setApps] = useState<boolean | null>(null);
+  const [finder, setFinder] = useState<boolean | null>(null);
+  const [closed, setClosed] = useState(false);
+
+  const check = useCallback(() => {
+    api.checkFullDiskAccess().then(setDisk).catch(() => undefined);
+    api.checkAppManagement().then(setApps).catch(() => undefined);
+    api.requestFinderAccess().then(setFinder).catch(() => undefined);
   }, []);
 
-  if (access !== "denied" || hidden) {
+  useEffect(() => {
+    if (!IS_MAC) {
+      return undefined;
+    }
+    check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, [check]);
+
+  const items: Item[] = [
+    {
+      name: "Full Disk Access",
+      why: "Scan every folder, and remove apps' data and containers.",
+      ok: disk === "granted" ? true : disk === "denied" ? false : null,
+      pane: "AllFiles",
+    },
+    {
+      name: "App Management",
+      why: "Move apps in Applications to the Trash.",
+      ok: apps,
+      pane: "AppBundles",
+    },
+    {
+      name: "Automation: Finder",
+      why: "Move App Store apps, which only Finder may move, to the Trash.",
+      ok: finder,
+      pane: "Automation",
+    },
+  ];
+  const missing = items.some((item) => item.ok === false);
+  if (!IS_MAC || closed || !missing) {
     return null;
   }
   return (
-    <div className="banner" role="note">
-      <p>
-        <strong>StorageLens needs Full Disk Access.</strong> Without it, protected folders
-        are skipped in scans and other apps' data cannot be removed. Turn it on for
-        StorageLens, then reopen the app.
-      </p>
-      <button
-        type="button"
-        className="button button-secondary"
-        onClick={() => {
-          api.openFullDiskAccessSettings().catch(() => undefined);
-        }}
-      >
-        Open Full Disk Access settings
-      </button>
-      <button
-        type="button"
-        className="dialog-close"
-        aria-label="Hide until next launch"
-        onClick={() => setHidden(true)}
-      >
-        ×
-      </button>
+    <div className="dialog-backdrop">
+      <section className="dialog permissions" role="dialog" aria-modal="true" aria-labelledby="permissions-title">
+        <h2 id="permissions-title">StorageLens needs a few permissions</h2>
+        <p className="empty-text">
+          Turn these on now so nothing is asked in the middle of a scan or a removal. macOS
+          only lets you switch them on in System Settings; StorageLens checks again when you
+          come back. After turning on Full Disk Access, quit and reopen StorageLens.
+        </p>
+        <ul className="permissions-list">
+          {items.map((item) => (
+            <li key={item.name}>
+              <span className="permissions-state" data-ok={String(item.ok)}>
+                {item.ok === true ? "On" : item.ok === false ? "Off" : "Unknown"}
+              </span>
+              <span className="permissions-text">
+                <strong>{item.name}</strong>
+                <span>{item.why}</span>
+              </span>
+              {item.ok === true ? null : (
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => {
+                    api.openPrivacyPane(item.pane).catch(() => undefined);
+                  }}
+                >
+                  Open settings
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+        <p className="empty-text">
+          Your administrator password is still asked when removing system helpers or App
+          Store apps: macOS does not allow granting it ahead of time.
+        </p>
+        <div className="apps-remove-actions">
+          <button type="button" className="button" onClick={() => setClosed(true)}>
+            Continue
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

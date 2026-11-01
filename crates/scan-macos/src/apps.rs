@@ -767,6 +767,26 @@ fn measure(path: &Path) -> Bytes {
         .unwrap_or(Bytes::ZERO)
 }
 
+/// Whether this process may modify apps (macOS App Management, #155):
+/// opens a user-owned app's `Info.plist` for writing and closes it without
+/// writing, which also makes macOS list StorageLens under App Management.
+/// `None` when no user-owned app exists to tell.
+pub fn app_management_access() -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let plist = find_bundles(&[PathBuf::from("/Applications")])
+        .into_iter()
+        .filter(|app| fs::metadata(app).is_ok_and(|meta| meta.uid() == uid))
+        .map(|app| app.join("Contents/Info.plist"))
+        .find(|plist| plist.is_file())?;
+    match fs::OpenOptions::new().write(true).open(&plist) {
+        Ok(_) => Some(true),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Some(false),
+        Err(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
