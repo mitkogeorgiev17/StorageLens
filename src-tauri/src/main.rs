@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod docker;
 mod dto;
 mod events;
 
@@ -63,6 +64,8 @@ fn main() {
             ipc::find_duplicates,
             ipc::cancel_duplicates,
             ipc::preview_duplicate_removal,
+            ipc::docker_contents,
+            ipc::remove_docker,
             ipc::check_full_disk_access,
             ipc::open_full_disk_access_settings,
             ipc::request_finder_access,

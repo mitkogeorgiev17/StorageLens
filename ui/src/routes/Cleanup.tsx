@@ -4,12 +4,14 @@
  * Rule cards grouped by kind, each with its explanation and risk; a running
  * total of what is selected; a receipt listing every path before anything
  * moves; then, item by item, what moved, what was skipped and why — with
- * undo. Duplicate files are a section at the end (#112). Every move goes to the Trash through the safety crate's guard and
+ * undo. Docker contents (#168) and duplicate files (#112) are sections at
+ * the end; Docker removes through Docker itself, for good. Every move goes to the Trash through the safety crate's guard and
  * preflight re-stat; nothing here deletes anything itself.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import DockerSection from "../components/DockerSection";
 import DuplicatesSection from "../components/DuplicatesSection";
 import Receipt from "../components/Receipt";
 import Skeleton from "../components/Skeleton";
@@ -219,6 +221,7 @@ export default function CleanupScreen() {
         ) : null}
       </div>
 
+      <DockerSection />
       <DuplicatesSection />
 
       {plan !== null ? (
