@@ -83,6 +83,25 @@ fn inventory_matches_du_and_reads_evidence() {
         &library.join("Containers/com.example.foo/Data/Library/x"),
         7_000,
     );
+    // Its widget, and a different app whose id only starts the same.
+    write(
+        &library.join("Containers/com.example.foo.widget/Data/x"),
+        3_000,
+    );
+    write(&library.join("Containers/com.example.foobar/Data/x"), 3_000);
+    write(&library.join("Application Scripts/com.example.foo/s"), 100);
+    write(&library.join("HTTPStorages/com.example.foo/h"), 200);
+    write(&library.join("WebKit/com.example.foo/w"), 300);
+    write(&library.join("Cookies/com.example.foo.binarycookies"), 50);
+    write(&library.join("Logs/com.example.foo/l"), 60);
+    write(
+        &library.join("Preferences/ByHost/com.example.foo.ABC-123.plist"),
+        70,
+    );
+    write(
+        &library.join("LaunchAgents/com.example.foo.updater.plist"),
+        80,
+    );
 
     fs::create_dir_all(&launchd).unwrap();
     fs::write(
@@ -137,11 +156,19 @@ fn inventory_matches_du_and_reads_evidence() {
     assert_eq!(
         satellites,
         [
+            Path::new("Application Scripts/com.example.foo"),
             Path::new("Application Support/com.example.foo"),
             Path::new("Caches/com.example.foo"),
-            Path::new("Containers/com.example.foo/Data"),
+            Path::new("Containers/com.example.foo"),
+            Path::new("Containers/com.example.foo.widget"),
+            Path::new("Cookies/com.example.foo.binarycookies"),
             Path::new("Group Containers/TEAM1.com.example.foo"),
+            Path::new("HTTPStorages/com.example.foo"),
+            Path::new("LaunchAgents/com.example.foo.updater.plist"),
+            Path::new("Logs/com.example.foo"),
+            Path::new("Preferences/ByHost/com.example.foo.ABC-123.plist"),
             Path::new("Preferences/com.example.foo.plist"),
+            Path::new("WebKit/com.example.foo"),
         ],
         "ambiguous `Application Support/Foo` and the shared group are left out"
     );

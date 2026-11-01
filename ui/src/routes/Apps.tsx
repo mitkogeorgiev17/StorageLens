@@ -28,6 +28,7 @@ import {
   type AppRowDto,
   type DeletionPlanDto,
   type DeletionResultDto,
+  type DiskAccess,
   type LeftoverDto,
 } from "../lib/api";
 import {
@@ -591,10 +592,20 @@ function RemovePanel({
   readonly onCancel: () => void;
   readonly onReview: (includeData: boolean, allowRunning: boolean) => void;
 }) {
-  const [includeData, setIncludeData] = useState(false);
-  const [allowRunning, setAllowRunning] = useState(false);
-  const warnings = removalWarnings(row);
   const hasData = row.satellites.length > 0;
+  // A clean uninstall by default: the app and everything it left (#151).
+  const [includeData, setIncludeData] = useState(hasData);
+  const [allowRunning, setAllowRunning] = useState(false);
+  const [access, setAccess] = useState<DiskAccess>("unknown");
+  useEffect(() => {
+    if (IS_MAC) {
+      api.checkFullDiskAccess().then(setAccess).catch(() => undefined);
+    }
+  }, []);
+  // Without Full Disk Access macOS refuses to move app containers, even for
+  // an administrator, so the data would stay behind.
+  const needsAccess = IS_MAC && includeData && access === "denied";
+  const warnings = removalWarnings(row);
   return (
     <section className="apps-remove" aria-labelledby="apps-remove-title">
       <h2 id="apps-remove-title">Remove {row.name}</h2>
@@ -635,6 +646,24 @@ function RemovePanel({
           Remove it anyway while it is running
         </label>
       ) : null}
+      {needsAccess ? (
+        <div className="banner" role="alert">
+          <p>
+            <strong>Full Disk Access is off.</strong> macOS will not let StorageLens move{" "}
+            {row.name}'s data without it, so parts would stay behind. Turn it on for
+            StorageLens, reopen the app, and try again.
+          </p>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => {
+              api.openFullDiskAccessSettings().catch(() => undefined);
+            }}
+          >
+            Open Full Disk Access settings
+          </button>
+        </div>
+      ) : null}
       <p className="empty-text">
         Everything goes to the Trash and can be undone. The next step lists
         every path before anything moves.
@@ -650,7 +679,7 @@ function RemovePanel({
         <button
           type="button"
           className="button"
-          disabled={busy || (row.running && !allowRunning)}
+          disabled={busy || needsAccess || (row.running && !allowRunning)}
           onClick={() => onReview(includeData, allowRunning)}
         >
           Review and move to Trash…

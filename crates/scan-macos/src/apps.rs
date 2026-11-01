@@ -526,23 +526,31 @@ fn attach_satellites(apps: &mut [AppInfo], library: &Path) {
 
     for (app, paths) in apps.iter_mut().zip(candidates) {
         let id = app.id.to_lowercase();
-        // Named after the bundle id, not just the app's name. A container's
-        // `Data` is named by its parent.
-        let named = |path: &Path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().to_lowercase().contains(&id))
-        };
         app.satellites = paths
             .into_iter()
             .filter(|path| claims.get(&key(path)) == Some(&1))
             .map(|path| Satellite {
-                strong: named(&path)
-                    || (path.ends_with("Data") && path.parent().is_some_and(named)),
+                // Named after the bundle id, not just the app's name.
+                strong: path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().to_lowercase().contains(&id)),
                 path,
                 bytes: Bytes::ZERO,
             })
             .collect();
     }
+}
+
+/// `name` is the bundle id `id` itself or one of its extensions or files:
+/// `<id>`, `<id>.widgetextension`, `<id>.plist`, `<id>.<host-uuid>.plist`.
+/// Never a longer id that merely starts the same (`<id>2`).
+fn own_name(name: &str, id: &str) -> bool {
+    let name = name.to_lowercase();
+    let id = id.to_lowercase();
+    name == id
+        || name
+            .strip_prefix(&id)
+            .is_some_and(|tail| tail.starts_with('.'))
 }
 
 /// Existing satellite paths for one app, deduplicated case-insensitively
@@ -551,17 +559,42 @@ fn satellite_paths(library: &Path, id: &str, name: &str, groups: &[PathBuf]) -> 
     let mut paths = vec![
         library.join("Application Support").join(id),
         library.join("Caches").join(id),
-        // macOS locks the container folder itself (it cannot be renamed or
-        // deleted, even by Finder); its `Data` holds the files and can go.
-        library.join("Containers").join(id).join("Data"),
         library.join("Preferences").join(format!("{id}.plist")),
         library
             .join("Saved Application State")
             .join(format!("{id}.savedState")),
+        library.join("HTTPStorages").join(id),
+        library
+            .join("HTTPStorages")
+            .join(format!("{id}.binarycookies")),
+        library.join("WebKit").join(id),
+        library.join("Cookies").join(format!("{id}.binarycookies")),
+        library.join("Logs").join(id),
     ];
     if !name.is_empty() {
         paths.push(library.join("Application Support").join(name));
         paths.push(library.join("Caches").join(name));
+        paths.push(library.join("Logs").join(name));
+    }
+    // The app and its extensions (`<id>.widgetextension`, …). A container
+    // moves to the Trash only with Full Disk Access; macOS refuses even an
+    // administrator without it.
+    for folder in [
+        "Containers",
+        "Application Scripts",
+        "Preferences/ByHost",
+        "LaunchAgents",
+    ] {
+        paths.extend(
+            list_dir(&library.join(folder))
+                .into_iter()
+                .map(|(path, _)| path)
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| own_name(name, id))
+                }),
+        );
     }
 
     // `<TEAMID>.<group>`: ours when the group is the bundle id or below it.
