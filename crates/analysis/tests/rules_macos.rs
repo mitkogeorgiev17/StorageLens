@@ -107,7 +107,7 @@ fn volume() -> common::Scan {
         (&format!("{SIM}/Devices/CCCC/leftover"), F, 9, OLD),
         (&format!("{SIM}/Caches"), D, 0, 0),
         (&format!("{SIM}/Caches/dyld"), F, 70, NEW),
-        // Caches: third-party, unused for 30 days. Apple's and Homebrew's are not.
+        // Caches: third-party, unused for 90 days. Apple's and Homebrew's are not.
         ("Users/me/Library/Caches", D, 0, 0),
         ("Users/me/Library/Caches/com.spotify.client", D, 0, 0),
         (

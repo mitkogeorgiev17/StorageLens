@@ -18,7 +18,9 @@
   --space-8: 32px;
 
   --radius-sm: 6px;
-  --radius-md: 10px;
+  --radius-md: 14px;
+  /* Controls (buttons, inputs, nav items, chips) are pills. */
+  --radius-pill: 999px;
 
   --text-sm: 12px;
   --text-md: 14px;
@@ -98,6 +100,10 @@ body {
 }
 
 .sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -130,15 +136,27 @@ body {
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.nav-icon {
+  flex: none;
+  opacity: 0.8;
+}
+
+.nav-item[aria-current="page"] .nav-icon {
+  opacity: 1;
 }
 
 .nav-item:hover {
@@ -223,7 +241,7 @@ body {
 .button {
   padding: var(--space-2) var(--space-4);
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-text);
   font: inherit;
@@ -330,7 +348,7 @@ body {
 .breadcrumb-link {
   padding: 2px var(--space-1);
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--accent);
   font: inherit;
@@ -444,14 +462,14 @@ body {
   margin: 0;
   padding: 2px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: var(--surface);
 }
 
 .segment {
   position: relative;
   padding: var(--space-1) var(--space-3);
-  border-radius: 4px;
+  border-radius: var(--radius-pill);
   color: var(--text);
   font-size: var(--text-md);
   cursor: pointer;
@@ -494,7 +512,7 @@ body {
   gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface);
   color: var(--text);
   font: inherit;
@@ -589,7 +607,7 @@ body {
 
 .nav-sub {
   margin: 2px 0 var(--space-1);
-  padding: 0 0 0 var(--space-3);
+  padding: 0 0 0 calc(var(--space-3) + 18px);
   list-style: none;
 }
 
@@ -599,7 +617,7 @@ body {
   overflow: hidden;
   padding: 2px var(--space-2);
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -838,7 +856,7 @@ body {
 
 .legend {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--space-1) var(--space-4);
   margin: var(--space-3) 0 0;
   padding: 0;
@@ -861,10 +879,10 @@ body {
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 15%);
 }
 
+/* Wraps rather than truncates: the numbers beside it never shrink. */
 .legend-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .legend-value,
@@ -935,7 +953,7 @@ body {
 
 .risk {
   padding: 1px var(--space-2);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   font-size: var(--text-sm);
   font-weight: 600;
 }
@@ -1081,7 +1099,7 @@ body {
   min-width: 0;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-mono);
@@ -1193,7 +1211,7 @@ body {
   width: 32px;
   height: 32px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-muted);
   font-size: 20px;
@@ -1235,9 +1253,9 @@ body {
 }
 
 .select {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: var(--surface);
   color: var(--text);
   font: inherit;
@@ -1366,6 +1384,28 @@ body {
   opacity: 0.6;
 }
 
+.search-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.search-toggle:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.search-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .search-panel {
   position: absolute;
   top: calc(100% + var(--space-1));
@@ -1444,7 +1484,7 @@ body {
 .search-more {
   padding: 2px var(--space-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   background: var(--surface);
   color: var(--text);
   font: inherit;
@@ -1591,7 +1631,7 @@ body {
 
 .risk-badge {
   padding: 1px var(--space-2);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: var(--text-sm);
   white-space: nowrap;
   background: var(--risk-never-bg);
@@ -1832,7 +1872,7 @@ body {
 
 .app-status {
   padding: 1px var(--space-2);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: var(--text-sm);
   background: var(--risk-never-bg);
   color: var(--risk-never-text);
@@ -1996,4 +2036,15 @@ body {
 .content > .banner,
 .content > .cleanup-result {
   margin-bottom: var(--space-3);
+}
+
+.button-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.header-error {
+  color: var(--danger);
+  font-size: var(--text-sm);
 }
