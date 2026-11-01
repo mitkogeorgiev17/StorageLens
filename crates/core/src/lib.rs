@@ -12,6 +12,7 @@ pub mod categories;
 pub mod error;
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
+pub mod location;
 pub mod scanner;
 pub mod tags;
 pub mod types;
@@ -23,6 +24,7 @@ pub use fixtures::{
     allocated_bytes, CategorySample, FixtureError, FixturePaths, FixtureResult, FixtureTree,
     Manifest, DEEP_DEPTH, LONG_NAME_BYTES, SPARSE_LOGICAL_BYTES,
 };
+pub use location::Locations;
 pub use scanner::{CancelToken, EntrySink, StorageScanner};
 pub use tags::Tags;
 pub use types::{

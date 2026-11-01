@@ -76,6 +76,10 @@ export const CATEGORY_ORDER: readonly Category[] = [
   "three-d",
   "apps",
   "disk-images",
+  "caches",
+  "app-data",
+  "system",
+  "developer",
   "other",
 ];
 
@@ -341,6 +345,10 @@ export const CATEGORY_COLORS: Readonly<Record<Category, string>> = {
   "three-d": "#9cc25a",
   apps: "#7c8de0",
   "disk-images": "#c98d5f",
+  caches: "#d9a7a0",
+  "app-data": "#a3b8d9",
+  system: "#b4b8a8",
+  developer: "#8fc7a8",
   other: "#9ea3ab",
 };
 
@@ -395,6 +403,10 @@ export const CATEGORY_LABELS: Readonly<Record<Category, string>> = {
   "three-d": "3D / CAD",
   apps: "Apps",
   "disk-images": "Disk images",
+  caches: "Caches",
+  "app-data": "App data",
+  system: "System",
+  developer: "Developer",
   other: "Other",
 };
 

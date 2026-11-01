@@ -35,6 +35,10 @@ export type Category =
   | "three-d"
   | "apps"
   | "disk-images"
+  | "caches"
+  | "app-data"
+  | "system"
+  | "developer"
   | "other";
 
 export interface ScanStatusDto {

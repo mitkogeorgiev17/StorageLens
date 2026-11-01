@@ -69,7 +69,8 @@ pub type FixtureResult<T> = std::result::Result<T, FixtureError>;
 
 /// Extension used for the sample file of each category.
 ///
-/// One file per [`Category::ALL`] entry. The generator verifies that the shared
+/// One file per extension category (every [`Category::ALL`] entry not
+/// [`Category::by_location`]). The generator verifies that the shared
 /// table maps each extension back to the same category.
 const CATEGORY_SAMPLES: [(Category, &str); 14] = [
     (Category::Images, "jpg"),
@@ -806,13 +807,17 @@ mod tests {
         let tree = FixtureTree::generate().expect("generate");
         let manifest = tree.manifest();
 
-        assert_eq!(manifest.category_samples.len(), Category::ALL.len());
+        let by_extension = Category::ALL.into_iter().filter(|c| !c.by_location());
+        assert_eq!(
+            manifest.category_samples.len(),
+            by_extension.clone().count()
+        );
         let seen: HashSet<Category> = manifest
             .category_samples
             .iter()
             .map(|sample| sample.category)
             .collect();
-        for category in Category::ALL {
+        for category in by_extension {
             assert!(seen.contains(&category), "missing sample for {category:?}");
         }
 
@@ -965,6 +970,7 @@ mod tests {
             .map(|sample| sample.bytes_logical)
             .sum();
         assert_eq!(totals.values().sum::<u64>(), expected);
-        assert_eq!(totals.len(), Category::ALL.len());
+        let by_extension = Category::ALL.iter().filter(|c| !c.by_location()).count();
+        assert_eq!(totals.len(), by_extension);
     }
 }

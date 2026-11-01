@@ -39,7 +39,9 @@ use storagelens_catalog::{
     EntryWriter, FileSort, NodeIndex, Platform, ScanSession, SearchCursor, SizeCursor,
     DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
 };
-use storagelens_core::{CancelToken, EntryKind, Progress, ScanOptions, ScanResult, ScanStatus};
+use storagelens_core::{
+    CancelToken, EntryKind, Locations, Progress, ScanOptions, ScanResult, ScanStatus,
+};
 use tauri::{AppHandle, State};
 
 use crate::dto::{
@@ -145,6 +147,9 @@ struct RunningScan {
 /// thread can hold it too.
 pub struct AppState {
     catalog_path: PathBuf,
+    /// Location categories for new scans (#95); `None` leaves extensions alone
+    /// (tests, whose temp dirs sit in `/private/var/folders`).
+    locations: Option<Locations>,
     catalog: Mutex<Catalog>,
     running: Mutex<Option<RunningScan>>,
     /// The most recently used arena.
@@ -185,6 +190,7 @@ impl AppState {
         let catalog = Catalog::open(&catalog_path).map_err(|error| error.to_string())?;
         Ok(Self {
             catalog_path,
+            locations: Some(Locations::new(home_folder().as_deref())),
             catalog: Mutex::new(catalog),
             running: Mutex::new(None),
             arena: Mutex::new(None),
@@ -426,6 +432,9 @@ fn scan_and_record(
 ) -> CommandResult<ScanStatus> {
     let mut writer = EntryWriter::open(&state.catalog_path, scan_id, DEFAULT_BATCH_SIZE)
         .map_err(|error| error.to_string())?;
+    if let Some(locations) = &state.locations {
+        writer = writer.with_locations(root, locations.clone());
+    }
 
     let throttle = Throttle::new(PROGRESS_INTERVAL);
     let shared = Arc::clone(progress);
@@ -2873,7 +2882,9 @@ mod tests {
     use crate::events::testing::Recorder;
 
     fn state(dir: &tempfile::TempDir) -> Arc<AppState> {
-        Arc::new(AppState::open(dir.path().join("catalog.db")).expect("open state"))
+        let mut state = AppState::open(dir.path().join("catalog.db")).expect("open state");
+        state.locations = None;
+        Arc::new(state)
     }
 
     /// A small tree: two directories, four files, one of them large.

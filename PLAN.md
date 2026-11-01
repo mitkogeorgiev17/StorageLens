@@ -283,7 +283,8 @@ CREATE TABLE entries (
   accessed     INTEGER,
   category     TEXT,                  -- one of PLAN §9.5: images|video|audio|documents|
                                       -- spreadsheets|presentations|archives|code|data|
-                                      -- fonts|3d|apps|disk-images|other
+                                      -- fonts|3d|apps|disk-images|caches|app-data|
+                                      -- system|developer|other
   tags         INTEGER NOT NULL DEFAULT 0,   -- u64 bitmask, see §9.2
   hardlink_dup INTEGER NOT NULL DEFAULT 0
 );
@@ -692,7 +693,8 @@ that says it on one and "Other 180 GB" on the other.
 
 ### 9.5 Category taxonomy
 
-Keep it small and stable — 14 top-level buckets, with subcategories for display only:
+Keep it small and stable — 18 top-level buckets (14 by extension, 4 by location), with
+subcategories for display only:
 
 ```
 Images        jpg png heic raw tiff psd svg ...
@@ -708,10 +710,42 @@ Fonts         ttf otf woff ...
 3D / CAD      obj fbx blend step ...
 Apps          .app .exe .msi
 Disk images   dmg iso vhd vhdx
+Caches        by location: ~/Library/Caches, .cache, GPUCache, AppData\Local\Temp ...
+App data      by location: ~/Library/Application Support, Containers, AppData ...
+System        by location: /System, /usr, /private, /Library, C:\Windows, ProgramData
+Developer     by location: node_modules, target/debug, .rustup, DerivedData ...
 Other         everything unclassified
 ```
 
 `Other` must always be visible, with a file count and byte total. Hiding it hides bugs.
+
+**Decision (2026-11-01, #95, user-approved): location before extension.** On a real
+full-disk scan of a Mac, `Other` was 52% (71 GB). Nearly all of it had no telling
+extension (none, `.o`, `.rlib`, `.dat`, `.car`, …) but an unmistakable location: app
+caches, app data, files inside `.app` bundles, the OS, build output. So four location
+categories were added, and a directory's location category applies to every file below
+it, whatever the extension: a `.jpg` in `~/Library/Caches` is Caches, not Images. Files
+inside an `.app` bundle or `Program Files` are Apps. Rules live in `core::location`
+(pure functions of path components, so Windows rules are tested on macOS too) and are
+applied by the catalog writer as entries arrive, with no extra pass. A directory
+takes:
+1. its parent's category if that is Apps, System, Developer or Caches;
+2. else a category from its name at any depth: cache names, `node_modules` /
+   `.rustup` / `DerivedData` / `target/{debug,release}` and friends, or `*.app`. Inside
+   App data, only cache names refine;
+3. else App data if its parent is App data;
+4. else a fixed OS location: `~/Library/<child>` (Caches/Logs → Caches, Developer →
+   Developer, Mobile Documents/CloudStorage → none, anything else → App data),
+   `/System` `/usr` `/private` `/Library` … → System (with `/private/var/folders` →
+   Caches and `/Library/Developer` → Developer), `/opt/homebrew` → Developer;
+   `C:\Windows`, `ProgramData` → System, `Program Files` → Apps,
+   `%USERPROFILE%\AppData\Local\Temp` → Caches, `AppData\*` → App data;
+5. else nothing: extensions decide.
+
+A bare `target` folder is not claimed (too common a name); its `debug` / `release`
+children are. `.bin` is no longer a disk image: it is a generic binary suffix and put
+136k firmware and model files into Disk images. Scans recorded before this change keep
+their extension-only categories until rescanned.
 
 ### 9.6 Grouping views — the actual payoff
 
