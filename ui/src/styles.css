@@ -2064,3 +2064,90 @@ body {
   border-color: var(--danger);
   color: var(--danger);
 }
+
+/* Live loaders (#160). Anything with .loading gets a spinner before its
+   text; any button marked aria-busy spins while it waits; skeleton rows
+   shimmer where a slow list will appear. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.loading::before,
+.map-loading::before,
+button[aria-busy="true"]::before {
+  content: "";
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.5em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.12em;
+  animation: spin 0.75s linear infinite;
+}
+
+button[aria-busy="true"] {
+  cursor: progress;
+}
+
+.skeleton {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+}
+
+.skeleton-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 96px;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.skeleton-bar {
+  display: block;
+  height: 12px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    90deg,
+    var(--border) 0%,
+    var(--surface) 50%,
+    var(--border) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-end {
+  justify-self: end;
+  width: 72px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading::before,
+  .map-loading::before,
+  button[aria-busy="true"]::before {
+    animation-duration: 2.5s;
+  }
+
+  .skeleton-bar {
+    animation: none;
+  }
+}

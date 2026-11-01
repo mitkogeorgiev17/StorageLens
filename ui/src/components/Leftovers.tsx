@@ -176,6 +176,7 @@ export default function Leftovers({
                 type="button"
                 className="button button-secondary"
                 disabled={chosenSystem.length === 0 || systemBusy}
+                aria-busy={systemBusy}
                 onClick={() => {
                   setSystemBusy(true);
                   setSystemError(null);
@@ -227,6 +228,7 @@ export default function Leftovers({
                 type="button"
                 className="button button-secondary"
                 disabled={chosenKeys.length === 0 || keyBusy}
+                aria-busy={keyBusy}
                 onClick={() => {
                   setKeyBusy(true);
                   setKeyError(null);
@@ -261,6 +263,7 @@ export default function Leftovers({
                   type="button"
                   className="button button-secondary"
                   disabled={keyBusy}
+                  aria-busy={keyBusy}
                   onClick={() => {
                     setKeyBusy(true);
                     setKeyError(null);

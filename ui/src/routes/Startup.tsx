@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, type StartupItemDto } from "../lib/api";
+import Skeleton from "../components/Skeleton";
 import { formatCount } from "../lib/format";
 
 const IS_MAC =
@@ -56,7 +57,7 @@ export default function StartupScreen() {
   return (
     <div className="apps-screen">
       <div className="apps-toolbar">
-        <span className="screen-status" aria-live="polite">
+        <span className={loading ? "screen-status loading" : "screen-status"} aria-live="polite">
           {loading
             ? "Reading startup items…"
             : items !== null
@@ -79,6 +80,7 @@ export default function StartupScreen() {
             type="button"
             className="button button-secondary"
             disabled={loading}
+            aria-busy={loading}
             onClick={() => void load()}
           >
             Refresh
@@ -92,6 +94,7 @@ export default function StartupScreen() {
         </p>
       ) : null}
 
+      {loading && items === null ? <Skeleton rows={5} /> : null}
       {items !== null && items.length === 0 ? (
         <section className="empty" aria-labelledby="startup-none">
           <h2 id="startup-none">Nothing starts at login</h2>

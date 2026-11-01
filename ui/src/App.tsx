@@ -328,6 +328,7 @@ function NewScan() {
         className="button button-secondary button-icon"
         title="Scan the whole disk again"
         disabled={busy}
+        aria-busy={busy}
         onClick={() => void start()}
       >
         <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

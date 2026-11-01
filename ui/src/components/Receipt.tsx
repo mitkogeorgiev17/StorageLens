@@ -195,6 +195,7 @@ export default function Receipt({
           className="button button-danger"
           onClick={move}
           disabled={running}
+          aria-busy={running}
         >
           {confirming ? `Yes, move ${total}` : `Move to Trash`}
         </button>

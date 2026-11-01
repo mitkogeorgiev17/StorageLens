@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import DuplicatesSection from "../components/DuplicatesSection";
 import Receipt from "../components/Receipt";
+import Skeleton from "../components/Skeleton";
 import RuleCard from "../components/RuleCard";
 import {
   api,
@@ -135,7 +136,10 @@ export default function CleanupScreen() {
 
       <div className="cleanup-rules">
         {cleanup === null && error === null ? (
-          <p className="screen-status">Looking for things to clean up…</p>
+          <>
+            <p className="screen-status loading">Looking for things to clean up…</p>
+            <Skeleton rows={5} />
+          </>
         ) : null}
         {cleanup !== null && groups.length === 0 ? (
           <section className="empty" aria-labelledby="cleanup-none">
@@ -314,6 +318,7 @@ export function ResultPanel({
             type="button"
             className="button button-secondary"
             disabled={busy}
+            aria-busy={busy}
             onClick={onUndo}
           >
             Undo
