@@ -18,6 +18,7 @@ import {
   type ReactNode,
 } from "react";
 
+import logo from "./assets/logo.png";
 import ScanPicker from "./components/ScanPicker";
 import SearchBar from "./components/SearchBar";
 import AppsScreen from "./routes/Apps";
@@ -192,7 +193,10 @@ function Sidebar() {
 
   return (
     <nav className="sidebar" aria-label="Screens">
-      <div className="brand">StorageLens</div>
+      <div className="brand">
+        <img className="brand-logo" src={logo} alt="" width={24} height={24} />
+        StorageLens
+      </div>
       <ul className="nav">
         {ROUTE_IDS.map((id) => (
           <li key={id}>
