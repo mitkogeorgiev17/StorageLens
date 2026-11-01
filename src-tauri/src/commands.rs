@@ -46,10 +46,10 @@ use tauri::{AppHandle, State};
 use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CrumbDto, DeletionPlanDto,
     DeletionResultDto, DupFileDto, DupGroupDto, DupesDto, FileRangeDto, FileRowDto, FileSortDto,
-    FilterDto, Grouping, LeftoverDto, OverviewDto, Page, PlanItemDto, QuitDto, ResultItemDto,
-    RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind,
-    SearchCursorDto, SizeCursorDto, StartupItemDto, TreeNodeDto, UndoItemDto, UndoResultDto,
-    VolumeDto,
+    FilterDto, Grouping, LeftoverDto, OverviewDto, Page, PlanItemDto, QuitDto, RegistryRemovalDto,
+    RemovedKeyDto, ResultItemDto, RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto,
+    ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, StartupItemDto, TreeNodeDto,
+    UndoItemDto, UndoResultDto, VolumeDto,
 };
 use crate::events::{
     self, DupesProgressEvent, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle,
@@ -2079,6 +2079,7 @@ pub fn app_leftovers(state: &AppState, id: &str) -> CommandResult<Vec<LeftoverDt
             bytes: app.bytes.get(),
             strong: true,
             kind: "install".to_owned(),
+            can_remove: true,
         });
     }
     out.extend(
@@ -2090,11 +2091,156 @@ pub fn app_leftovers(state: &AppState, id: &str) -> CommandResult<Vec<LeftoverDt
                 bytes: satellite.bytes.get(),
                 strong: satellite.strong,
                 kind: "data".to_owned(),
+                can_remove: true,
             }),
     );
     out.retain(|leftover| !removed.contains(&leftover.path));
     out.sort_by_key(|leftover| !leftover.strong);
     Ok(out)
+}
+
+/// The registry keys app `id` left behind that still exist (#121), strong
+/// first. Machine-wide ones are listed but not removable unless elevated.
+pub fn registry_leftovers(
+    state: &AppState,
+    id: &str,
+    key_exists: &dyn Fn(&str) -> bool,
+    elevated: bool,
+) -> CommandResult<Vec<LeftoverDto>> {
+    let app = listed_app(state, id)?;
+    let mut out: Vec<LeftoverDto> = app
+        .registry_keys
+        .iter()
+        .filter(|key| key_exists(&key.path))
+        .map(|key| LeftoverDto {
+            path: key.path.clone(),
+            bytes: 0,
+            strong: key.strong,
+            kind: "registry".to_owned(),
+            can_remove: elevated || !key.path.starts_with("HKEY_LOCAL_MACHINE"),
+        })
+        .collect();
+    out.sort_by_key(|key| !key.strong);
+    Ok(out)
+}
+
+fn platform_key_exists(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::leftover_keys::key_exists(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn platform_delete_key(path: &str, backup: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::leftover_keys::delete_with_backup(path, backup)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (path, backup);
+        Err("the registry is Windows only".to_owned())
+    }
+}
+
+fn platform_restore_key(backup: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::leftover_keys::restore_backup(backup)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = backup;
+        Err("the registry is Windows only".to_owned())
+    }
+}
+
+/// Where registry backups are written.
+fn registry_backup_dir(state: &AppState) -> PathBuf {
+    state.data_dir().join("registry-backups")
+}
+
+/// `1700000000-HKEY_CURRENT_USER_Software_Acme_Foo.reg`: unique per second
+/// and key, safe as a file name.
+fn backup_file_name(key: &str, unix_secs: i64) -> String {
+    let safe: String = key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(120)
+        .collect();
+    format!("{unix_secs}-{safe}.reg")
+}
+
+/// Back up, then delete, the chosen registry leftovers of app `id` (#121).
+/// Only keys [`registry_leftovers`] lists as removable; a key whose backup
+/// cannot be written is left in place.
+pub fn remove_registry_leftovers(
+    state: &AppState,
+    id: &str,
+    keys: &[String],
+    key_exists: &dyn Fn(&str) -> bool,
+    elevated: bool,
+    delete: &dyn Fn(&str, &Path) -> Result<(), String>,
+) -> CommandResult<RegistryRemovalDto> {
+    let listed = registry_leftovers(state, id, key_exists, elevated)?;
+    let dir = registry_backup_dir(state);
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+    let now = now_unix();
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    for key in keys {
+        if !listed
+            .iter()
+            .any(|item| &item.path == key && item.can_remove)
+        {
+            failed.push((
+                key.clone(),
+                "not a removable leftover of this app".to_owned(),
+            ));
+            continue;
+        }
+        let backup = dir.join(backup_file_name(key, now));
+        match delete(key, &backup) {
+            Ok(()) => removed.push(RemovedKeyDto {
+                path: key.clone(),
+                backup: backup.display().to_string(),
+            }),
+            Err(reason) => failed.push((key.clone(), reason)),
+        }
+    }
+    Ok(RegistryRemovalDto {
+        removed,
+        failed,
+        backup_dir: dir.display().to_string(),
+    })
+}
+
+/// Re-import registry backups written by [`remove_registry_leftovers`]. Only
+/// `.reg` files in the backup folder. Returns how many were restored.
+pub fn restore_registry_backups(
+    state: &AppState,
+    backups: &[String],
+    restore: &dyn Fn(&Path) -> Result<(), String>,
+) -> CommandResult<usize> {
+    let dir = registry_backup_dir(state);
+    let mut restored = 0;
+    for backup in backups {
+        let path = Path::new(backup);
+        let ours = path.parent() == Some(dir.as_path())
+            && path.extension().is_some_and(|ext| ext == "reg");
+        if !ours {
+            return Err(format!("{backup} is not a StorageLens registry backup"));
+        }
+        restore(path)?;
+        restored += 1;
+    }
+    Ok(restored)
 }
 
 /// Dry-run receipt for removing the chosen leftovers of app `id`. Only paths
@@ -2844,7 +2990,43 @@ pub mod ipc {
         state: AppStateRef<'_>,
         id: String,
     ) -> CommandResult<Vec<LeftoverDto>> {
-        super::app_leftovers(state.inner(), &id)
+        let mut out = super::app_leftovers(state.inner(), &id)?;
+        out.extend(super::registry_leftovers(
+            state.inner(),
+            &id,
+            &super::platform_key_exists,
+            super::elevated_now(),
+        )?);
+        Ok(out)
+    }
+
+    #[tauri::command]
+    pub async fn remove_registry_leftovers(
+        state: AppStateRef<'_>,
+        id: String,
+        keys: Vec<String>,
+    ) -> CommandResult<RegistryRemovalDto> {
+        let state = Arc::clone(state.inner());
+        tauri::async_runtime::spawn_blocking(move || {
+            super::remove_registry_leftovers(
+                &state,
+                &id,
+                &keys,
+                &super::platform_key_exists,
+                super::elevated_now(),
+                &super::platform_delete_key,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    pub async fn restore_registry_backups(
+        state: AppStateRef<'_>,
+        backups: Vec<String>,
+    ) -> CommandResult<usize> {
+        super::restore_registry_backups(state.inner(), &backups, &super::platform_restore_key)
     }
 
     #[tauri::command]
@@ -3312,6 +3494,7 @@ mod tests {
             system: false,
             satellites: Vec::new(),
             uninstaller: None,
+            registry_keys: Vec::new(),
         };
         let inventory = || {
             let mut foo = app("Foo", bundle.clone());
@@ -3321,6 +3504,20 @@ mod tests {
                 strong: true,
             }];
             foo.uninstaller = Some("/Applications/Foo/Uninstall Foo.app".into());
+            foo.registry_keys = vec![
+                storagelens_core::RegistryKey {
+                    path: r"HKEY_CURRENT_USER\Software\Acme\Foo".into(),
+                    strong: true,
+                },
+                storagelens_core::RegistryKey {
+                    path: r"HKEY_LOCAL_MACHINE\SOFTWARE\Foo".into(),
+                    strong: false,
+                },
+                storagelens_core::RegistryKey {
+                    path: r"HKEY_CURRENT_USER\Software\Gone".into(),
+                    strong: false,
+                },
+            ];
             let mut busy = app("Busy", root.join("Busy.app"));
             busy.running = true;
             let mut mail = app("Mail", PathBuf::from("/System/Applications/Mail.app"));
@@ -3382,6 +3579,45 @@ mod tests {
                 .expect("plan");
         assert_eq!(plan.items.len(), 1);
         assert_eq!(plan.items[0].rule_id, "app.data");
+        // Registry leftovers (#121): only existing keys; machine-wide ones need
+        // elevation; each is backed up before it is deleted; restore takes only
+        // our own backups.
+        let exists = |key: &str| !key.ends_with("Gone");
+        let keys = registry_leftovers(&state, "com.example.Foo", &exists, false).expect("keys");
+        let listed: Vec<(bool, bool)> = keys.iter().map(|k| (k.strong, k.can_remove)).collect();
+        assert_eq!(listed, [(true, true), (false, false)]);
+        let backups = std::cell::RefCell::new(Vec::new());
+        let removal = remove_registry_leftovers(
+            &state,
+            "com.example.Foo",
+            &[
+                r"HKEY_CURRENT_USER\Software\Acme\Foo".to_owned(),
+                r"HKEY_LOCAL_MACHINE\SOFTWARE\Foo".to_owned(),
+                r"HKEY_CURRENT_USER\Software\Microsoft".to_owned(),
+            ],
+            &exists,
+            false,
+            &|_, backup| {
+                backups.borrow_mut().push(backup.to_path_buf());
+                Ok(())
+            },
+        )
+        .expect("remove");
+        assert_eq!(removal.removed.len(), 1);
+        assert_eq!(removal.failed.len(), 2, "not elevated, and not a leftover");
+        assert_eq!(
+            backups.borrow().len(),
+            1,
+            "only the allowed key was touched"
+        );
+        let backup = removal.removed[0].backup.clone();
+        assert!(backup.ends_with("HKEY_CURRENT_USER_Software_Acme_Foo.reg"));
+        assert_eq!(
+            restore_registry_backups(&state, &[backup], &|_| Ok(())).expect("restore"),
+            1
+        );
+        assert!(restore_registry_backups(&state, &["/etc/x.reg".to_owned()], &|_| Ok(())).is_err());
+
         let foreign = vec![root.display().to_string()];
         assert!(preview_leftover_removal(
             &state,

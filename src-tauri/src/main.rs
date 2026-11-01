@@ -53,6 +53,8 @@ fn main() {
             ipc::uninstall_finished,
             ipc::app_leftovers,
             ipc::preview_leftover_removal,
+            ipc::remove_registry_leftovers,
+            ipc::restore_registry_backups,
             ipc::list_startup,
             ipc::set_startup,
             ipc::open_startup_settings,

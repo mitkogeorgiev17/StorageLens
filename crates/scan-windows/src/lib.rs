@@ -35,6 +35,7 @@ pub mod apps;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod dedupe;
 pub mod elevation;
+pub mod leftover_keys;
 pub mod registry;
 pub mod startup;
 #[cfg(windows)]

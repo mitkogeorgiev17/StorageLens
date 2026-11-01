@@ -192,7 +192,22 @@ export interface LeftoverDto {
   readonly bytes: number;
   /** Install folder, bundle id or publisher-and-app match; weak = name only. */
   readonly strong: boolean;
-  readonly kind: "install" | "data";
+  /** `registry`: `path` is a key (#121, Windows). */
+  readonly kind: "install" | "data" | "registry";
+  /** `false`: a machine-wide key and StorageLens is not elevated. */
+  readonly canRemove: boolean;
+}
+
+/** What a registry cleanup did (#121). */
+export interface RegistryRemovalDto {
+  /** Each deleted key and the `.reg` backup it was exported to first. */
+  readonly removed: readonly {
+    readonly path: string;
+    readonly backup: string;
+  }[];
+  /** `[key, why]` for each key left in place. */
+  readonly failed: readonly (readonly [string, string])[];
+  readonly backupDir: string;
 }
 
 /** Something that starts at login (#114). */
@@ -528,6 +543,12 @@ export const api = {
     id: string,
     paths: readonly string[],
   ) => call<DeletionPlanDto>("preview_leftover_removal", { scanId, id, paths }),
+  /** Back up, then delete, chosen registry leftovers (#121). */
+  removeRegistryLeftovers: (id: string, keys: readonly string[]) =>
+    call<RegistryRemovalDto>("remove_registry_leftovers", { id, keys }),
+  /** Re-import backups from {@link api.removeRegistryLeftovers}. */
+  restoreRegistryBackups: (backups: readonly string[]) =>
+    call<number>("restore_registry_backups", { backups }),
   /** Force quit a listed app's processes (#113); unsaved work is lost. */
   forceQuitApp: (path: string) => call<QuitDto>("force_quit_app", { path }),
   /**
