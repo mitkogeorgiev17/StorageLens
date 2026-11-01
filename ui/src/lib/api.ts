@@ -186,6 +186,19 @@ export interface Filter {
   readonly within?: number;
 }
 
+/** Something that starts at login (#114). */
+export interface StartupItemDto {
+  readonly id: string;
+  readonly name: string;
+  /** What runs: a command line, program path or shortcut. */
+  readonly command: string;
+  /** Where it is registered. */
+  readonly source: string;
+  readonly enabled: boolean;
+  /** `false`: switching it needs admin rights or the system settings. */
+  readonly canToggle: boolean;
+}
+
 /** What a force quit did (#113). */
 export interface QuitDto {
   readonly stopped: number;
@@ -479,6 +492,13 @@ export const api = {
   /** Installed apps; `refresh` re-reads the machine, which takes seconds. */
   listApps: (refresh: boolean) =>
     call<readonly AppRowDto[]>("list_apps", { refresh }),
+  /** Everything that starts at login (#114). */
+  listStartup: () => call<readonly StartupItemDto[]>("list_startup"),
+  /** Switch a startup item for future logins; returns the refreshed list. */
+  setStartup: (id: string, enabled: boolean) =>
+    call<readonly StartupItemDto[]>("set_startup", { id, enabled }),
+  /** The system's own startup settings, for items this app cannot switch. */
+  openStartupSettings: () => call<void>("open_startup_settings"),
   /** Force quit a listed app's processes (#113); unsaved work is lost. */
   forceQuitApp: (path: string) => call<QuitDto>("force_quit_app", { path }),
   /**

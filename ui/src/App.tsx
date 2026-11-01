@@ -25,6 +25,7 @@ import CleanupScreen from "./routes/Cleanup";
 import LargeFilesScreen from "./routes/LargeFiles";
 import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
+import StartupScreen from "./routes/Startup";
 import { formatBytes, formatCount, formatDuration } from "./lib/format";
 import { api } from "./lib/api";
 import { afterUndo, stopRefresh } from "./lib/rescan";
@@ -64,6 +65,12 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
     title: "Apps",
     purpose: "Installed apps with their full footprint and when they were last used.",
     empty: "Installed apps are listed here.",
+  },
+  startup: {
+    label: "Startup",
+    title: "Startup",
+    purpose: "What starts at login, with a switch for each.",
+    empty: "Startup items are listed here.",
   },
   cleanup: {
     label: "Cleanup",
@@ -160,6 +167,7 @@ const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
   map: MapScreen,
   "large-files": LargeFilesScreen,
   apps: AppsScreen,
+  startup: StartupScreen,
   cleanup: CleanupScreen,
 };
 

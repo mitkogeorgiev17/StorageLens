@@ -48,7 +48,7 @@ use crate::dto::{
     DeletionResultDto, DupFileDto, DupGroupDto, DupesDto, FileRangeDto, FileRowDto, FileSortDto,
     FilterDto, Grouping, OverviewDto, Page, PlanItemDto, QuitDto, ResultItemDto, RuleGroupDto,
     RuleItemDto, SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto,
-    SizeCursorDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
+    SizeCursorDto, StartupItemDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
 };
 use crate::events::{
     self, DupesProgressEvent, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle,
@@ -1839,6 +1839,58 @@ pub fn force_quit_app(
     Ok(QuitDto { stopped, failed })
 }
 
+// --- Startup items (#114) -----------------------------------------------------------
+
+/// Everything that starts at login on this platform.
+pub fn list_startup() -> Vec<StartupItemDto> {
+    #[cfg(target_os = "macos")]
+    let items = home_folder()
+        .map(|home| storagelens_scan_macos::startup::startup_items(&home))
+        .unwrap_or_default();
+    #[cfg(windows)]
+    let items = storagelens_scan_windows::startup::startup_items();
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let items: Vec<storagelens_core::StartupItem> = Vec::new();
+    items.into_iter().map(StartupItemDto::from).collect()
+}
+
+/// Switch startup item `id` for future logins; returns the refreshed list.
+pub fn set_startup(id: &str, enabled: bool) -> CommandResult<Vec<StartupItemDto>> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = home_folder().ok_or_else(|| "no home folder".to_owned())?;
+        storagelens_scan_macos::startup::set_startup_enabled(&home, id, enabled)?;
+    }
+    #[cfg(windows)]
+    storagelens_scan_windows::startup::set_startup_enabled(id, enabled)?;
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (id, enabled);
+        return Err("startup items are not supported on this platform".to_owned());
+    }
+    #[allow(unreachable_code)]
+    Ok(list_startup())
+}
+
+/// Open the system's own startup settings, for the items this app cannot
+/// switch.
+pub fn open_startup_settings() -> CommandResult<()> {
+    #[cfg(target_os = "macos")]
+    let (program, url) = ("open", storagelens_scan_macos::startup::LOGIN_ITEMS_URL);
+    #[cfg(windows)]
+    let (program, url) = (
+        "explorer",
+        storagelens_scan_windows::startup::STARTUP_SETTINGS_URL,
+    );
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let (program, url) = ("xdg-open", "");
+    std::process::Command::new(program)
+        .arg(url)
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("could not open the settings: {error}"))
+}
+
 /// This platform's force quit.
 fn platform_force_quit(path: &Path) -> (usize, usize) {
     #[cfg(target_os = "macos")]
@@ -2634,6 +2686,26 @@ pub mod ipc {
         })
         .await
         .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    pub async fn list_startup() -> CommandResult<Vec<StartupItemDto>> {
+        // Runs launchctl / plutil per job: off the main thread.
+        tauri::async_runtime::spawn_blocking(super::list_startup)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    #[tauri::command]
+    pub async fn set_startup(id: String, enabled: bool) -> CommandResult<Vec<StartupItemDto>> {
+        tauri::async_runtime::spawn_blocking(move || super::set_startup(&id, enabled))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    #[tauri::command]
+    pub async fn open_startup_settings() -> CommandResult<()> {
+        super::open_startup_settings()
     }
 
     #[tauri::command]

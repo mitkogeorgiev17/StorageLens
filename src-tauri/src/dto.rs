@@ -357,6 +357,32 @@ pub struct CleanupProgressDto {
     pub total: u64,
 }
 
+/// Something that starts at login (#114).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupItemDto {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub source: String,
+    pub enabled: bool,
+    /// `false`: switching it needs admin rights or the system settings.
+    pub can_toggle: bool,
+}
+
+impl From<storagelens_core::StartupItem> for StartupItemDto {
+    fn from(item: storagelens_core::StartupItem) -> Self {
+        Self {
+            id: item.id,
+            name: item.name,
+            command: item.command,
+            source: item.source,
+            enabled: item.enabled,
+            can_toggle: item.can_toggle,
+        }
+    }
+}
+
 /// What a force quit did (#113).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -37,6 +37,8 @@ mod skip;
 #[cfg(target_os = "macos")]
 mod stamp;
 #[cfg(target_os = "macos")]
+pub mod startup;
+#[cfg(target_os = "macos")]
 pub mod volumes;
 #[cfg(target_os = "macos")]
 pub mod walk;

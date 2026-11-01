@@ -1825,6 +1825,33 @@ body {
   margin-left: var(--space-3);
 }
 
+.startup-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.startup-command {
+  display: block;
+  max-width: 52ch;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.startup-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: pointer;
+}
+
+.startup-switch:has(input:disabled) {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 .apps-remove-actions {
   display: flex;
   justify-content: flex-end;

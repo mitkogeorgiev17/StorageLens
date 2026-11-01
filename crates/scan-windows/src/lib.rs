@@ -36,6 +36,7 @@ pub mod apps;
 mod dedupe;
 pub mod elevation;
 pub mod registry;
+pub mod startup;
 #[cfg(windows)]
 pub mod walk;
 #[cfg(windows)]
