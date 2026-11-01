@@ -29,6 +29,7 @@ import {
   UNDO_LABELS,
   countBy,
   initialSelection,
+  refusedForPermission,
   selectionTotal,
   sizeIndex,
   toggleGroup,
@@ -39,6 +40,8 @@ import {
 import { afterTrash } from "../lib/rescan";
 import { formatBytes, formatCount } from "../lib/format";
 import { useAppStore } from "../store";
+
+const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -286,6 +289,24 @@ export function ResultPanel({
             </li>
           ))}
         </ul>
+      ) : null}
+      {IS_MAC && refusedForPermission(notMoved.map((item) => item.reason)) ? (
+        <div className="banner" role="note">
+          <p>
+            <strong>macOS would not let StorageLens move these.</strong> Another app's
+            protected data, such as an App Store app's folder in Library/Containers, can
+            only be moved with Full Disk Access. Turn it on for StorageLens, then try again.
+          </p>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => {
+              api.openFullDiskAccessSettings().catch(() => undefined);
+            }}
+          >
+            Open Full Disk Access settings
+          </button>
+        </div>
       ) : null}
       {undone === null ? (
         result.trashed > 0 ? (

@@ -7,6 +7,7 @@ import {
   countBy,
   groupState,
   initialSelection,
+  refusedForPermission,
   selectionTotal,
   sizeIndex,
   toggleGroup,
@@ -121,4 +122,16 @@ test("results are counted by status in a fixed order", () => {
       { value: "skipped", count: 2 },
     ],
   );
+});
+
+test("a permission refusal asks for Full Disk Access; other failures do not", () => {
+  assert.equal(
+    refusedForPermission([
+      null,
+      "Error during a `trash` operation: … you don’t have the necessary permission. (-5000)",
+    ]),
+    true,
+  );
+  assert.equal(refusedForPermission(["Operation not permitted (os error 1)"]), true);
+  assert.equal(refusedForPermission(["changed since the scan", null]), false);
 });

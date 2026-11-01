@@ -198,3 +198,14 @@ export function countBy<T extends string, I>(
     }))
     .filter((entry) => entry.count > 0);
 }
+
+/**
+ * macOS refused a move for lack of permission, as it does for another app's
+ * protected data (an App Store app's `~/Library/Containers` folder). Full
+ * Disk Access lets StorageLens move those.
+ */
+export function refusedForPermission(reasons: readonly (string | null)[]): boolean {
+  return reasons.some(
+    (reason) => reason !== null && /permission|not permitted/i.test(reason),
+  );
+}
