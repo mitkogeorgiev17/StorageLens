@@ -209,3 +209,39 @@ export function refusedForPermission(reasons: readonly (string | null)[]): boole
     (reason) => reason !== null && /permission|not permitted/i.test(reason),
   );
 }
+
+/** The Cleanup screen's three sections (#172), each biggest first. */
+export interface CleanupSections {
+  /** Deletable: they go to the Trash, with undo. */
+  readonly removable: readonly RuleGroupDto[];
+  /** Report-only, safe or review: the person frees them (Trash, Docker image). */
+  readonly manual: readonly RuleGroupDto[];
+  /** Everything StorageLens leaves alone: keep, never, or nothing to free. */
+  readonly leftAlone: readonly RuleGroupDto[];
+}
+
+/** A card's rows worth listing: 0 B rows go, unless every row is 0 B
+ *  (local snapshots carry no size, but are still the point of the card). */
+export function visibleItems(group: RuleGroupDto): RuleGroupDto["items"] {
+  const sized = group.items.filter((item) => item.bytes > 0);
+  return sized.length > 0 ? sized : group.items;
+}
+
+export function cleanupSections(groups: readonly RuleGroupDto[]): CleanupSections {
+  const bySize = [...groups]
+    .filter((group) => group.items.length > 0)
+    .sort((left, right) => right.bytes - left.bytes);
+  const freeable = (group: RuleGroupDto) =>
+    group.bytes > 0 || group.items.some((item) => item.bytes === 0);
+  const manual = (group: RuleGroupDto) =>
+    !group.deletable &&
+    (group.risk === "safe" || group.risk === "review") &&
+    freeable(group);
+  return {
+    removable: bySize.filter((group) => group.deletable && group.bytes > 0),
+    manual: bySize.filter(manual),
+    leftAlone: bySize.filter(
+      (group) => !(group.deletable && group.bytes > 0) && !manual(group),
+    ),
+  };
+}

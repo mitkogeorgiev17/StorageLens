@@ -27,6 +27,7 @@ import {
 } from "../lib/docker";
 import { formatBytes, formatCount, formatDate } from "../lib/format";
 import { requestRescan } from "../lib/rescan";
+import InfoTip from "./InfoTip";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -94,15 +95,15 @@ export default function DockerSection() {
 
   return (
     <section className="dupes-screen" aria-labelledby="docker-title">
-      <h2 id="docker-title" className="cleanup-kind-title">
+      <h2 id="docker-title" className="cleanup-section-title">
         Docker
+        <InfoTip label="Docker">
+          Everything Docker keeps (images, containers, volumes and build cache)
+          lives inside one disk image. StorageLens never deletes that file; it
+          asks Docker to remove what nothing uses. Docker deletes for good: none
+          of this goes to the Trash.
+        </InfoTip>
       </h2>
-      <p className="cleanup-kind-hint">
-        Everything Docker keeps (images, containers, volumes and build cache)
-        lives inside one disk image. StorageLens never deletes that file; it
-        asks Docker to remove what nothing uses. Docker deletes for good: none
-        of this goes to the Trash.
-      </p>
       <div className="apps-toolbar">
         <span
           className={loading ? "screen-status loading" : "screen-status"}
@@ -180,12 +181,12 @@ export default function DockerSection() {
             <header className="dupes-group-head">
               <h3 id={`docker-${kind}`} className="dupes-group-title">
                 {title}
+                <InfoTip label={title}>{hint}</InfoTip>
               </h3>
               <span className="dupes-reclaim">
                 {formatBytes(rows.reduce((sum, row) => sum + row.bytes, 0))}
               </span>
             </header>
-            <p className="dupes-suggest">{hint}</p>
             <ul className="dupes-files">
               {rows.map((row) => (
                 <DockerRow
