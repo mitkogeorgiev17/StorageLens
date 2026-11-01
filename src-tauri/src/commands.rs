@@ -48,8 +48,8 @@ use crate::dto::{
     DeletionResultDto, DupFileDto, DupGroupDto, DupesDto, FileRangeDto, FileRowDto, FileSortDto,
     FilterDto, Grouping, LeftoverDto, OverviewDto, Page, PlanItemDto, QuitDto, RegistryRemovalDto,
     RemovedKeyDto, ResultItemDto, RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto,
-    ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, StartupItemDto, TreeNodeDto,
-    UndoItemDto, UndoResultDto, VolumeDto,
+    ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, StartupItemDto,
+    SystemRemovalDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
 };
 use crate::events::{
     self, DupesProgressEvent, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle,
@@ -2112,6 +2112,127 @@ pub fn app_leftovers(state: &AppState, id: &str) -> CommandResult<Vec<LeftoverDt
     Ok(out)
 }
 
+/// A system-domain leftover as the platform reports it: `(path or package
+/// id, kind, strong)`.
+type SystemItem = (String, String, bool);
+
+/// Removes system items into a Trash folder: `(items, trash_dir, app_name)`.
+type RemoveSystem<'a> = dyn Fn(&[SystemItem], &Path, &str) -> Result<(), String> + 'a;
+
+/// What app `id` left in the system domain (#123, macOS): launchd jobs,
+/// helper tools and installer receipts. Strong first.
+pub fn system_leftovers(
+    state: &AppState,
+    id: &str,
+    find: &dyn Fn(&Path, &str) -> Vec<SystemItem>,
+) -> CommandResult<Vec<LeftoverDto>> {
+    let app = listed_app(state, id)?;
+    let mut out: Vec<LeftoverDto> = find(&app.path, &app.id)
+        .into_iter()
+        .map(|(path, kind, strong)| LeftoverDto {
+            path,
+            bytes: 0,
+            strong,
+            kind,
+            can_remove: true,
+        })
+        .collect();
+    out.sort_by_key(|item| !item.strong);
+    Ok(out)
+}
+
+fn platform_find_system(app: &Path, bundle_id: &str) -> Vec<SystemItem> {
+    #[cfg(target_os = "macos")]
+    {
+        storagelens_scan_macos::system_leftovers::find(app, bundle_id)
+            .into_iter()
+            .map(|item| (item.path, item.kind.to_owned(), item.strong))
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, bundle_id);
+        Vec::new()
+    }
+}
+
+fn platform_remove_system(
+    items: &[SystemItem],
+    trash_dir: &Path,
+    app_name: &str,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use storagelens_scan_macos::system_leftovers::{remove, SystemLeftover};
+        let items: Vec<SystemLeftover> = items
+            .iter()
+            .map(|(path, kind, strong)| SystemLeftover {
+                path: path.clone(),
+                kind: if kind == "receipt" {
+                    "receipt"
+                } else {
+                    "helper"
+                },
+                strong: *strong,
+            })
+            .collect();
+        let owner = std::env::var("USER").map_err(|_| "no user name".to_owned())?;
+        remove(&items, trash_dir, &owner, app_name)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (items, trash_dir, app_name);
+        Err("system leftovers are a macOS feature".to_owned())
+    }
+}
+
+/// Remove the chosen system leftovers of app `id` (#123) with one
+/// administrator prompt. Only items [`system_leftovers`] lists; files are
+/// moved into a folder in the user's Trash, receipts are forgotten.
+pub fn remove_system_leftovers(
+    state: &AppState,
+    id: &str,
+    paths: &[String],
+    find: &dyn Fn(&Path, &str) -> Vec<SystemItem>,
+    remove: &RemoveSystem<'_>,
+) -> CommandResult<SystemRemovalDto> {
+    let app = listed_app(state, id)?;
+    let found = find(&app.path, &app.id);
+    let chosen = paths
+        .iter()
+        .map(|path| {
+            found
+                .iter()
+                .find(|(item, ..)| item == path)
+                .cloned()
+                .ok_or_else(|| format!("{path} is not a leftover of {}", app.name))
+        })
+        .collect::<CommandResult<Vec<SystemItem>>>()?;
+    if chosen.is_empty() {
+        return Err("nothing chosen".to_owned());
+    }
+    let home = home_folder().ok_or_else(|| "no home folder".to_owned())?;
+    let safe_name: String = app
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trash_dir = home
+        .join(".Trash")
+        .join(format!("{safe_name} leftovers {}", now_unix()));
+    remove(&chosen, &trash_dir, &app.name)?;
+    Ok(SystemRemovalDto {
+        removed: chosen.len(),
+        trash_dir: trash_dir.display().to_string(),
+    })
+}
+
 /// The registry keys app `id` left behind that still exist (#121), strong
 /// first. Machine-wide ones are listed but not removable unless elevated.
 pub fn registry_leftovers(
@@ -3016,7 +3137,33 @@ pub mod ipc {
             &super::platform_key_exists,
             super::elevated_now(),
         )?);
+        out.extend(super::system_leftovers(
+            state.inner(),
+            &id,
+            &super::platform_find_system,
+        )?);
         Ok(out)
+    }
+
+    #[tauri::command]
+    pub async fn remove_system_leftovers(
+        state: AppStateRef<'_>,
+        id: String,
+        paths: Vec<String>,
+    ) -> CommandResult<SystemRemovalDto> {
+        // Waits on the administrator prompt: off the main thread.
+        let state = Arc::clone(state.inner());
+        tauri::async_runtime::spawn_blocking(move || {
+            super::remove_system_leftovers(
+                &state,
+                &id,
+                &paths,
+                &super::platform_find_system,
+                &super::platform_remove_system,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     #[tauri::command]
@@ -3636,6 +3783,48 @@ mod tests {
             1
         );
         assert!(restore_registry_backups(&state, &["/etc/x.reg".to_owned()], &|_| Ok(())).is_err());
+
+        // System leftovers (#123): listed from the platform, removable only as
+        // listed, into a folder in the Trash, behind one admin prompt.
+        let find = |_: &Path, _: &str| -> Vec<SystemItem> {
+            vec![
+                (
+                    "/Library/LaunchDaemons/com.example.weak.plist".into(),
+                    "helper".into(),
+                    false,
+                ),
+                (
+                    "/Library/LaunchDaemons/com.example.Foo.plist".into(),
+                    "helper".into(),
+                    true,
+                ),
+                ("com.example.Foo.pkg".into(), "receipt".into(), true),
+            ]
+        };
+        let system = system_leftovers(&state, "com.example.Foo", &find).expect("system");
+        assert!(system[0].strong && !system[2].strong, "strong first");
+        let removed_items = std::cell::RefCell::new(0usize);
+        let done = remove_system_leftovers(
+            &state,
+            "com.example.Foo",
+            &["com.example.Foo.pkg".to_owned()],
+            &find,
+            &|items, trash, _| {
+                assert!(trash.starts_with(home_folder().expect("home").join(".Trash")));
+                removed_items.replace(items.len());
+                Ok(())
+            },
+        )
+        .expect("remove");
+        assert_eq!((done.removed, *removed_items.borrow()), (1, 1));
+        assert!(remove_system_leftovers(
+            &state,
+            "com.example.Foo",
+            &["/etc/passwd".to_owned()],
+            &find,
+            &|_, _, _| Ok(()),
+        )
+        .is_err());
 
         // A Store app (#122): no Trash path, no install-folder leftover.
         {

@@ -8,11 +8,19 @@
  * Registry keys (#121, Windows) cannot go to the Recycle Bin: each is
  * exported to a `.reg` backup first, and only deleted when that worked; the
  * backups can be imported again from here.
+ *
+ * On macOS, what the app left in the system (#123: launchd jobs, helper
+ * tools, installer receipts) is root-owned: removed behind one administrator
+ * prompt, files moved into a folder in the Trash.
  */
 
 import { useState } from "react";
 
-import { api, type RegistryRemovalDto } from "../lib/api";
+import {
+  api,
+  type RegistryRemovalDto,
+  type SystemRemovalDto,
+} from "../lib/api";
 
 import type { AppRowDto, LeftoverDto } from "../lib/api";
 
@@ -49,6 +57,11 @@ export default function Leftovers({
   const [restored, setRestored] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keyBusy, setKeyBusy] = useState(false);
+  const [systemResult, setSystemResult] = useState<SystemRemovalDto | null>(
+    null,
+  );
+  const [systemError, setSystemError] = useState<string | null>(null);
+  const [systemBusy, setSystemBusy] = useState(false);
   const toggle = (path: string) =>
     setChosen((current) => {
       const next = new Set(current);
@@ -57,8 +70,14 @@ export default function Leftovers({
       }
       return next;
     });
-  const files = items.filter((item) => item.kind !== "registry");
+  const isSystem = (item: LeftoverDto) =>
+    item.kind === "helper" || item.kind === "receipt";
+  const files = items.filter(
+    (item) => item.kind !== "registry" && !isSystem(item),
+  );
   const keys = items.filter((item) => item.kind === "registry");
+  const system = items.filter(isSystem);
+  const chosenSystem = system.filter((item) => chosen.has(item.path));
   const strong = files.filter((item) => item.strong);
   const weak = files.filter((item) => !item.strong);
   const chosenFiles = files.filter((item) => chosen.has(item.path));
@@ -90,11 +109,19 @@ export default function Leftovers({
             </span>
           </label>
           <span>
-            {item.kind === "registry"
+            {item.kind === "receipt"
               ? item.strong
-                ? "registry key"
-                : "registry key · name only"
-              : `${item.kind === "install" ? "install folder · " : ""}~${formatBytes(item.bytes)}`}
+                ? "installer record"
+                : "installer record · vendor match"
+              : item.kind === "helper"
+                ? item.strong
+                  ? "system helper"
+                  : "system helper · vendor match"
+                : item.kind === "registry"
+                  ? item.strong
+                    ? "registry key"
+                    : "registry key · name only"
+                  : `${item.kind === "install" ? "install folder · " : ""}~${formatBytes(item.bytes)}`}
           </span>
         </li>
       ))}
@@ -128,6 +155,52 @@ export default function Leftovers({
           ) : null}
         </>
       )}
+      {system.length > 0 ? (
+        <>
+          <p className="apps-detail-title">
+            Left in the system by {row.name}: background jobs, helper tools and
+            installer records. Removing them asks for your administrator
+            password; files go to a folder in the Trash.
+          </p>
+          {list(system)}
+          {systemResult === null ? (
+            <div className="apps-remove-actions">
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={chosenSystem.length === 0 || systemBusy}
+                onClick={() => {
+                  setSystemBusy(true);
+                  setSystemError(null);
+                  api
+                    .removeSystemLeftovers(
+                      row.id,
+                      chosenSystem.map((item) => item.path),
+                    )
+                    .then(setSystemResult)
+                    .catch((cause: unknown) => setSystemError(message(cause)))
+                    .finally(() => setSystemBusy(false));
+                }}
+              >
+                {systemBusy
+                  ? "Waiting for the password…"
+                  : `Remove ${formatCount(chosenSystem.length)} with administrator password`}
+              </button>
+            </div>
+          ) : (
+            <p role="status">
+              {formatCount(systemResult.removed)} removed. Files are in the
+              Trash, in “{systemResult.trashDir.split("/").pop()}”.
+            </p>
+          )}
+          {systemError !== null ? (
+            <p className="map-notice" role="alert">
+              {systemError}
+            </p>
+          ) : null}
+        </>
+      ) : null}
+
       {keys.length > 0 ? (
         <>
           <p className="apps-detail-title">

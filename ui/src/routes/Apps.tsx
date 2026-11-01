@@ -78,6 +78,8 @@ export default function AppsScreen() {
   const [quitNote, setQuitNote] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState<AppRowDto | null>(null);
   const [waiting, setWaiting] = useState<AppRowDto | null>(null);
+  /** The app whose bundle the open receipt moves to the Trash. */
+  const [trashing, setTrashing] = useState<AppRowDto | null>(null);
   const [leftovers, setLeftovers] = useState<{
     readonly row: AppRowDto;
     readonly items: readonly LeftoverDto[];
@@ -125,6 +127,7 @@ export default function AppsScreen() {
       .previewAppRemoval(scanId, row.path, includeData, allowRunning)
       .then((receipt) => {
         setRemoving(null);
+        setTrashing(row);
         setPlan(receipt);
       })
       .catch((cause: unknown) => setError(message(cause)))
@@ -186,6 +189,20 @@ export default function AppsScreen() {
     if (leftovers !== null) {
       leftoversDone();
       return;
+    }
+    // The bundle is in the Trash: show what it still leaves (data not chosen,
+    // system helpers, receipts), if anything (#123).
+    if (trashing !== null) {
+      const row = trashing;
+      setTrashing(null);
+      api
+        .appLeftovers(row.id)
+        .then((items) => {
+          if (items.length > 0) {
+            setLeftovers({ row, items });
+          }
+        })
+        .catch((cause: unknown) => setError(message(cause)));
     }
     void load(false);
   };
@@ -550,7 +567,14 @@ export default function AppsScreen() {
       ) : null}
 
       {plan !== null ? (
-        <Receipt plan={plan} onCancel={() => setPlan(null)} onDone={finished} />
+        <Receipt
+          plan={plan}
+          onCancel={() => {
+            setPlan(null);
+            setTrashing(null);
+          }}
+          onDone={finished}
+        />
       ) : null}
     </div>
   );

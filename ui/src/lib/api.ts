@@ -192,10 +192,19 @@ export interface LeftoverDto {
   readonly bytes: number;
   /** Install folder, bundle id or publisher-and-app match; weak = name only. */
   readonly strong: boolean;
-  /** `registry`: `path` is a key (#121, Windows). */
-  readonly kind: "install" | "data" | "registry";
+  /** `registry`: `path` is a key (#121, Windows). `helper` (a launchd job or
+   * helper tool) and `receipt` (`path` is a package id) are macOS system
+   * leftovers (#123). */
+  readonly kind: "install" | "data" | "registry" | "helper" | "receipt";
   /** `false`: a machine-wide key and StorageLens is not elevated. */
   readonly canRemove: boolean;
+}
+
+/** What removing macOS system leftovers did (#123). */
+export interface SystemRemovalDto {
+  readonly removed: number;
+  /** The folder in the Trash the files were moved into. */
+  readonly trashDir: string;
 }
 
 /** What a registry cleanup did (#121). */
@@ -543,6 +552,9 @@ export const api = {
     id: string,
     paths: readonly string[],
   ) => call<DeletionPlanDto>("preview_leftover_removal", { scanId, id, paths }),
+  /** Remove chosen macOS system leftovers behind one admin prompt (#123). */
+  removeSystemLeftovers: (id: string, paths: readonly string[]) =>
+    call<SystemRemovalDto>("remove_system_leftovers", { id, paths }),
   /** Back up, then delete, chosen registry leftovers (#121). */
   removeRegistryLeftovers: (id: string, keys: readonly string[]) =>
     call<RegistryRemovalDto>("remove_registry_leftovers", { id, keys }),
