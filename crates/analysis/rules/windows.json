@@ -23,6 +23,7 @@
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.95,
+    "stale_days": 90,
     "explain": "Copies of web pages and scripts Chrome, Edge or Firefox saved to load sites faster. The browser downloads them again as you browse; close it first so nothing is in use."
   },
   {
@@ -68,6 +69,7 @@
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.95,
+    "stale_days": 90,
     "explain": "Picture previews File Explorer saved. Explorer redraws them as you browse folders; files it is using right now are skipped."
   },
   {
@@ -79,6 +81,7 @@
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.95,
+    "stale_days": 90,
     "explain": "Every package npm has downloaded. npm fetches what a project needs again on its next install."
   },
   {
@@ -90,6 +93,7 @@
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.95,
+    "stale_days": 90,
     "explain": "Python packages pip downloaded or built. pip downloads them again when they are next installed."
   },
   {
@@ -101,6 +105,7 @@
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.9,
+    "stale_days": 90,
     "explain": "Rust crates Cargo downloaded, with their index. Cargo downloads what a project needs on its next build."
   },
   {
@@ -112,6 +117,7 @@
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.9,
+    "stale_days": 90,
     "explain": "Every .NET package NuGet has restored. dotnet restore downloads what a project needs again."
   },
   {

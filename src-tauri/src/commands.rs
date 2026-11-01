@@ -3505,6 +3505,15 @@ mod tests {
         }
     }
 
+    /// A file last changed 400 days ago: old enough for every stale rule.
+    #[cfg(unix)]
+    fn old_file(path: &Path, bytes: usize) {
+        fs::write(path, vec![4u8; bytes]).expect("file");
+        let file = fs::File::options().write(true).open(path).expect("open");
+        let then = std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 86_400);
+        file.set_modified(then).expect("mtime");
+    }
+
     /// The scan fixture plus two Python caches the built-in rules suggest.
     #[cfg(unix)]
     fn cleanup_fixture(dir: &tempfile::TempDir) -> (Arc<AppState>, i64, PathBuf) {
@@ -3512,11 +3521,7 @@ mod tests {
         let root = tree(dir);
         for (folder, bytes) in [("tool", 40_000), ("lib", 9_000)] {
             fs::create_dir_all(root.join(folder).join("__pycache__")).expect("dirs");
-            fs::write(
-                root.join(folder).join("__pycache__/m.pyc"),
-                vec![4u8; bytes],
-            )
-            .expect("file");
+            old_file(&root.join(folder).join("__pycache__/m.pyc"), bytes);
         }
         let (scan_id, _) = scan(&state, &root);
         (state, scan_id, root)
@@ -4634,7 +4639,7 @@ mod tests {
         let state = state(&dir);
         let root = tree(&dir);
         fs::create_dir_all(root.join("tool/__pycache__")).expect("dirs");
-        fs::write(root.join("tool/__pycache__/m.pyc"), vec![4u8; 40_000]).expect("file");
+        old_file(&root.join("tool/__pycache__/m.pyc"), 40_000);
         let (scan_id, _) = scan(&state, &root);
         let total = scan_status(&state, scan_id).expect("status").bytes_alloc;
 

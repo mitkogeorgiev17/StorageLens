@@ -49,10 +49,11 @@ fn drive() -> common::Scan {
         (&format!("{LOCAL}/Google/Chrome/User Data"), D, 0, 0),
         (&format!("{LOCAL}/Google/Chrome/User Data/Default"), D, 0, 0),
         (&format!("{LOCAL}/Google/Chrome/User Data/Default/Cache"), D, 0, 0),
-        (&format!("{LOCAL}/Google/Chrome/User Data/Default/Cache/Cache_Data"), F, 300, NEW),
+        (&format!("{LOCAL}/Google/Chrome/User Data/Default/Cache/Cache_Data"), F, 300, OLD),
         (&format!("{LOCAL}/Google/Chrome/User Data/Default/Code Cache"), D, 0, 0),
-        (&format!("{LOCAL}/Google/Chrome/User Data/Default/Code Cache/js"), F, 50, NEW),
+        (&format!("{LOCAL}/Google/Chrome/User Data/Default/Code Cache/js"), F, 50, OLD),
         (&format!("{LOCAL}/Google/Chrome/User Data/Default/History"), F, 40, NEW),
+        // A profile in use today: its cache is not offered.
         (&format!("{LOCAL}/Google/Chrome/User Data/Profile 1"), D, 0, 0),
         (&format!("{LOCAL}/Google/Chrome/User Data/Profile 1/GPUCache"), D, 0, 0),
         (&format!("{LOCAL}/Google/Chrome/User Data/Profile 1/GPUCache/x"), F, 10, NEW),
@@ -61,13 +62,13 @@ fn drive() -> common::Scan {
         (&format!("{LOCAL}/Microsoft/Edge/User Data"), D, 0, 0),
         (&format!("{LOCAL}/Microsoft/Edge/User Data/Default"), D, 0, 0),
         (&format!("{LOCAL}/Microsoft/Edge/User Data/Default/Cache"), D, 0, 0),
-        (&format!("{LOCAL}/Microsoft/Edge/User Data/Default/Cache/x"), F, 30, NEW),
+        (&format!("{LOCAL}/Microsoft/Edge/User Data/Default/Cache/x"), F, 30, OLD),
         (&format!("{LOCAL}/Mozilla"), D, 0, 0),
         (&format!("{LOCAL}/Mozilla/Firefox"), D, 0, 0),
         (&format!("{LOCAL}/Mozilla/Firefox/Profiles"), D, 0, 0),
         (&format!("{LOCAL}/Mozilla/Firefox/Profiles/abc.default"), D, 0, 0),
         (&format!("{LOCAL}/Mozilla/Firefox/Profiles/abc.default/cache2"), D, 0, 0),
-        (&format!("{LOCAL}/Mozilla/Firefox/Profiles/abc.default/cache2/x"), F, 60, NEW),
+        (&format!("{LOCAL}/Mozilla/Firefox/Profiles/abc.default/cache2/x"), F, 60, OLD),
         // Crash dumps, error reports, thumbnails.
         (&format!("{LOCAL}/CrashDumps"), D, 0, 0),
         (&format!("{LOCAL}/CrashDumps/app.exe.123.dmp"), F, 64, NEW),
@@ -77,22 +78,22 @@ fn drive() -> common::Scan {
         (&format!("{LOCAL}/Microsoft/Windows/WER/ReportArchive/r"), F, 32, NEW),
         (&format!("{LOCAL}/Microsoft/Windows/WER/loose.txt"), F, 3, NEW),
         (&format!("{LOCAL}/Microsoft/Windows/Explorer"), D, 0, 0),
-        (&format!("{LOCAL}/Microsoft/Windows/Explorer/thumbcache_256.db"), F, 128, NEW),
+        (&format!("{LOCAL}/Microsoft/Windows/Explorer/thumbcache_256.db"), F, 128, OLD),
         (&format!("{LOCAL}/Microsoft/Windows/Explorer/iconcache_32.db"), F, 16, NEW),
         // Package managers.
         (&format!("{LOCAL}/npm-cache"), D, 0, 0),
-        (&format!("{LOCAL}/npm-cache/_cacache"), F, 150, NEW),
+        (&format!("{LOCAL}/npm-cache/_cacache"), F, 150, OLD),
         (&format!("{LOCAL}/pip"), D, 0, 0),
         (&format!("{LOCAL}/pip/Cache"), D, 0, 0),
-        (&format!("{LOCAL}/pip/Cache/http"), F, 70, NEW),
+        (&format!("{LOCAL}/pip/Cache/http"), F, 70, OLD),
         ("Users/me/.cargo", D, 0, 0),
         ("Users/me/.cargo/registry", D, 0, 0),
-        ("Users/me/.cargo/registry/cache", F, 200, NEW),
+        ("Users/me/.cargo/registry/cache", F, 200, OLD),
         ("Users/me/.cargo/bin", D, 0, 0),
         ("Users/me/.cargo/bin/cargo.exe", F, 9, NEW),
         ("Users/me/.nuget", D, 0, 0),
         ("Users/me/.nuget/packages", D, 0, 0),
-        ("Users/me/.nuget/packages/newtonsoft.json", F, 90, NEW),
+        ("Users/me/.nuget/packages/newtonsoft.json", F, 90, OLD),
         // Downloads.
         ("Users/me/Downloads", D, 0, 0),
         ("Users/me/Downloads/setup.exe", F, 900, OLD),
@@ -194,11 +195,10 @@ fn every_windows_rule_matches_exactly_its_fixture() {
             vec![
                 format!(r"{chrome}\Default\Cache"),
                 format!(r"{chrome}\Default\Code Cache"),
-                format!(r"{chrome}\Profile 1\GPUCache"),
                 format!(r"{local}\Microsoft\Edge\User Data\Default\Cache"),
                 format!(r"{local}\Mozilla\Firefox\Profiles\abc.default\cache2"),
             ],
-            450,
+            440,
         ),
         (
             "windows.downloads.installers",
@@ -336,5 +336,5 @@ fn only_the_users_own_files_are_offered() {
             candidate.hit().path
         );
     }
-    assert_eq!(evaluation.candidates().count(), 16);
+    assert_eq!(evaluation.candidates().count(), 15);
 }
