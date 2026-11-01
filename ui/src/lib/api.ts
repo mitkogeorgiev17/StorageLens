@@ -186,6 +186,13 @@ export interface Filter {
   readonly within?: number;
 }
 
+/** What a force quit did (#113). */
+export interface QuitDto {
+  readonly stopped: number;
+  /** Processes that refused: another user's, elevated, or protected. */
+  readonly failed: number;
+}
+
 /** What the Cleanup screen shows for one scan (#34). */
 export interface CleanupDto {
   readonly scanId: number;
@@ -472,6 +479,8 @@ export const api = {
   /** Installed apps; `refresh` re-reads the machine, which takes seconds. */
   listApps: (refresh: boolean) =>
     call<readonly AppRowDto[]>("list_apps", { refresh }),
+  /** Force quit a listed app's processes (#113); unsaved work is lost. */
+  forceQuitApp: (path: string) => call<QuitDto>("force_quit_app", { path }),
   /**
    * Receipt for removing an app (and, with `includeData`, its associated
    * data). Executed by {@link api.executeDeletion} like any cleanup plan.

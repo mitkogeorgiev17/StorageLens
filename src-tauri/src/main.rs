@@ -48,6 +48,7 @@ fn main() {
             ipc::cancel_deletion,
             ipc::undo_deletion,
             ipc::list_apps,
+            ipc::force_quit_app,
             ipc::preview_app_removal,
             ipc::find_duplicates,
             ipc::cancel_duplicates,

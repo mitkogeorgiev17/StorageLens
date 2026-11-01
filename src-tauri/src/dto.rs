@@ -357,6 +357,16 @@ pub struct CleanupProgressDto {
     pub total: u64,
 }
 
+/// What a force quit did (#113).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuitDto {
+    /// Processes stopped.
+    pub stopped: usize,
+    /// Processes that refused (another user's, elevated, or protected).
+    pub failed: usize,
+}
+
 /// One installed app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

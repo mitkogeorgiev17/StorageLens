@@ -8,7 +8,8 @@
  * Removal goes through the same receipt → Trash → undo path as Cleanup: the
  * backend builds the plan and `execute_deletion` runs it behind the safety
  * guard and preflight re-stat. A running app needs an explicit "remove
- * anyway", which the backend checks too.
+ * anyway", which the backend checks too. A running app can be force quit
+ * (#113) after a confirmation: unsaved work in it is lost.
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
@@ -58,6 +59,8 @@ export default function AppsScreen() {
   });
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [removing, setRemoving] = useState<AppRowDto | null>(null);
+  const [quitting, setQuitting] = useState<AppRowDto | null>(null);
+  const [quitNote, setQuitNote] = useState<string | null>(null);
   const [plan, setPlan] = useState<DeletionPlanDto | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -113,6 +116,26 @@ export default function AppsScreen() {
     void load(false);
   };
 
+  const forceQuit = (row: AppRowDto) => {
+    setBusy(true);
+    setError(null);
+    api
+      .forceQuitApp(row.path)
+      .then(({ stopped, failed }) => {
+        setQuitting(null);
+        setQuitNote(
+          failed > 0
+            ? `${row.name}: ${formatCount(failed)} ${failed === 1 ? "process" : "processes"} could not be stopped (another user's, or protected).`
+            : stopped === 0
+              ? `${row.name} was no longer running.`
+              : `${row.name} was force quit.`,
+        );
+        return load(false);
+      })
+      .catch((cause: unknown) => setError(message(cause)))
+      .finally(() => setBusy(false));
+  };
+
   return (
     <div className="apps-screen">
       <div className="apps-toolbar">
@@ -145,6 +168,38 @@ export default function AppsScreen() {
           Removing an app needs a finished scan of the disk it is on. Start one
           from the Overview.
         </p>
+      ) : null}
+
+      {quitNote !== null ? (
+        <p className="screen-status" role="status">
+          {quitNote}
+        </p>
+      ) : null}
+
+      {quitting !== null ? (
+        <section className="apps-remove" aria-labelledby="apps-quit-title">
+          <h2 id="apps-quit-title">Force quit {quitting.name}?</h2>
+          <p>
+            Every process of the app stops at once. Unsaved work in it is lost.
+          </p>
+          <div className="apps-remove-actions">
+            <button
+              type="button"
+              className="button button-danger"
+              disabled={busy}
+              onClick={() => forceQuit(quitting)}
+            >
+              Force quit
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => setQuitting(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
       ) : null}
 
       {removing !== null ? (
@@ -251,7 +306,20 @@ export default function AppsScreen() {
                         {STATUS_LABELS[row.status]}
                       </span>
                     </td>
-                    <td>
+                    <td className="apps-actions">
+                      {row.running ? (
+                        <button
+                          type="button"
+                          className="link-button"
+                          disabled={busy}
+                          onClick={() => {
+                            setQuitNote(null);
+                            setQuitting(row);
+                          }}
+                        >
+                          Force quit…
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="link-button"
