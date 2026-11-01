@@ -1,0 +1,16 @@
+# One build folder for both workspaces (#177): the root one and src-tauri
+# (kept separate on purpose, see Cargo.toml) share crates and dependencies,
+# so they compile once. Relative to this file's parent: <repo>/target.
+[build]
+target-dir = "target"
+
+# Dev builds: enough debug info for backtraces with line numbers, none for
+# dependencies. Full debug info roughly tripled the folder.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
