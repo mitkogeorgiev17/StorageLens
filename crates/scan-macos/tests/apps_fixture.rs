@@ -140,6 +140,10 @@ fn inventory_matches_du_and_reads_evidence() {
         ],
         "ambiguous `Application Support/Foo` and the shared group are left out"
     );
+    assert!(
+        foo.satellites.iter().all(|s| s.strong),
+        "every one is named after the bundle id"
+    );
 
     // Footprint == du, per path and in total.
     assert_eq!(foo.bytes.get(), du_bytes(&foo.path));

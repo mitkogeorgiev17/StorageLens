@@ -357,6 +357,19 @@ pub struct CleanupProgressDto {
     pub total: u64,
 }
 
+/// Something an uninstalled app left behind (#120).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftoverDto {
+    pub path: String,
+    pub bytes: u64,
+    /// Matched on strong evidence (install folder, bundle id, publisher-and-app
+    /// folder); weak matches are offered unticked.
+    pub strong: bool,
+    /// `"install"` (the install folder or bundle) or `"data"`.
+    pub kind: String,
+}
+
 /// Something that starts at login (#114).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

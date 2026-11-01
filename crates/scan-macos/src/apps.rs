@@ -524,10 +524,15 @@ fn attach_satellites(apps: &mut [AppInfo], library: &Path) {
     }
 
     for (app, paths) in apps.iter_mut().zip(candidates) {
+        let id = app.id.to_lowercase();
         app.satellites = paths
             .into_iter()
             .filter(|path| claims.get(&key(path)) == Some(&1))
             .map(|path| Satellite {
+                // Named after the bundle id, not just the app's name.
+                strong: path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().to_lowercase().contains(&id)),
                 path,
                 bytes: Bytes::ZERO,
             })
