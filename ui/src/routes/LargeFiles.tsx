@@ -196,7 +196,7 @@ function LargeFilesView({ summary }: { readonly summary: ScanSummary }) {
           </select>
         </label>
         <span className="files-count" aria-live="polite">
-          {total === null ? "Loading…" : `${formatCount(total)} files`}
+          {total === null ? <span className="loading">Loading…</span> : `${formatCount(total)} files`}
         </span>
         <span className="files-actions">
           <button

@@ -286,7 +286,7 @@ export default function SearchBar() {
             ) : notice !== null ? (
               <span className="map-notice">{notice}</span>
             ) : loading ? (
-              "Searching…"
+              <span className="loading">Searching…</span>
             ) : items.length === 0 ? (
               `No names match “${query.trim()}”.`
             ) : results?.next !== null ? (

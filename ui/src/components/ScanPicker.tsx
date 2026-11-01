@@ -179,7 +179,7 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
             aria-describedby={error === null ? undefined : errorId}
             onChange={(event) => setPath(event.target.value)}
           />
-          <button type="submit" className="button" disabled={busy}>
+          <button type="submit" className="button" disabled={busy} aria-busy={busy && starting === path.trim()}>
             {busy && starting === path.trim() ? "Starting…" : "Scan"}
           </button>
         </div>

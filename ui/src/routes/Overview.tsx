@@ -387,7 +387,7 @@ function Wins({ rules }: { readonly rules: Rules }) {
       <h2 id="wins-title" className="card-title">
         Top cleanup wins
       </h2>
-      {rules.kind === "loading" ? <p className="card-note">Loading…</p> : null}
+      {rules.kind === "loading" ? <p className="card-note loading">Loading…</p> : null}
       {rules.kind === "unavailable" ? (
         <p className="card-note">
           Cleanup recommendations arrive with the cleanup rules.

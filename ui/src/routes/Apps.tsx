@@ -23,6 +23,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import Leftovers from "../components/Leftovers";
 import Receipt from "../components/Receipt";
+import Skeleton from "../components/Skeleton";
 import {
   api,
   type AppRowDto,
@@ -245,7 +246,7 @@ export default function AppsScreen() {
   return (
     <div className="apps-screen">
       <div className="apps-toolbar">
-        <span className="screen-status" aria-live="polite">
+        <span className={loading ? "screen-status loading" : "screen-status"} aria-live="polite">
           {loading
             ? "Reading installed apps and measuring their data… this takes a few seconds."
             : rows !== null
@@ -258,6 +259,7 @@ export default function AppsScreen() {
           type="button"
           className="button button-secondary"
           disabled={loading}
+          aria-busy={loading}
           onClick={() => void load(true)}
         >
           Refresh
@@ -269,6 +271,7 @@ export default function AppsScreen() {
           {error}
         </p>
       ) : null}
+      {loading && rows === null ? <Skeleton rows={8} /> : null}
       {scanId === null ? (
         <p className="map-notice">
           Removing an app needs a finished scan of the disk it is on. Start one
@@ -284,7 +287,7 @@ export default function AppsScreen() {
 
       {waiting !== null ? (
         <section className="apps-remove" aria-live="polite">
-          <h2>Waiting for {waiting.name}'s uninstaller…</h2>
+          <h2 className="loading">Waiting for {waiting.name}'s uninstaller…</h2>
           <p>
             Follow its steps. Once {waiting.name} is gone, what it left behind
             is listed here.
@@ -333,6 +336,7 @@ export default function AppsScreen() {
               type="button"
               className="button"
               disabled={busy}
+              aria-busy={busy}
               onClick={() => uninstall(uninstalling)}
             >
               {isStoreApp(uninstalling)
@@ -365,6 +369,7 @@ export default function AppsScreen() {
               type="button"
               className="button button-danger"
               disabled={busy}
+              aria-busy={busy}
               onClick={() => forceQuit(quitting)}
             >
               Force stop
@@ -680,6 +685,7 @@ function RemovePanel({
           type="button"
           className="button"
           disabled={busy || needsAccess || (row.running && !allowRunning)}
+          aria-busy={busy}
           onClick={() => onReview(includeData, allowRunning)}
         >
           Review and move to Trash…

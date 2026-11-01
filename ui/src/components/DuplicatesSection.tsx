@@ -139,7 +139,7 @@ export default function DuplicatesSection() {
         Duplicate files
       </h2>
       <div className="apps-toolbar">
-        <span className="screen-status" aria-live="polite">
+        <span className={searching ? "screen-status loading" : "screen-status"} aria-live="polite">
           {searching
             ? progress === null
               ? "Grouping files by size…"
