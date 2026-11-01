@@ -195,7 +195,7 @@ export interface LeftoverDto {
   /** `registry`: `path` is a key (#121, Windows). `helper` (a launchd job or
    * helper tool) and `receipt` (`path` is a package id) are macOS system
    * leftovers (#123). */
-  readonly kind: "install" | "data" | "registry" | "helper" | "receipt";
+  readonly kind: "install" | "data" | "registry" | "helper" | "receipt" | "task" | "service";
   /** `false`: a machine-wide key and StorageLens is not elevated. */
   readonly canRemove: boolean;
 }
