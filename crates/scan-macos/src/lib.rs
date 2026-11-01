@@ -39,6 +39,8 @@ mod stamp;
 #[cfg(target_os = "macos")]
 pub mod startup;
 #[cfg(target_os = "macos")]
+pub mod system_leftovers;
+#[cfg(target_os = "macos")]
 pub mod volumes;
 #[cfg(target_os = "macos")]
 pub mod walk;

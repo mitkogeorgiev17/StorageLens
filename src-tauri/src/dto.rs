@@ -373,6 +373,16 @@ pub struct LeftoverDto {
     pub can_remove: bool,
 }
 
+/// What removing system leftovers did (#123, macOS).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemRemovalDto {
+    /// Files moved and receipts forgotten.
+    pub removed: usize,
+    /// The folder in the Trash the files were moved into.
+    pub trash_dir: String,
+}
+
 /// A registry key deleted after its backup was written (#121).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

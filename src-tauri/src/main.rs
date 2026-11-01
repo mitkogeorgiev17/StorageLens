@@ -55,6 +55,7 @@ fn main() {
             ipc::preview_leftover_removal,
             ipc::remove_registry_leftovers,
             ipc::restore_registry_backups,
+            ipc::remove_system_leftovers,
             ipc::list_startup,
             ipc::set_startup,
             ipc::open_startup_settings,
