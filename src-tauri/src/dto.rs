@@ -414,6 +414,8 @@ pub struct AppRowDto {
     pub running: bool,
     pub autostart: bool,
     pub default_handler: bool,
+    /// The app has its own uninstaller (#115); run it with `uninstall_app`.
+    pub has_uninstaller: bool,
     pub satellites: Vec<SatelliteDto>,
 }
 

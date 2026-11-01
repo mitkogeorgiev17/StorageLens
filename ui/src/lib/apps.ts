@@ -88,6 +88,11 @@ export function removalWarnings(row: AppRowDto): string[] {
       `${row.name} has a login item, launch agent or startup entry. Remove that first, or it may fail at the next login.`,
     );
   }
+  if (row.hasUninstaller) {
+    warnings.push(
+      `${row.name} comes with its own uninstaller. Prefer "Uninstall…": it also removes helpers and background items that the Trash leaves behind.`,
+    );
+  }
   if (row.defaultHandler) {
     warnings.push(`${row.name} is the default app for some files or links.`);
   }

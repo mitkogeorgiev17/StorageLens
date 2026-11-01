@@ -49,6 +49,7 @@ fn main() {
             ipc::undo_deletion,
             ipc::list_apps,
             ipc::force_quit_app,
+            ipc::uninstall_app,
             ipc::list_startup,
             ipc::set_startup,
             ipc::open_startup_settings,

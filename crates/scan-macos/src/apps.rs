@@ -169,6 +169,7 @@ fn describe(path: &Path) -> AppInfo {
         autostart: false,
         default_handler: false,
         satellites: Vec::new(),
+        uninstaller: find_uninstaller(path).map(|path| path.display().to_string()),
     }
 }
 
@@ -306,6 +307,52 @@ fn signature(app: &Path) -> Signature {
         Signature::Unsigned
     } else {
         Signature::Invalid
+    }
+}
+
+/// A vendor uninstaller shipped with `app` (#115): an `Uninstall….app` in the
+/// app's own folder (`/Applications/Foo/Uninstall Foo.app`, never directly in
+/// an Applications folder, where it would belong to no app in particular) or
+/// in its `Contents/Resources`.
+fn find_uninstaller(app: &Path) -> Option<PathBuf> {
+    let folder = app
+        .parent()
+        .filter(|dir| dir.file_name().is_some_and(|name| name != "Applications"));
+    folder
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain([app.join("Contents/Resources")])
+        .find_map(|dir| uninstaller_in(&dir, app))
+}
+
+fn uninstaller_in(dir: &Path, app: &Path) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = list_dir(dir)
+        .into_iter()
+        .filter(|(path, is_dir)| {
+            *is_dir
+                && path.as_path() != app
+                && is_bundle(path)
+                && path
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.to_lowercase().contains("uninstall"))
+        })
+        .map(|(path, _)| path)
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
+/// Open the vendor uninstaller at `path` (#115).
+pub fn run_uninstaller(path: &str) -> std::result::Result<(), String> {
+    let status = Command::new("/usr/bin/open")
+        .arg(path)
+        .status()
+        .map_err(|error| format!("could not open the uninstaller: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("could not open the uninstaller ({status})"))
     }
 }
 
@@ -638,5 +685,30 @@ mod tests {
         let mut found: Vec<_> = handlers.into_iter().collect();
         found.sort();
         assert_eq!(found, ["com.foo.viewer", "org.mozilla.firefox"]);
+    }
+
+    #[test]
+    fn vendor_uninstallers_beside_or_inside_the_app() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let apps = root.path().join("Applications");
+        let suite = apps.join("Foo");
+        let foo = suite.join("Foo.app");
+        fs::create_dir_all(foo.join("Contents/Resources")).expect("foo");
+        fs::create_dir_all(suite.join("Uninstall Foo.app")).expect("uninstaller");
+        assert_eq!(
+            find_uninstaller(&foo),
+            Some(suite.join("Uninstall Foo.app"))
+        );
+
+        // Directly in Applications: someone else's uninstaller, not this app's.
+        let bar = apps.join("Bar.app");
+        fs::create_dir_all(bar.join("Contents/Resources")).expect("bar");
+        fs::create_dir_all(apps.join("Uninstall Baz.app")).expect("baz");
+        assert_eq!(find_uninstaller(&bar), None);
+        fs::create_dir_all(bar.join("Contents/Resources/BarUninstaller.app")).expect("inner");
+        assert_eq!(
+            find_uninstaller(&bar),
+            Some(bar.join("Contents/Resources/BarUninstaller.app"))
+        );
     }
 }

@@ -332,6 +332,8 @@ export interface AppRowDto {
   readonly running: boolean;
   readonly autostart: boolean;
   readonly defaultHandler: boolean;
+  /** The app has its own uninstaller (#115); see {@link api.uninstallApp}. */
+  readonly hasUninstaller: boolean;
   readonly satellites: readonly SatelliteDto[];
 }
 
@@ -499,6 +501,11 @@ export const api = {
     call<readonly StartupItemDto[]>("set_startup", { id, enabled }),
   /** The system's own startup settings, for items this app cannot switch. */
   openStartupSettings: () => call<void>("open_startup_settings"),
+  /**
+   * Start a listed app's own uninstaller (#115): on Windows what "Add or
+   * remove apps" runs, on macOS a vendor uninstaller. Resolves once started.
+   */
+  uninstallApp: (id: string) => call<void>("uninstall_app", { id }),
   /** Force quit a listed app's processes (#113); unsaved work is lost. */
   forceQuitApp: (path: string) => call<QuitDto>("force_quit_app", { path }),
   /**
