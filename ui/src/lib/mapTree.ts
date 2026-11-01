@@ -21,6 +21,83 @@ export interface IndexedNode {
 
 export type TreeIndex = ReadonlyMap<number, IndexedNode>;
 
+/** Levels drawn below the folder on screen (#96): its children and theirs. */
+export const DRAWN_LEVELS = 2;
+
+/**
+ * An item smaller than this share of the folder on screen is folded into its
+ * parent's "smaller items" tile: at a typical 1000 × 600 map that is about
+ * 2,400 px², room for a name and a size.
+ */
+export const MIN_SHARE = 0.004;
+
+/** At most this many tiles per folder, per level (children, grandchildren). */
+export const MAX_TILES: readonly number[] = [40, 12];
+
+/** Ids of "smaller items" tiles: far below any group id (`-(index + 1)`). */
+const SMALLER_BASE = -(2 ** 40);
+
+/** Whether `id` is a "smaller items" tile rather than an entry or a group. */
+export function isSmallerItems(id: number): boolean {
+  return id <= SMALLER_BASE;
+}
+
+/**
+ * What the Map draws for `root` (#96): {@link DRAWN_LEVELS} levels, with every
+ * item under {@link MIN_SHARE} of the root — and the backend's own remainder —
+ * folded into one "N smaller items" leaf per folder. Bytes are kept: each
+ * folder's children still add up to its size. Folders at the last level keep
+ * `hasChildren`, so a click still opens them.
+ */
+export function simplifyTree(root: TreeNodeDto): TreeNodeDto {
+  const threshold = root.sizeAlloc * MIN_SHARE;
+  let nextId = SMALLER_BASE;
+  const visit = (node: TreeNodeDto, level: number): TreeNodeDto => {
+    if (node.children === null) {
+      return node;
+    }
+    if (level >= DRAWN_LEVELS) {
+      return { ...node, children: null, remainingCount: 0, remainingBytes: 0 };
+    }
+    const sorted = [...node.children].sort((left, right) => right.sizeAlloc - left.sizeAlloc);
+    const limit = MAX_TILES[level] ?? 0;
+    const kept: TreeNodeDto[] = [];
+    let foldedCount = node.remainingCount;
+    let foldedBytes = node.remainingBytes;
+    let foldedFiles = 0;
+    for (const child of sorted) {
+      if (kept.length < limit && child.sizeAlloc >= threshold) {
+        kept.push(visit(child, level + 1));
+      } else {
+        foldedCount += 1;
+        foldedBytes += child.sizeAlloc;
+        foldedFiles += child.fileCount;
+      }
+    }
+    // A folder whose every item is small reads better as one solid tile.
+    if (kept.length === 0 && level > 0) {
+      return { ...node, children: null, remainingCount: 0, remainingBytes: 0 };
+    }
+    if (foldedCount > 0 && foldedBytes > 0) {
+      nextId -= 1;
+      kept.push({
+        id: nextId,
+        name: `${foldedCount.toLocaleString()} smaller ${foldedCount === 1 ? "item" : "items"}`,
+        kind: "Other",
+        category: "other",
+        sizeAlloc: foldedBytes,
+        fileCount: foldedFiles,
+        hasChildren: false,
+        children: null,
+        remainingCount: 0,
+        remainingBytes: 0,
+      });
+    }
+    return { ...node, children: kept, remainingCount: 0, remainingBytes: 0 };
+  };
+  return visit(root, 0);
+}
+
 /** The backend tree as treemap input. Unexpanded directories become leaves. */
 export function toTreemapInput(node: TreeNodeDto): TreemapInput {
   return {

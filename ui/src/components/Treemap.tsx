@@ -173,13 +173,33 @@ function draw(
     context.fillStyle = isLeaf ? colorOf(layout, index) : theme.directory;
     context.fillRect(rect.x, rect.y, rect.width, rect.height);
 
-    // Directories label their header strip; leaves label their centre line.
+    // Directories label their header strip with name and size; leaves put the
+    // name on the first line and the size on the second when there is room.
     if (rect.height >= LABEL_FONT_SIZE + 4) {
-      const text = fitLabel(layout.names[index] ?? "", rect.width, LABEL_FONT_SIZE);
-      if (text !== null) {
-        context.fillStyle = isLeaf ? theme.leafText : theme.directoryText;
-        const y = isLeaf ? rect.y + Math.min(rect.height / 2, 10) : rect.y + 8;
-        context.fillText(text, rect.x + 3, y, rect.width - 6);
+      const name = layout.names[index] ?? "";
+      const size = formatBytes(layout.value[index] ?? 0);
+      context.fillStyle = isLeaf ? theme.leafText : theme.directoryText;
+      if (isLeaf) {
+        const text = fitLabel(name, rect.width, LABEL_FONT_SIZE);
+        if (text !== null) {
+          context.fillText(text, rect.x + 4, rect.y + 10, rect.width - 8);
+          if (rect.height >= 2 * LABEL_FONT_SIZE + 10) {
+            const sizeText = fitLabel(size, rect.width, LABEL_FONT_SIZE);
+            if (sizeText !== null) {
+              context.fillText(sizeText, rect.x + 4, rect.y + 10 + LABEL_FONT_SIZE + 3, rect.width - 8);
+            }
+          }
+        }
+      } else {
+        // The size only when it fits whole: a truncated size would mislead.
+        const full = `${name} · ${size}`;
+        const text =
+          fitLabel(full, rect.width, LABEL_FONT_SIZE) === full
+            ? full
+            : fitLabel(name, rect.width, LABEL_FONT_SIZE);
+        if (text !== null) {
+          context.fillText(text, rect.x + 4, rect.y + 8, rect.width - 8);
+        }
       }
     }
   }
