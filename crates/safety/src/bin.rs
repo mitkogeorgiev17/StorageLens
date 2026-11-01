@@ -76,6 +76,12 @@ pub use macos::{DeviceOf, SystemBin};
 #[cfg(windows)]
 pub use windows::SystemBin;
 
+/// A Trash failure that Finder can get past: a permission refusal.
+pub fn needs_finder(error: &str) -> bool {
+    let error = error.to_lowercase();
+    error.contains("permission") || error.contains("not permitted")
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use std::collections::BTreeSet;
@@ -161,11 +167,22 @@ mod macos {
         #[cfg_attr(coverage_nightly, coverage(off))]
         fn trash(&self, path: &Path) -> io::Result<()> {
             use trash::macos::{DeleteMethod, TrashContextExtMacos};
-            let mut context = trash::TrashContext::new();
-            context.set_delete_method(DeleteMethod::NsFileManager);
-            context
-                .delete(path)
-                .map_err(|error| io::Error::other(error.to_string()))
+            let delete = |method| {
+                let mut context = trash::TrashContext::new();
+                context.set_delete_method(method);
+                context
+                    .delete(path)
+                    .map_err(|error| io::Error::other(error.to_string()))
+            };
+            match delete(DeleteMethod::NsFileManager) {
+                // Root-owned App Store apps and other apps' sandbox
+                // containers: Finder can move them, asking for a password
+                // where needed, and keeps Put Back.
+                Err(error) if super::needs_finder(&error.to_string()) => {
+                    delete(DeleteMethod::Finder)
+                }
+                other => other,
+            }
         }
 
         fn locate(&self, wanted: &[Wanted<'_>]) -> io::Result<Vec<Option<String>>> {

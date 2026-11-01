@@ -139,3 +139,13 @@ fn the_volume_trash_is_at_the_top_of_the_item_volume() {
     // The real constructor builds the same thing, looking volumes up itself.
     assert!(format!("{:?}", SystemBin::new(&outer)).contains(&outer.display().to_string()));
 }
+
+#[test]
+fn only_permission_refusals_are_retried_through_finder() {
+    use storagelens_safety::bin::needs_finder;
+    assert!(needs_finder(
+        "`trashItemAtURL` failed: “Microsoft Word” couldn’t be moved to the trash because you don’t have permission to access it."
+    ));
+    assert!(needs_finder("Operation not permitted (os error 1)"));
+    assert!(!needs_finder("No such file or directory (os error 2)"));
+}
