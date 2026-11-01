@@ -26,8 +26,8 @@ not for hypothetical other users.
 **v1 is feature-complete** (2026-11-01): M0–M6 are merged. Both scanners, the
 catalog, the Overview, Map, Large Files, Apps, Startup and Cleanup (with duplicates)
 screens, the rules engine, and the safety layer (guards, Trash, undo) exist and pass
-the local suite on macOS. The **History** screen is still a placeholder with no
-issue filed; undo is offered on the result panel right after each move.
+the local suite on macOS. There is no History screen (dropped); undo is offered
+on the result panel right after each move.
 
 **Work is tracked as GitHub issues, not as tasks in this file.** One issue is open:
 

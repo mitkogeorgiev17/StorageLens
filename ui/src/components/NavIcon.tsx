@@ -19,8 +19,6 @@ const PATHS: Readonly<Record<RouteId, readonly string[]>> = {
   startup: ["M12 3v8", "M7 6.3a7.5 7.5 0 1 0 10 0"],
   // A sparkle: safe to clean.
   cleanup: ["M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z", "M19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7z"],
-  // A clock turning back.
-  history: ["M3 12a9 9 0 1 0 3-6.7", "M3 4v5h5", "M12 7v5l3 2"],
 };
 
 export default function NavIcon({ id }: { readonly id: RouteId }) {

@@ -78,12 +78,6 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
     purpose: "Caches, leftovers and duplicate files to remove, with Trash and undo.",
     empty: "Cleanup suggestions appear after a scan.",
   },
-  history: {
-    label: "History",
-    title: "History",
-    purpose: "Past scans and everything moved to the Trash, with undo.",
-    empty: "No history yet. Finished scans and cleanups will be listed here.",
-  },
 };
 
 /**

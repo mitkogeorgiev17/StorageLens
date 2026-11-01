@@ -30,7 +30,6 @@ export const ROUTE_IDS = [
   "apps",
   "startup",
   "cleanup",
-  "history",
 ] as const;
 
 export type RouteId = (typeof ROUTE_IDS)[number];

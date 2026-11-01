@@ -156,7 +156,7 @@ slog, the core can be ported to Go without touching the schema, the rules, or th
    ├─ index.html
    └─ src/
       ├─ main.tsx
-      ├─ routes/               Overview, Map, LargeFiles, Apps, Cleanup (+ duplicates), History
+      ├─ routes/               Overview, Map, LargeFiles, Apps, Cleanup (+ duplicates)
       ├─ components/           Treemap, Sunburst, Gauge, FileTable, RuleCard, RiskBadge
       └─ lib/                  api.ts, format.ts, colors.ts, treemap.ts
 ```
@@ -1214,7 +1214,7 @@ Not SVG — 1,500 rects in the DOM will crawl.
 4. **Apps** — name, size, associated data, last used, remove
 5. **Cleanup** — rule cards grouped by kind, checkboxes, running total, Trash button
 6. **Duplicates** — hash groups, keep-one picker; a section of Cleanup (#112)
-7. **History** — past cleanups, undo, exported manifests
+7. ~~**History**~~ — dropped; undo lives on the result panel
 
 ### Table performance
 
