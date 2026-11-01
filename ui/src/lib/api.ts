@@ -599,6 +599,10 @@ export const api = {
   /** macOS: one harmless Apple Event to Finder, so the Automation prompt
    *  appears at launch. `true` when allowed; always `true` elsewhere. */
   requestFinderAccess: () => call<boolean>("request_finder_access"),
+  /** macOS App Management: may StorageLens modify apps? `null` = unknown. */
+  checkAppManagement: () => call<boolean | null>("check_app_management"),
+  openPrivacyPane: (pane: "AllFiles" | "AppBundles" | "Automation") =>
+    call<void>("open_privacy_pane", { pane }),
 } as const;
 
 // --- Events ------------------------------------------------------------------------

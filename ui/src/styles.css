@@ -2003,3 +2003,64 @@ body {
   color: var(--danger);
   font-size: var(--text-sm);
 }
+
+/* Launch-time permissions (#155): a modal over the whole window. */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgb(0 0 0 / 40%);
+}
+
+.permissions h2 {
+  margin-top: var(--space-2);
+}
+
+.permissions-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.permissions-list li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.permissions-text {
+  display: grid;
+  gap: 2px;
+}
+
+.permissions-text span {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.permissions-state {
+  min-width: 64px;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--text-muted);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-align: center;
+}
+
+.permissions-state[data-ok="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.permissions-state[data-ok="false"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
