@@ -355,7 +355,7 @@ export default function AppsScreen() {
 
       {quitting !== null ? (
         <section className="apps-remove" aria-labelledby="apps-quit-title">
-          <h2 id="apps-quit-title">Force quit {quitting.name}?</h2>
+          <h2 id="apps-quit-title">Force stop {quitting.name}?</h2>
           <p>
             Every process of the app stops at once. Unsaved work in it is lost.
           </p>
@@ -366,7 +366,7 @@ export default function AppsScreen() {
               disabled={busy}
               onClick={() => forceQuit(quitting)}
             >
-              Force quit
+              Force stop
             </button>
             <button
               type="button"
@@ -490,27 +490,27 @@ export default function AppsScreen() {
                       {row.running ? (
                         <button
                           type="button"
-                          className="link-button"
+                          className="pill-action pill-warn"
                           disabled={busy}
                           onClick={() => {
                             setQuitNote(null);
                             setQuitting(row);
                           }}
                         >
-                          Force quit…
+                          Force Stop
                         </button>
                       ) : null}
                       {row.hasUninstaller ? (
                         <button
                           type="button"
-                          className="link-button"
+                          className="pill-action pill-accent"
                           disabled={busy}
                           onClick={() => {
                             setQuitNote(null);
                             setUninstalling(row);
                           }}
                         >
-                          Uninstall…
+                          {IS_MAC ? "Run uninstaller" : "Uninstall"}
                         </button>
                       ) : null}
                       {/* On Windows the registered uninstaller is the way;
@@ -518,7 +518,7 @@ export default function AppsScreen() {
                       {IS_MAC || !row.hasUninstaller ? (
                         <button
                           type="button"
-                          className="link-button"
+                          className="pill-action pill-danger"
                           disabled={!removable || busy}
                           title={
                             row.path === ""
@@ -531,7 +531,7 @@ export default function AppsScreen() {
                           }
                           onClick={() => setRemoving(row)}
                         >
-                          Remove…
+                          Uninstall
                         </button>
                       ) : null}
                     </td>

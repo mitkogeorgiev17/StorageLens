@@ -90,7 +90,7 @@ export function removalWarnings(row: AppRowDto): string[] {
   }
   if (row.hasUninstaller) {
     warnings.push(
-      `${row.name} comes with its own uninstaller. Prefer "Uninstall…": it also removes helpers and background items that the Trash leaves behind.`,
+      `${row.name} comes with its own uninstaller. Prefer "Run uninstaller": it also removes helpers and background items that the Trash leaves behind.`,
     );
   }
   if (row.defaultHandler) {
