@@ -208,7 +208,7 @@ fn plist_string(plist: &Path, key: &str) -> Option<String> {
 
 /// A whole plist as JSON. Fails on plists holding dates or data, which the
 /// launchd and LaunchServices plists read here do not.
-fn plist_json(plist: &Path) -> Option<Value> {
+pub(crate) fn plist_json(plist: &Path) -> Option<Value> {
     let json = tool(
         "/usr/bin/plutil",
         &[

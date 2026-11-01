@@ -500,6 +500,25 @@ pub struct Satellite {
     pub bytes: Bytes,
 }
 
+/// Something that starts at login (#114): a launchd job on macOS, a `Run`
+/// value or Startup-folder shortcut on Windows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartupItem {
+    /// Stable id the platform toggles it by.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// What runs: a command line, program path or shortcut.
+    pub command: String,
+    /// Where it is registered, for display.
+    pub source: String,
+    /// It will start at the next login.
+    pub enabled: bool,
+    /// This app can switch it; `false` when that needs admin rights or the
+    /// system's own settings.
+    pub can_toggle: bool,
+}
+
 /// An installed application: its footprint and the raw usage evidence.
 ///
 /// Scanners fill the evidence and leave `status` as [`AppStatus::Unknown`];

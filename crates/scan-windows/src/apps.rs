@@ -497,7 +497,7 @@ fn satellite_candidates(
 }
 
 #[cfg(windows)]
-mod sys {
+pub(crate) mod sys {
     //! The Windows reads behind [`inventory`]. Each returns empty on failure.
 
     use std::fs;
@@ -512,9 +512,10 @@ mod sys {
     };
     use windows::Win32::System::ProcessStatus::EnumProcesses;
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegGetValueW, RegOpenKeyExW, HKEY,
-        HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, REG_ROUTINE_FLAGS,
-        RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+        RegCloseKey, RegCreateKeyExW, RegEnumKeyExW, RegEnumValueW, RegGetValueW, RegOpenKeyExW,
+        RegSetValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
+        KEY_SET_VALUE, REG_BINARY, REG_OPTION_NON_VOLATILE, REG_ROUTINE_FLAGS, RRF_RT_REG_DWORD,
+        RRF_RT_REG_SZ,
     };
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_ACCESS_RIGHTS,
@@ -561,12 +562,12 @@ mod sys {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    fn env(name: &str) -> Option<String> {
+    pub(crate) fn env(name: &str) -> Option<String> {
         std::env::var(name).ok().filter(|value| !value.is_empty())
     }
 
     /// An opened registry key, closed on drop.
-    struct Key(HKEY);
+    pub(crate) struct Key(HKEY);
 
     impl Drop for Key {
         fn drop(&mut self) {
@@ -576,13 +577,44 @@ mod sys {
     }
 
     impl Key {
-        fn open(parent: HKEY, path: &str) -> Option<Self> {
+        pub(crate) fn open(parent: HKEY, path: &str) -> Option<Self> {
             let path = wide(path);
             let mut key = HKEY::default();
             // SAFETY: `path` is NUL-terminated and `key` is writable.
             let status =
                 unsafe { RegOpenKeyExW(parent, PCWSTR(path.as_ptr()), None, KEY_READ, &mut key) };
             (status == ERROR_SUCCESS).then_some(Self(key))
+        }
+
+        /// Open `path` for writing values, creating it if missing.
+        pub(crate) fn create(parent: HKEY, path: &str) -> Option<Self> {
+            let path = wide(path);
+            let mut key = HKEY::default();
+            // SAFETY: `path` is NUL-terminated and `key` is writable.
+            let status = unsafe {
+                RegCreateKeyExW(
+                    parent,
+                    PCWSTR(path.as_ptr()),
+                    None,
+                    PCWSTR::null(),
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_SET_VALUE,
+                    None,
+                    &mut key,
+                    None,
+                )
+            };
+            (status == ERROR_SUCCESS).then_some(Self(key))
+        }
+
+        /// Write a `REG_BINARY` value.
+        pub(crate) fn set_binary(&self, name: &str, data: &[u8]) -> bool {
+            let name = wide(name);
+            // SAFETY: the key is open for writing; `name` is NUL-terminated.
+            let status = unsafe {
+                RegSetValueExW(self.0, PCWSTR(name.as_ptr()), None, REG_BINARY, Some(data))
+            };
+            status == ERROR_SUCCESS
         }
 
         fn subkeys(&self) -> Vec<String> {
@@ -615,7 +647,7 @@ mod sys {
         }
 
         /// `(name, data)` of every value. Values over 8 KiB are skipped.
-        fn values(&self) -> Vec<(String, Vec<u8>)> {
+        pub(crate) fn values(&self) -> Vec<(String, Vec<u8>)> {
             let mut out = Vec::new();
             let mut name = vec![0u16; 2048];
             let mut data = vec![0u8; 8192];
@@ -652,7 +684,7 @@ mod sys {
         }
 
         /// A string value (`REG_EXPAND_SZ` expanded). `""` is the default value.
-        fn string(&self, value: &str) -> Option<String> {
+        pub(crate) fn string(&self, value: &str) -> Option<String> {
             let value = wide(value);
             let mut bytes = 0u32;
             // SAFETY: size query: no buffer, `bytes` receives the size.
