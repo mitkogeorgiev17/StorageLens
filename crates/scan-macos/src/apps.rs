@@ -526,14 +526,18 @@ fn attach_satellites(apps: &mut [AppInfo], library: &Path) {
 
     for (app, paths) in apps.iter_mut().zip(candidates) {
         let id = app.id.to_lowercase();
+        // Named after the bundle id, not just the app's name. A container's
+        // `Data` is named by its parent.
+        let named = |path: &Path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().to_lowercase().contains(&id))
+        };
         app.satellites = paths
             .into_iter()
             .filter(|path| claims.get(&key(path)) == Some(&1))
             .map(|path| Satellite {
-                // Named after the bundle id, not just the app's name.
-                strong: path
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().to_lowercase().contains(&id)),
+                strong: named(&path)
+                    || (path.ends_with("Data") && path.parent().is_some_and(named)),
                 path,
                 bytes: Bytes::ZERO,
             })
@@ -547,7 +551,9 @@ fn satellite_paths(library: &Path, id: &str, name: &str, groups: &[PathBuf]) -> 
     let mut paths = vec![
         library.join("Application Support").join(id),
         library.join("Caches").join(id),
-        library.join("Containers").join(id),
+        // macOS locks the container folder itself (it cannot be renamed or
+        // deleted, even by Finder); its `Data` holds the files and can go.
+        library.join("Containers").join(id).join("Data"),
         library.join("Preferences").join(format!("{id}.plist")),
         library
             .join("Saved Application State")

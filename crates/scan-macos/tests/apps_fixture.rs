@@ -79,6 +79,10 @@ fn inventory_matches_du_and_reads_evidence() {
     );
     write(&library.join("Group Containers/TEAM1.office/x"), 5_000);
     write(&library.join("Containers/com.apple.mail/x"), 5_000);
+    write(
+        &library.join("Containers/com.example.foo/Data/Library/x"),
+        7_000,
+    );
 
     fs::create_dir_all(&launchd).unwrap();
     fs::write(
@@ -135,6 +139,7 @@ fn inventory_matches_du_and_reads_evidence() {
         [
             Path::new("Application Support/com.example.foo"),
             Path::new("Caches/com.example.foo"),
+            Path::new("Containers/com.example.foo/Data"),
             Path::new("Group Containers/TEAM1.com.example.foo"),
             Path::new("Preferences/com.example.foo.plist"),
         ],
