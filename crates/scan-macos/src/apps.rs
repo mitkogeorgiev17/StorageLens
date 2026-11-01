@@ -170,6 +170,7 @@ fn describe(path: &Path) -> AppInfo {
         default_handler: false,
         satellites: Vec::new(),
         uninstaller: find_uninstaller(path).map(|path| path.display().to_string()),
+        registry_keys: Vec::new(),
     }
 }
 

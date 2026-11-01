@@ -505,6 +505,15 @@ pub struct Satellite {
     pub strong: bool,
 }
 
+/// A registry key an uninstalled app may leave behind (#121). Windows only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryKey {
+    /// Full path, `HKEY_CURRENT_USER\Software\Acme\Foo`.
+    pub path: String,
+    /// `<Publisher>\<App>`; `false` for a bare `<App>` key.
+    pub strong: bool,
+}
+
 /// Something that starts at login (#114): a launchd job on macOS, a `Run`
 /// value or Startup-folder shortcut on Windows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,6 +571,9 @@ pub struct AppInfo {
     /// remove apps" runs, on macOS a vendor `Uninstall….app` shipped with it.
     #[serde(default)]
     pub uninstaller: Option<String>,
+    /// Registry keys to check for after an uninstall (#121); empty on macOS.
+    #[serde(default)]
+    pub registry_keys: Vec<RegistryKey>,
 }
 
 #[cfg(test)]

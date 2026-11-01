@@ -457,6 +457,10 @@ pub fn assemble(
                         .any(|name| name.strip_suffix(".exe") == Some(link.as_str()))
             };
 
+            let registry_keys = crate::leftover_keys::candidates(
+                &[entry.name.as_str(), file_name(&shown)],
+                entry.publisher.as_deref(),
+            );
             AppInfo {
                 id: entry.key.clone(),
                 name: entry.name.trim().to_owned(),
@@ -472,6 +476,7 @@ pub fn assemble(
                     || evidence.startup_links.iter().any(link_named),
                 default_handler: handlers.iter().any(in_dir),
                 uninstaller: uninstall_command(entry),
+                registry_keys,
                 system: dir
                     .as_deref()
                     .is_some_and(|dir| !roots.windows.is_empty() && under(dir, &roots.windows)),

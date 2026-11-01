@@ -366,8 +366,31 @@ pub struct LeftoverDto {
     /// Matched on strong evidence (install folder, bundle id, publisher-and-app
     /// folder); weak matches are offered unticked.
     pub strong: bool,
-    /// `"install"` (the install folder or bundle) or `"data"`.
+    /// `"install"` (the install folder or bundle), `"data"`, or `"registry"`
+    /// (#121; `path` is then a key).
     pub kind: String,
+    /// `false`: a machine-wide registry key and this process is not elevated.
+    pub can_remove: bool,
+}
+
+/// A registry key deleted after its backup was written (#121).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedKeyDto {
+    pub path: String,
+    /// The `.reg` file it was exported to; `restore_registry_backups` takes it.
+    pub backup: String,
+}
+
+/// What a registry cleanup did (#121).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryRemovalDto {
+    pub removed: Vec<RemovedKeyDto>,
+    /// `(key, why)` for each key left in place.
+    pub failed: Vec<(String, String)>,
+    /// Folder holding the backups.
+    pub backup_dir: String,
 }
 
 /// Something that starts at login (#114).

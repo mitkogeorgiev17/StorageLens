@@ -84,6 +84,7 @@ mod tests {
             system: false,
             satellites: Vec::new(),
             uninstaller: None,
+            registry_keys: Vec::new(),
         }
     }
 
