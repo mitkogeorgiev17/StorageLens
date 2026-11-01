@@ -170,7 +170,9 @@ function Reclaim({ rules }: { readonly rules: Rules }) {
   return (
     <section className="card reclaim" aria-labelledby="reclaim-title">
       <h2 id="reclaim-title" className="reclaim-headline">
-        You can safely free ~{formatBytes(reclaim.safe)}
+        {reclaim.safe > 0
+          ? `You can safely free ~${formatBytes(reclaim.safe)}`
+          : "Nothing is safe to remove automatically"}
       </h2>
       <dl className="reclaim-split">
         <div>
@@ -181,7 +183,19 @@ function Reclaim({ rules }: { readonly rules: Rules }) {
           <dt>Needs review</dt>
           <dd>{formatBytes(reclaim.review)}</dd>
         </div>
+        {reclaim.manual > 0 ? (
+          <div>
+            <dt>Free it yourself</dt>
+            <dd>{formatBytes(reclaim.manual)}</dd>
+          </div>
+        ) : null}
       </dl>
+      {reclaim.manual > 0 ? (
+        <p className="card-note">
+          {reclaim.manualTitles.join(", ")}: StorageLens shows how to free
+          these on the Cleanup screen, but does not remove them itself.
+        </p>
+      ) : null}
     </section>
   );
 }
