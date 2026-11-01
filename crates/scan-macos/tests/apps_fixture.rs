@@ -102,6 +102,24 @@ fn inventory_matches_du_and_reads_evidence() {
         &library.join("LaunchAgents/com.example.foo.updater.plist"),
         80,
     );
+    // The per-user cache folder in /var/folders, WebKit's per-app copy too.
+    write(&root.join("var/C/com.example.foo/x"), 90);
+    write(
+        &root.join("var/C/com.apple.WebKit.Networking+com.example.foo/x"),
+        90,
+    );
+    // Named after the app: Bar's home dot folder and crash report are its;
+    // `~/.foo` is claimed by both Foos, so by neither.
+    write(&root.join(".bar/config"), 10);
+    write(&root.join(".foo/config"), 10);
+    write(
+        &library.join("Logs/DiagnosticReports/Bar-2026-01-01-120000.ips"),
+        10,
+    );
+    write(
+        &library.join("Logs/DiagnosticReports/Barista-2026-01-01.ips"),
+        10,
+    );
 
     fs::create_dir_all(&launchd).unwrap();
     fs::write(
@@ -126,6 +144,7 @@ fn inventory_matches_du_and_reads_evidence() {
         app_dirs: vec![apps_dir.clone()],
         library: library.clone(),
         launchd_dirs: vec![launchd],
+        user_dirs: vec![root.join("var/C")],
     });
 
     let mut ids: Vec<&str> = apps.iter().map(|app| app.id.as_str()).collect();
@@ -150,31 +169,53 @@ fn inventory_matches_du_and_reads_evidence() {
     let mut satellites: Vec<_> = foo
         .satellites
         .iter()
-        .map(|s| s.path.strip_prefix(&library).unwrap().to_path_buf())
+        .map(|s| s.path.strip_prefix(&root).unwrap().to_path_buf())
         .collect();
     satellites.sort();
     assert_eq!(
         satellites,
         [
-            Path::new("Application Scripts/com.example.foo"),
-            Path::new("Application Support/com.example.foo"),
-            Path::new("Caches/com.example.foo"),
-            Path::new("Containers/com.example.foo"),
-            Path::new("Containers/com.example.foo.widget"),
-            Path::new("Cookies/com.example.foo.binarycookies"),
-            Path::new("Group Containers/TEAM1.com.example.foo"),
-            Path::new("HTTPStorages/com.example.foo"),
-            Path::new("LaunchAgents/com.example.foo.updater.plist"),
-            Path::new("Logs/com.example.foo"),
-            Path::new("Preferences/ByHost/com.example.foo.ABC-123.plist"),
-            Path::new("Preferences/com.example.foo.plist"),
-            Path::new("WebKit/com.example.foo"),
+            Path::new("Library/Application Scripts/com.example.foo"),
+            Path::new("Library/Application Support/com.example.foo"),
+            Path::new("Library/Caches/com.example.foo"),
+            Path::new("Library/Containers/com.example.foo"),
+            Path::new("Library/Containers/com.example.foo.widget"),
+            Path::new("Library/Cookies/com.example.foo.binarycookies"),
+            Path::new("Library/Group Containers/TEAM1.com.example.foo"),
+            Path::new("Library/HTTPStorages/com.example.foo"),
+            Path::new("Library/LaunchAgents/com.example.foo.updater.plist"),
+            Path::new("Library/Logs/com.example.foo"),
+            Path::new("Library/Preferences/ByHost/com.example.foo.ABC-123.plist"),
+            Path::new("Library/Preferences/com.example.foo.plist"),
+            Path::new("Library/WebKit/com.example.foo"),
+            Path::new("var/C/com.apple.WebKit.Networking+com.example.foo"),
+            Path::new("var/C/com.example.foo"),
         ],
         "ambiguous `Application Support/Foo` and the shared group are left out"
     );
     assert!(
         foo.satellites.iter().all(|s| s.strong),
         "every one is named after the bundle id"
+    );
+
+    let bar = by_id(&apps, "com.example.bar");
+    let mut bar_paths: Vec<_> = bar
+        .satellites
+        .iter()
+        .map(|s| s.path.strip_prefix(&root).unwrap().to_path_buf())
+        .collect();
+    bar_paths.sort();
+    assert_eq!(
+        bar_paths,
+        [
+            Path::new(".bar"),
+            Path::new("Library/Logs/DiagnosticReports/Bar-2026-01-01-120000.ips"),
+        ],
+        "named after the app: its dot folder and crash report, not Barista's"
+    );
+    assert!(
+        bar.satellites.iter().all(|s| !s.strong),
+        "names are weaker evidence"
     );
 
     // Footprint == du, per path and in total.
