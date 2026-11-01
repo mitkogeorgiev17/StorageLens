@@ -10,6 +10,12 @@
  * guard and preflight re-stat. A running app needs an explicit "remove
  * anyway", which the backend checks too. A running app can be force quit
  * (#113) after a confirmation: unsaved work in it is lost.
+ *
+ * An app with its own uninstaller (#115) is uninstalled with it: on Windows
+ * the command "Add or remove apps" runs (moving the folder would leave its
+ * registry entries, services and shortcuts behind), on macOS a vendor
+ * uninstaller. Moving a Mac app to the Trash is the standard uninstall
+ * otherwise.
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
@@ -37,6 +43,9 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+
 const COLUMNS: readonly { key: AppSortKey; label: string; numeric: boolean }[] =
   [
     { key: "name", label: "Name", numeric: false },
@@ -61,6 +70,7 @@ export default function AppsScreen() {
   const [removing, setRemoving] = useState<AppRowDto | null>(null);
   const [quitting, setQuitting] = useState<AppRowDto | null>(null);
   const [quitNote, setQuitNote] = useState<string | null>(null);
+  const [uninstalling, setUninstalling] = useState<AppRowDto | null>(null);
   const [plan, setPlan] = useState<DeletionPlanDto | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -114,6 +124,21 @@ export default function AppsScreen() {
     setPlan(null);
     afterTrash(moved);
     void load(false);
+  };
+
+  const uninstall = (row: AppRowDto) => {
+    setBusy(true);
+    setError(null);
+    api
+      .uninstallApp(row.id)
+      .then(() => {
+        setUninstalling(null);
+        setQuitNote(
+          `${row.name}'s uninstaller started. Follow its steps, then press Refresh.`,
+        );
+      })
+      .catch((cause: unknown) => setError(message(cause)))
+      .finally(() => setBusy(false));
   };
 
   const forceQuit = (row: AppRowDto) => {
@@ -174,6 +199,34 @@ export default function AppsScreen() {
         <p className="screen-status" role="status">
           {quitNote}
         </p>
+      ) : null}
+
+      {uninstalling !== null ? (
+        <section className="apps-remove" aria-labelledby="apps-uninstall-title">
+          <h2 id="apps-uninstall-title">Uninstall {uninstalling.name}?</h2>
+          <p>
+            {IS_MAC
+              ? `Opens ${uninstalling.name}'s own uninstaller. It also removes helpers and background items that moving the app to the Trash leaves behind.`
+              : `Runs ${uninstalling.name}'s own uninstaller, the same one Settings → Apps → Installed apps runs. Windows may ask for administrator permission.`}
+          </p>
+          <div className="apps-remove-actions">
+            <button
+              type="button"
+              className="button"
+              disabled={busy}
+              onClick={() => uninstall(uninstalling)}
+            >
+              {IS_MAC ? "Open uninstaller" : "Run uninstaller"}
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => setUninstalling(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
       ) : null}
 
       {quitting !== null ? (
@@ -320,21 +373,40 @@ export default function AppsScreen() {
                           Force quit…
                         </button>
                       ) : null}
-                      <button
-                        type="button"
-                        className="link-button"
-                        disabled={!removable || busy}
-                        title={
-                          row.path === ""
-                            ? "No install folder recorded. Use the system uninstaller."
-                            : scanId === null
-                              ? "Scan the disk first"
-                              : undefined
-                        }
-                        onClick={() => setRemoving(row)}
-                      >
-                        Remove…
-                      </button>
+                      {row.hasUninstaller ? (
+                        <button
+                          type="button"
+                          className="link-button"
+                          disabled={busy}
+                          onClick={() => {
+                            setQuitNote(null);
+                            setUninstalling(row);
+                          }}
+                        >
+                          Uninstall…
+                        </button>
+                      ) : null}
+                      {/* On Windows the registered uninstaller is the way;
+                          moving the folder is only offered without one. */}
+                      {IS_MAC || !row.hasUninstaller ? (
+                        <button
+                          type="button"
+                          className="link-button"
+                          disabled={!removable || busy}
+                          title={
+                            row.path === ""
+                              ? "No install folder recorded. Use the system uninstaller."
+                              : scanId === null
+                                ? "Scan the disk first"
+                                : IS_MAC
+                                  ? undefined
+                                  : "No uninstaller registered: moves the install folder to the Recycle Bin"
+                          }
+                          onClick={() => setRemoving(row)}
+                        >
+                          Remove…
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                   {open ? (

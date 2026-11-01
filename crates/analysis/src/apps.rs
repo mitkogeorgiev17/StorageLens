@@ -83,6 +83,7 @@ mod tests {
             default_handler: false,
             system: false,
             satellites: Vec::new(),
+            uninstaller: None,
         }
     }
 

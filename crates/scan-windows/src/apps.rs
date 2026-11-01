@@ -38,7 +38,7 @@ use storagelens_core::{AppInfo, AppStatus, Bytes, Satellite, Signature};
 use crate::ffi::filetime_to_unix;
 
 #[cfg(windows)]
-pub use sys::{force_quit, inventory};
+pub use sys::{force_quit, inventory, run_uninstaller};
 
 /// One `Uninstall\<key>` entry, as read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -59,6 +59,10 @@ pub struct UninstallEntry {
     pub system_component: bool,
     /// `ParentKeyName` is set: an update or sub-component.
     pub has_parent: bool,
+    /// `UninstallString`.
+    pub uninstall: Option<String>,
+    /// `WindowsInstaller = 1`: an MSI package, keyed by its product code.
+    pub windows_installer: bool,
 }
 
 /// Well-known directories, lowercased, without trailing separators.
@@ -129,6 +133,34 @@ pub fn exe_from_command(command: &str) -> Option<String> {
         return Some(command[..at + 4].to_owned());
     }
     command.split_whitespace().next().map(str::to_owned)
+}
+
+/// The command "Add or remove apps" runs for `entry` (#115): `MsiExec /X` with
+/// the product code for an MSI package (its `UninstallString` is often `/I`,
+/// which opens repair), else `UninstallString`.
+pub fn uninstall_command(entry: &UninstallEntry) -> Option<String> {
+    if entry.windows_installer && entry.key.starts_with('{') && entry.key.ends_with('}') {
+        return Some(format!("MsiExec.exe /X{}", entry.key));
+    }
+    entry
+        .uninstall
+        .as_deref()
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(str::to_owned)
+}
+
+/// `(program, arguments)` of a command line, for `ShellExecuteExW`.
+pub fn split_command(command: &str) -> Option<(String, String)> {
+    let command = command.trim();
+    let program = exe_from_command(command)?;
+    let skip = if command.starts_with('"') {
+        program.len() + 2
+    } else {
+        program.len()
+    };
+    let arguments = command.get(skip..).unwrap_or_default().trim().to_owned();
+    Some((program, arguments))
 }
 
 /// `DisplayIcon` → file path: strip quotes and a trailing `,index`.
@@ -439,6 +471,7 @@ pub fn assemble(
                 autostart: autostart.iter().any(in_dir)
                     || evidence.startup_links.iter().any(link_named),
                 default_handler: handlers.iter().any(in_dir),
+                uninstaller: uninstall_command(entry),
                 system: dir
                     .as_deref()
                     .is_some_and(|dir| !roots.windows.is_empty() && under(dir, &roots.windows)),
@@ -521,11 +554,13 @@ pub(crate) mod sys {
         OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_ACCESS_RIGHTS,
         PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
     };
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     use super::{
         assemble, decode_task_file, exe_from_command, expand_env, expand_known_folder, normalize,
-        prefetch_exe, rot13, task_commands, under, user_assist_record, Evidence, Roots,
-        UninstallEntry,
+        prefetch_exe, rot13, split_command, task_commands, under, user_assist_record, Evidence,
+        Roots, UninstallEntry,
     };
     use crate::walk::WinScanner;
 
@@ -768,6 +803,8 @@ pub(crate) mod sys {
                     icon: key.string("DisplayIcon"),
                     system_component: key.dword("SystemComponent") == Some(1),
                     has_parent: key.string("ParentKeyName").is_some(),
+                    uninstall: key.string("UninstallString"),
+                    windows_installer: key.dword("WindowsInstaller") == Some(1),
                     key: name,
                 });
             }
@@ -827,6 +864,28 @@ pub(crate) mod sys {
             .into_iter()
             .map(|(_, exe)| exe)
             .collect()
+    }
+
+    /// Start an app's uninstaller (#115) the way "Add or remove apps" does.
+    /// Through the shell, so an uninstaller that needs administrator rights
+    /// gets its UAC prompt. Returns once it has started: many uninstallers
+    /// hand off to a copy of themselves, so waiting would not mean "done".
+    pub fn run_uninstaller(command: &str) -> std::result::Result<(), String> {
+        let (program, arguments) =
+            split_command(command).ok_or_else(|| "the uninstall command is empty".to_owned())?;
+        let program = wide(&program);
+        let arguments = wide(&arguments);
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOASYNC,
+            lpFile: PCWSTR(program.as_ptr()),
+            lpParameters: PCWSTR(arguments.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        // SAFETY: `info` is fully initialised and its strings outlive the call.
+        unsafe { ShellExecuteExW(&mut info) }
+            .map_err(|error| format!("could not start the uninstaller: {error}"))
     }
 
     /// Force quit every process whose executable is inside `dir` (#113), like
@@ -1405,5 +1464,46 @@ mod tests {
                 PathBuf::from(r"c:\programdata\discord"),
             ]
         );
+    }
+
+    #[test]
+    fn uninstall_commands_like_add_or_remove_apps() {
+        let msi = UninstallEntry {
+            key: "{1234-ABCD}".into(),
+            uninstall: Some("MsiExec.exe /I{1234-ABCD}".into()),
+            windows_installer: true,
+            ..UninstallEntry::default()
+        };
+        assert_eq!(
+            uninstall_command(&msi).as_deref(),
+            Some("MsiExec.exe /X{1234-ABCD}")
+        );
+        let exe = UninstallEntry {
+            key: "Foo".into(),
+            uninstall: Some(r#" "C:\Program Files\Foo\uninst.exe" /S "#.into()),
+            ..UninstallEntry::default()
+        };
+        assert_eq!(
+            uninstall_command(&exe).as_deref(),
+            Some(r#""C:\Program Files\Foo\uninst.exe" /S"#)
+        );
+        assert_eq!(uninstall_command(&UninstallEntry::default()), None);
+    }
+
+    #[test]
+    fn commands_split_into_program_and_arguments() {
+        assert_eq!(
+            split_command(r#""C:\Program Files\Foo\uninst.exe" /S --x"#),
+            Some((r"C:\Program Files\Foo\uninst.exe".into(), "/S --x".into()))
+        );
+        assert_eq!(
+            split_command(r"C:\Foo\unins000.exe /SILENT"),
+            Some((r"C:\Foo\unins000.exe".into(), "/SILENT".into()))
+        );
+        assert_eq!(
+            split_command("MsiExec.exe /X{1}"),
+            Some(("MsiExec.exe".into(), "/X{1}".into()))
+        );
+        assert_eq!(split_command("   "), None);
     }
 }

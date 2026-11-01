@@ -24,6 +24,7 @@ function row(
     running: false,
     autostart: false,
     defaultHandler: false,
+    hasUninstaller: false,
     satellites: [],
   };
 }
@@ -73,4 +74,6 @@ test("warnings name running, autostart and default-handler apps", () => {
   const warnings = removalWarnings(busy);
   assert.equal(warnings.length, 2);
   assert.match(warnings[0] ?? "", /running/);
+  const vendor = { ...row("Suite", "in_use", 1), hasUninstaller: true };
+  assert.match(removalWarnings(vendor)[0] ?? "", /own uninstaller/);
 });

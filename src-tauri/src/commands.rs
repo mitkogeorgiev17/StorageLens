@@ -1811,6 +1811,7 @@ pub fn list_apps(
                 running: app.running,
                 autostart: app.autostart,
                 default_handler: app.default_handler,
+                has_uninstaller: app.uninstaller.is_some(),
                 satellites,
             }
         })
@@ -1837,6 +1838,38 @@ pub fn force_quit_app(
         app.running = false;
     }
     Ok(QuitDto { stopped, failed })
+}
+
+/// Start the own uninstaller of the listed app `id` (#115): on Windows the
+/// command "Add or remove apps" runs, on macOS a vendor `Uninstall….app`.
+/// Returns once it has started; the UI refreshes the list afterwards.
+pub fn uninstall_app(
+    state: &AppState,
+    id: &str,
+    run: &dyn Fn(&str) -> Result<(), String>,
+) -> CommandResult<()> {
+    let command = lock(&state.apps)?
+        .as_ref()
+        .and_then(|apps| apps.iter().find(|app| app.id == id && !app.system))
+        .and_then(|app| app.uninstaller.clone())
+        .ok_or_else(|| format!("{id} has no uninstaller"))?;
+    run(&command)
+}
+
+fn platform_uninstaller(command: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        storagelens_scan_macos::apps::run_uninstaller(command)
+    }
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::apps::run_uninstaller(command)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = command;
+        Err("uninstalling is not supported on this platform".to_owned())
+    }
 }
 
 // --- Startup items (#114) -----------------------------------------------------------
@@ -2689,6 +2722,11 @@ pub mod ipc {
     }
 
     #[tauri::command]
+    pub async fn uninstall_app(state: AppStateRef<'_>, id: String) -> CommandResult<()> {
+        super::uninstall_app(state.inner(), &id, &super::platform_uninstaller)
+    }
+
+    #[tauri::command]
     pub async fn list_startup() -> CommandResult<Vec<StartupItemDto>> {
         // Runs launchctl / plutil per job: off the main thread.
         tauri::async_runtime::spawn_blocking(super::list_startup)
@@ -3142,6 +3180,7 @@ mod tests {
             default_handler: false,
             system: false,
             satellites: Vec::new(),
+            uninstaller: None,
         };
         let inventory = || {
             let mut foo = app("Foo", bundle.clone());
@@ -3149,6 +3188,7 @@ mod tests {
                 path: data.clone(),
                 bytes: Bytes::new(12_288),
             }];
+            foo.uninstaller = Some("/Applications/Foo/Uninstall Foo.app".into());
             let mut busy = app("Busy", root.join("Busy.app"));
             busy.running = true;
             let mut mail = app("Mail", PathBuf::from("/System/Applications/Mail.app"));
@@ -3183,6 +3223,17 @@ mod tests {
 
         // Force quit (#113): only a listed, non-system app; a clean quit
         // clears the cached running flag.
+        // Uninstall (#115): only an app that has an uninstaller, by its own command.
+        assert!(rows[0].has_uninstaller && !rows[1].has_uninstaller);
+        let ran = std::cell::RefCell::new(String::new());
+        uninstall_app(&state, "com.example.Foo", &|command| {
+            ran.replace(command.to_owned());
+            Ok(())
+        })
+        .expect("uninstall");
+        assert_eq!(*ran.borrow(), "/Applications/Foo/Uninstall Foo.app");
+        assert!(uninstall_app(&state, "com.example.Busy", &|_| Ok(())).is_err());
+
         let quit = force_quit_app(&state, &busy, &|_| (2, 0)).expect("quit");
         assert_eq!((quit.stopped, quit.failed), (2, 0));
         let rows = list_apps(&state, false, &|| unreachable!("cached")).expect("list");

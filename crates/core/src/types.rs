@@ -553,6 +553,10 @@ pub struct AppInfo {
     pub system: bool,
     /// Associated data outside the bundle.
     pub satellites: Vec<Satellite>,
+    /// The app's own uninstaller (#115): on Windows the command "Add or
+    /// remove apps" runs, on macOS a vendor `Uninstall….app` shipped with it.
+    #[serde(default)]
+    pub uninstaller: Option<String>,
 }
 
 #[cfg(test)]
