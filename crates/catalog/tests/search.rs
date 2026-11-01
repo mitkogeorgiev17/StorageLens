@@ -254,3 +254,44 @@ fn one_million_names_search_in_milliseconds() {
         );
     }
 }
+
+#[test]
+fn prune_older_drops_older_scans_and_their_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("catalog.db");
+    let catalog = Catalog::open(&path).expect("open");
+    let old = scan(&catalog, sample());
+    catalog.index_names(old).expect("index old");
+    let kept = scan(&catalog, sample());
+    catalog.index_names(kept).expect("index kept");
+    let newer = scan(&catalog, sample());
+    let indexed = || -> i64 {
+        catalog
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM entries_fts WHERE entries_fts MATCH 'img*'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("fts rows")
+    };
+    let both = indexed();
+
+    Catalog::prune_older(&path, kept).expect("prune");
+
+    assert_eq!(catalog.entry_count(old).expect("count"), 0);
+    assert!(catalog.session(old).is_err(), "old session gone");
+    assert_eq!(
+        catalog.entry_count(kept).expect("count"),
+        sample().len() as u64
+    );
+    assert_eq!(
+        catalog.entry_count(newer).expect("count"),
+        sample().len() as u64,
+        "newer kept"
+    );
+    let hits = catalog.search(kept, "img_20", None, 50).expect("search");
+    assert_eq!(names(&hits), ["IMG_2023_snow.heic", "IMG_2024_beach.HEIC"]);
+    // Two scans were indexed; only the kept one's names are left.
+    assert_eq!(indexed() * 2, both, "the old scan's names are gone");
+}

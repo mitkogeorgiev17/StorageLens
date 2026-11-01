@@ -41,7 +41,7 @@ import {
   type AppSortKey,
 } from "../lib/apps";
 import { formatBytes, formatCount, formatDate } from "../lib/format";
-import { afterTrash } from "../lib/rescan";
+import { afterTrash, requestRescan } from "../lib/rescan";
 import { useAppStore } from "../store";
 
 function message(error: unknown): string {
@@ -149,6 +149,8 @@ export default function AppsScreen() {
         .then((done) => (done ? api.appLeftovers(waiting.id) : null))
         .then((items) => {
           if (live && items !== null) {
+            // The uninstaller changed the disk (#171).
+            void requestRescan();
             setWaiting(null);
             setLeftovers({ row: waiting, items });
           }

@@ -171,6 +171,9 @@ pub struct AppState {
     dupes: Mutex<Option<DupesCache>>,
     /// Cancels the running duplicate search.
     cancel_dupes: Mutex<CancelToken>,
+    /// Held while a scan runs and while older scans are pruned (#171), so the
+    /// next scan waits for a prune instead of racing it.
+    prune: Mutex<()>,
     next_plan: AtomicU64,
 }
 
@@ -203,6 +206,7 @@ impl AppState {
             apps: Mutex::new(None),
             dupes: Mutex::new(None),
             cancel_dupes: Mutex::new(CancelToken::new()),
+            prune: Mutex::new(()),
             next_plan: AtomicU64::new(1),
         })
     }
@@ -397,15 +401,26 @@ fn run_scan(
     }
 
     match outcome {
-        Ok(status) => events::emit(
-            emitter,
-            events::SCAN_DONE,
-            &ScanDoneEvent {
-                scan_id,
-                status,
-                duration_ms: started.elapsed().as_millis() as u64,
-            },
-        ),
+        Ok(status) => {
+            events::emit(
+                emitter,
+                events::SCAN_DONE,
+                &ScanDoneEvent {
+                    scan_id,
+                    status,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                },
+            );
+            // Only the latest scan is kept (#171). A stopped scan keeps the one
+            // before it, which is still what the UI shows.
+            if matches!(status, ScanStatus::Complete | ScanStatus::Partial) {
+                if let Ok(_pruning) = state.prune.lock() {
+                    if let Err(error) = Catalog::prune_older(&state.catalog_path, scan_id) {
+                        eprintln!("older scans could not be pruned: {error}");
+                    }
+                }
+            }
+        }
         Err(message) => {
             // The session has no "failed" status; record it as cancelled so it is
             // not left looking like it is still running.
@@ -429,6 +444,8 @@ fn scan_and_record(
     cancel: CancelToken,
     progress: &Arc<Mutex<Progress>>,
 ) -> CommandResult<ScanStatus> {
+    // Wait out a prune of older scans still running from the last scan.
+    let _pruning = lock(&state.prune)?;
     let mut writer = EntryWriter::open(&state.catalog_path, scan_id, DEFAULT_BATCH_SIZE)
         .map_err(|error| error.to_string())?;
     if let Some(locations) = &state.locations {

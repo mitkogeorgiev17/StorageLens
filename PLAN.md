@@ -343,6 +343,14 @@ with its own batch transaction, so WAL keeps the UI reading the previous scan wh
 next one is being written. Only one writer may exist at a time (row ids are allocated
 from `MAX(id) + 1`); scans are serialized by the app.
 
+**Freshness and retention (#171).** The app rescans the last root in the background on
+launch and after every action that changes the disk (Trash, undo, Docker removal, system
+leftovers, uninstall); the previous scan stays on screen until the new one replaces it.
+Only the latest scan is kept: after a scan completes (or finishes partial), older scans are
+deleted on their own connection in chunks of 20,000 entries, so reads carry on and writers
+wait at most a moment. The file is compacted when more than 1 GiB is free. The next scan
+waits for a prune still running. A stopped scan prunes nothing.
+
 ### In-memory tree for rendering
 
 ```rust

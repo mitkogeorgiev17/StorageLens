@@ -28,6 +28,7 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 import { formatBytes, formatCount } from "../lib/format";
+import { requestRescan } from "../lib/rescan";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
@@ -185,7 +186,10 @@ export default function Leftovers({
                       row.id,
                       chosenSystem.map((item) => item.path),
                     )
-                    .then(setSystemResult)
+                    .then((done) => {
+                      setSystemResult(done);
+                      void requestRescan();
+                    })
                     .catch((cause: unknown) => setSystemError(message(cause)))
                     .finally(() => setSystemBusy(false));
                 }}

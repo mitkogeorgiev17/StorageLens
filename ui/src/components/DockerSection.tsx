@@ -26,6 +26,7 @@ import {
   type DockerSelection,
 } from "../lib/docker";
 import { formatBytes, formatCount, formatDate } from "../lib/format";
+import { requestRescan } from "../lib/rescan";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -77,6 +78,9 @@ export default function DockerSection() {
       .then((done) => {
         setResult(done);
         setConfirming(false);
+        if (done.removed.length > 0) {
+          void requestRescan();
+        }
         return load();
       })
       .catch((cause: unknown) => setError(message(cause)))

@@ -211,7 +211,7 @@ function StatusBar() {
   );
 }
 
-/** The refresh after a cleanup, or why the data on screen is from before it. */
+/** A background refresh, or why the data on screen is from before it. */
 function Freshness() {
   const refresh = useAppStore((state) => state.refresh);
   const staleReason = useAppStore((state) => state.staleReason);
@@ -219,9 +219,9 @@ function Freshness() {
     return (
       <div className="banner banner-refresh" role="status" aria-live="polite">
         <p>
-          <strong>Refreshing after the cleanup.</strong> Rescanning ·{" "}
+          <strong>Refreshing.</strong> Rescanning ·{" "}
           {formatCount(refresh.progress.files)} files · {formatBytes(refresh.progress.bytesAlloc)}. What
-          you see is from before it until the scan finishes.
+          you see is from the last scan until this one finishes.
         </p>
         <button
           type="button"
@@ -237,7 +237,7 @@ function Freshness() {
   if (staleReason !== null) {
     return (
       <div className="banner" role="note">
-        <p>{staleReason} Sizes may include what was moved to the Trash.</p>
+        <p>{staleReason} Sizes may be out of date.</p>
       </div>
     );
   }

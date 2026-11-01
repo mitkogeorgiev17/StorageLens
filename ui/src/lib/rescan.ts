@@ -1,8 +1,9 @@
 /**
- * Keep the data fresh after the Trash changes (#97).
+ * Keep the data fresh (#97, #171).
  *
- * Every move to the Trash and every undo rescans the scanned root in the
- * background. The finished scan stays on screen until the new one replaces it
+ * The app rescans the scanned root in the background on launch, and after
+ * every action that changes the disk: a move to the Trash, an undo, a Docker
+ * removal, system leftovers, an uninstall. The finished scan stays on screen until the new one replaces it
  * (`store.scanFinished`), so no screen goes blank. One scan runs at a time: a
  * second change while a refresh runs queues exactly one more.
  */
@@ -24,7 +25,7 @@ export async function requestRescan(): Promise<void> {
   try {
     store.refreshStarted(await api.startScan(store.scan.summary.root));
   } catch (error) {
-    useAppStore.getState().refreshAborted(`Could not refresh after the cleanup: ${message(error)}`);
+    useAppStore.getState().refreshAborted(`Could not refresh: ${message(error)}`);
   }
 }
 
