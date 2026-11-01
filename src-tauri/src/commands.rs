@@ -3289,6 +3289,27 @@ pub mod ipc {
         Ok(super::check_full_disk_access())
     }
 
+    /// One harmless Apple Event to Finder (#149), so macOS asks for
+    /// Automation access at launch rather than in the middle of a removal.
+    #[tauri::command]
+    pub async fn request_finder_access() -> CommandResult<bool> {
+        #[cfg(target_os = "macos")]
+        {
+            tauri::async_runtime::spawn_blocking(|| {
+                std::process::Command::new("/usr/bin/osascript")
+                    .args(["-e", "tell application \"Finder\" to get name"])
+                    .output()
+                    .is_ok_and(|output| output.status.success())
+            })
+            .await
+            .map_err(|error| error.to_string())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(true)
+        }
+    }
+
     #[tauri::command]
     pub async fn open_full_disk_access_settings() -> CommandResult<()> {
         #[cfg(target_os = "macos")]
