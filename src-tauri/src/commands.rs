@@ -3335,7 +3335,13 @@ pub mod ipc {
         {
             tauri::async_runtime::spawn_blocking(|| {
                 std::process::Command::new("/usr/bin/osascript")
-                    .args(["-e", "tell application \"Finder\" to get name"])
+                    // A real Apple Event: an application's `name` is answered
+                    // locally and never reaches Finder, so macOS would not ask
+                    // (#165).
+                    .args([
+                        "-e",
+                        "tell application \"Finder\" to get name of startup disk",
+                    ])
                     .output()
                     .is_ok_and(|output| output.status.success())
             })
