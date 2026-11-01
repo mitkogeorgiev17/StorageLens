@@ -218,36 +218,6 @@ pub enum Grouping {
     Cleanliness,
 }
 
-/// A smart collection (#28). `query` is `None` when the stored query cannot be
-/// read by this build; `problem` then says why, and the collection can still be
-/// renamed or deleted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollectionDto {
-    pub id: i64,
-    pub name: String,
-    pub query: Option<storagelens_catalog::CollectionQuery>,
-    pub problem: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-/// A collection evaluated against one scan. Always names the scan, so the UI
-/// can drop a result that belongs to an older one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollectionResultDto {
-    pub collection_id: i64,
-    pub scan_id: i64,
-    pub bytes: u64,
-    pub files: u64,
-    /// The folder limit, resolved in this scan.
-    pub within: Option<CrumbDto>,
-    /// Why the collection shows nothing for this scan (unreadable query, or a
-    /// folder this scan does not contain); totals are then zero.
-    pub problem: Option<String>,
-}
-
 /// Cross-filters applied to a grouping (PLAN §9.7).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]

@@ -14,7 +14,6 @@ const PATHS: Readonly<Record<RouteId, readonly string[]>> = {
   // A file with an upward arrow: biggest first.
   "large-files": ["M14 3H6v18h12V7z", "M14 3v4h4", "M12 17v-7", "M9 13l3-3 3 3"],
   // Stacked layers: saved views.
-  collections: ["M12 3l9 5-9 5-9-5z", "M3 13l9 5 9-5", "M3 17.5l9 5 9-5"],
   // An app grid.
   apps: ["M4 4h6v6H4z", "M14 4h6v6h-6z", "M4 14h6v6H4z", "M14 14h6v6h-6z"],
   // A sparkle: safe to clean.

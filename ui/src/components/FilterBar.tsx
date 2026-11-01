@@ -127,7 +127,7 @@ export default function FilterBar({
             {option.label}
           </option>
         ))}
-        {/* A collection can carry a size the presets do not have. */}
+        {/* A restored view can carry a size the presets do not have. */}
         {view.minSize !== null &&
         !Object.values(SIZE_OPTIONS).some((option) => option.bytes === view.minSize) ? (
           <option value={view.minSize}>{formatBytes(view.minSize)} or more</option>

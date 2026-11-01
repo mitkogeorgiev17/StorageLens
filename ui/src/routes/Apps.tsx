@@ -116,7 +116,7 @@ export default function AppsScreen() {
   return (
     <div className="apps-screen">
       <div className="apps-toolbar">
-        <span className="collections-status" aria-live="polite">
+        <span className="screen-status" aria-live="polite">
           {loading
             ? "Reading installed apps and measuring their data… this takes a few seconds."
             : rows !== null

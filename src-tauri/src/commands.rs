@@ -35,9 +35,8 @@ use storagelens_analysis::rules::{
 };
 use storagelens_analysis::{FileFilter, Risk, SyntheticTree};
 use storagelens_catalog::{
-    file_order, modified_times, rollup, slice, Arena, Catalog, Collection, CollectionQuery,
-    EntryWriter, FileSort, NodeIndex, Platform, ScanSession, SearchCursor, SizeCursor,
-    DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
+    file_order, modified_times, rollup, slice, Arena, Catalog, EntryWriter, FileSort, NodeIndex,
+    Platform, ScanSession, SearchCursor, SizeCursor, DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
 };
 use storagelens_core::{
     CancelToken, EntryKind, Locations, Progress, ScanOptions, ScanResult, ScanStatus,
@@ -45,12 +44,11 @@ use storagelens_core::{
 use tauri::{AppHandle, State};
 
 use crate::dto::{
-    AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CollectionDto,
-    CollectionResultDto, CrumbDto, DeletionPlanDto, DeletionResultDto, DupFileDto, DupGroupDto,
-    DupesDto, FileRangeDto, FileRowDto, FileSortDto, FilterDto, Grouping, OverviewDto, Page,
-    PlanItemDto, ResultItemDto, RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto,
-    ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto, TreeNodeDto, UndoItemDto,
-    UndoResultDto, VolumeDto,
+    AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CrumbDto, DeletionPlanDto,
+    DeletionResultDto, DupFileDto, DupGroupDto, DupesDto, FileRangeDto, FileRowDto, FileSortDto,
+    FilterDto, Grouping, OverviewDto, Page, PlanItemDto, ResultItemDto, RuleGroupDto, RuleItemDto,
+    SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto, SizeCursorDto,
+    TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
 };
 use crate::events::{
     self, DupesProgressEvent, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle,
@@ -1054,170 +1052,6 @@ fn assemble_group(
         remaining_count,
         remaining_bytes,
     }
-}
-
-// --- Smart collections (#28) ---------------------------------------------------------
-
-fn collection_dto(collection: Collection) -> CollectionDto {
-    let (query, problem) = match CollectionQuery::parse(&collection.query) {
-        Ok(query) => (Some(query), None),
-        Err(problem) => (None, Some(problem)),
-    };
-    CollectionDto {
-        id: collection.id,
-        name: collection.name,
-        query,
-        problem,
-        created_at: collection.created_at,
-        updated_at: collection.updated_at,
-    }
-}
-
-pub fn list_collections(state: &AppState) -> CommandResult<Vec<CollectionDto>> {
-    Ok(lock(&state.catalog)?
-        .collections()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(collection_dto)
-        .collect())
-}
-
-pub fn create_collection(
-    state: &AppState,
-    name: &str,
-    query: &CollectionQuery,
-) -> CommandResult<CollectionDto> {
-    let created = lock(&state.catalog)?
-        .create_collection(name, query)
-        .map_err(|error| error.to_string())?;
-    Ok(collection_dto(created))
-}
-
-pub fn rename_collection(state: &AppState, id: i64, name: &str) -> CommandResult<CollectionDto> {
-    let renamed = lock(&state.catalog)?
-        .rename_collection(id, name)
-        .map_err(|error| error.to_string())?;
-    Ok(collection_dto(renamed))
-}
-
-pub fn delete_collection(state: &AppState, id: i64) -> CommandResult<()> {
-    lock(&state.catalog)?
-        .delete_collection(id)
-        .map_err(|error| error.to_string())
-}
-
-/// The names leading from `root` to `path`, or `None` when `path` is not
-/// inside `root`. Case-insensitive where the names differ only in case (the
-/// default on both platforms' system volumes).
-fn relative_names(root: &Path, path: &Path) -> Option<Vec<String>> {
-    use std::path::Component;
-    let names = |path: &Path| -> Vec<String> {
-        path.components()
-            .filter_map(|component| match component {
-                Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
-                Component::Prefix(prefix) => {
-                    Some(prefix.as_os_str().to_string_lossy().into_owned())
-                }
-                _ => None,
-            })
-            .collect()
-    };
-    let root = names(root);
-    let path = names(path);
-    if path.len() < root.len()
-        || !root
-            .iter()
-            .zip(&path)
-            .all(|(a, b)| a == b || a.to_lowercase() == b.to_lowercase())
-    {
-        return None;
-    }
-    Some(path[root.len()..].to_vec())
-}
-
-/// The folder at absolute `path` in this scan.
-fn find_folder(arena: &Arena, root: &Path, path: &Path) -> Option<NodeIndex> {
-    let mut current = arena.root();
-    for name in relative_names(root, path)? {
-        let folded = name.to_lowercase();
-        let mut children = arena.children(current).filter(|&child| {
-            arena
-                .node(child)
-                .is_some_and(|node| node.kind() == EntryKind::Dir)
-        });
-        let exact = arena
-            .children(current)
-            .find(|&child| arena.name(child) == Some(name.as_str()));
-        current = match exact {
-            Some(child) => child,
-            None => children.find(|&child| {
-                arena
-                    .name(child)
-                    .is_some_and(|candidate| candidate.to_lowercase() == folded)
-            })?,
-        };
-    }
-    arena
-        .node(current)
-        .is_some_and(|node| node.kind() == EntryKind::Dir)
-        .then_some(current)
-}
-
-/// Re-run collection `id` against `scan_id`: what the Map would total if the
-/// collection were opened now.
-pub fn evaluate_collection(
-    state: &AppState,
-    scan_id: i64,
-    id: i64,
-) -> CommandResult<CollectionResultDto> {
-    let stored = lock(&state.catalog)?
-        .collection(id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("collection {id} does not exist"))?;
-    let empty = |within, problem| CollectionResultDto {
-        collection_id: id,
-        scan_id,
-        bytes: 0,
-        files: 0,
-        within,
-        problem: Some(problem),
-    };
-    let query = match CollectionQuery::parse(&stored.query) {
-        Ok(query) => query,
-        Err(problem) => return Ok(empty(None, problem)),
-    };
-    let arena = state.arena(scan_id)?;
-    let within = match &query.within {
-        None => None,
-        Some(path) => {
-            let found = state
-                .root_of(scan_id)
-                .and_then(|root| find_folder(&arena, &root, Path::new(path)));
-            match found.and_then(|index| Some((index, arena.entry_id(index)?))) {
-                Some((index, entry_id)) => Some(CrumbDto {
-                    id: entry_id,
-                    name: arena.name(index).unwrap_or_default().to_owned(),
-                }),
-                None => return Ok(empty(None, format!("{path} is not part of this scan"))),
-            }
-        }
-    };
-    let filter = FilterDto {
-        categories: query.categories.clone(),
-        min_size: query.min_size,
-        older_than_days: query.older_than_days,
-        within: within.as_ref().map(|crumb| crumb.id),
-    };
-    // Every grouping totals the same files; Size is the cheapest to build.
-    let tree = grouping_tree(state, &arena, scan_id, Grouping::Size, &filter)?;
-    Ok(CollectionResultDto {
-        collection_id: id,
-        scan_id,
-        bytes: tree.root().size,
-        files: tree.root().file_count,
-        within,
-        problem: None,
-    })
 }
 
 // --- Reveal and preview ------------------------------------------------------------
@@ -2686,43 +2520,6 @@ pub mod ipc {
     }
 
     #[tauri::command]
-    pub async fn list_collections(state: AppStateRef<'_>) -> CommandResult<Vec<CollectionDto>> {
-        super::list_collections(state.inner())
-    }
-
-    #[tauri::command]
-    pub async fn create_collection(
-        state: AppStateRef<'_>,
-        name: String,
-        query: CollectionQuery,
-    ) -> CommandResult<CollectionDto> {
-        super::create_collection(state.inner(), &name, &query)
-    }
-
-    #[tauri::command]
-    pub async fn rename_collection(
-        state: AppStateRef<'_>,
-        id: i64,
-        name: String,
-    ) -> CommandResult<CollectionDto> {
-        super::rename_collection(state.inner(), id, &name)
-    }
-
-    #[tauri::command]
-    pub async fn delete_collection(state: AppStateRef<'_>, id: i64) -> CommandResult<()> {
-        super::delete_collection(state.inner(), id)
-    }
-
-    #[tauri::command]
-    pub async fn evaluate_collection(
-        state: AppStateRef<'_>,
-        scan_id: i64,
-        id: i64,
-    ) -> CommandResult<CollectionResultDto> {
-        super::evaluate_collection(state.inner(), scan_id, id)
-    }
-
-    #[tauri::command]
     pub async fn get_ancestors(
         state: AppStateRef<'_>,
         scan_id: i64,
@@ -4009,91 +3806,6 @@ mod tests {
             None
         )
         .is_err());
-    }
-
-    #[test]
-    fn collections_re_evaluate_against_each_scan() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = state(&dir);
-        let root = tree(&dir);
-        let (first, _) = scan(&state, &root);
-
-        let query = |within: Option<String>| CollectionQuery {
-            v: storagelens_catalog::QUERY_VERSION,
-            by: "type".to_owned(),
-            chart: "sunburst".to_owned(),
-            categories: Vec::new(),
-            min_size: Some(10_000),
-            older_than_days: None,
-            within,
-        };
-        let big = create_collection(&state, "Big", &query(None)).expect("create");
-        let photos = create_collection(
-            &state,
-            "Big photos",
-            &query(Some(root.join("PHOTOS").display().to_string())),
-        )
-        .expect("create");
-        let elsewhere = create_collection(
-            &state,
-            "Elsewhere",
-            &query(Some("/nowhere/at/all".to_owned())),
-        )
-        .expect("create");
-
-        let result = evaluate_collection(&state, first, big.id).expect("evaluate");
-        assert_eq!(result.scan_id, first);
-        assert_eq!(result.files, 2, "a.jpg and b.png are ≥ 10 kB");
-        assert!(result.bytes >= 320_000);
-        assert!(result.problem.is_none());
-
-        // The folder is found by path in this scan, ignoring case.
-        let inside = evaluate_collection(&state, first, photos.id).expect("photos");
-        assert_eq!(
-            inside.within.as_ref().map(|c| c.name.as_str()),
-            Some("photos")
-        );
-        assert_eq!(inside.files, 2);
-        let missing = evaluate_collection(&state, first, elsewhere.id).expect("elsewhere");
-        assert_eq!(missing.files, 0);
-        assert!(missing
-            .problem
-            .expect("problem")
-            .contains("not part of this scan"));
-
-        // A new scan: the same collection, new totals, tagged with the new id.
-        fs::write(root.join("docs/huge.pdf"), vec![4u8; 50_000]).expect("file");
-        let (second, _) = scan(&state, &root);
-        assert_ne!(second, first);
-        let again = evaluate_collection(&state, second, big.id).expect("re-evaluate");
-        assert_eq!(again.scan_id, second);
-        assert_eq!(again.files, 3);
-
-        // An unreadable stored query lists with its problem and evaluates to one.
-        lock(&state.catalog)
-            .expect("catalog")
-            .connection()
-            .execute(
-                &format!(
-                    "UPDATE collection SET query = '{{broken' WHERE id = {}",
-                    big.id
-                ),
-                [],
-            )
-            .expect("break");
-        let listed = list_collections(&state).expect("list");
-        let broken = listed.iter().find(|c| c.id == big.id).expect("listed");
-        assert!(broken.query.is_none() && broken.problem.is_some());
-        assert!(evaluate_collection(&state, second, big.id)
-            .expect("graceful")
-            .problem
-            .is_some());
-
-        let renamed = rename_collection(&state, big.id, "Fixed later").expect("rename");
-        assert_eq!(renamed.name, "Fixed later");
-        delete_collection(&state, big.id).expect("delete");
-        assert!(evaluate_collection(&state, second, big.id).is_err());
-        assert_eq!(list_collections(&state).expect("list").len(), 2);
     }
 
     /// Bytes per Cleanliness bucket of `scan_id`.
