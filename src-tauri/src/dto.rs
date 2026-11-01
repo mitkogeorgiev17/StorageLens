@@ -65,6 +65,9 @@ pub struct ScanTargetDto {
     pub total: Option<u64>,
     pub available: Option<u64>,
     pub removable: bool,
+    /// The volume the OS booted from (`/`, or `%SystemDrive%`): the
+    /// recommended full-disk scan, listed first (#98).
+    pub startup: bool,
 }
 
 /// One category's share of the scan.

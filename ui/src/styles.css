@@ -1001,6 +1001,11 @@ body {
   border-color: var(--accent);
 }
 
+.target[data-startup="true"] {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
 .target:focus-visible,
 .input:focus-visible,
 .dialog-close:focus-visible,
