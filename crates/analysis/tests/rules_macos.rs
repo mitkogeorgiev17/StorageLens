@@ -26,16 +26,18 @@ fn volume() -> common::Scan {
         ("Users/me/Library", D, 0, 0),
         ("Users/me/Library/Developer", D, 0, 0),
         (XCODE, D, 0, 0),
-        // Derived Data: every project folder, whatever its age.
+        // Derived Data: project folders unbuilt for 30 days.
         (&format!("{XCODE}/DerivedData"), D, 0, 0),
         (&format!("{XCODE}/DerivedData/App-abc"), D, 0, 0),
-        (&format!("{XCODE}/DerivedData/App-abc/Build"), F, 1_000, NEW),
+        (&format!("{XCODE}/DerivedData/App-abc/Build"), F, 1_000, OLD),
+        (&format!("{XCODE}/DerivedData/Live-xyz"), D, 0, 0),
+        (&format!("{XCODE}/DerivedData/Live-xyz/Build"), F, 300, NEW),
         (&format!("{XCODE}/DerivedData/ModuleCache.noindex"), D, 0, 0),
         (
             &format!("{XCODE}/DerivedData/ModuleCache.noindex/m"),
             F,
             10,
-            NEW,
+            OLD,
         ),
         // Device support: versions unused for 90 days.
         (&format!("{XCODE}/iOS DeviceSupport"), D, 0, 0),
@@ -92,7 +94,7 @@ fn volume() -> common::Scan {
         // Previews.
         (&format!("{XCODE}/UserData"), D, 0, 0),
         (&format!("{XCODE}/UserData/Previews"), D, 0, 0),
-        (&format!("{XCODE}/UserData/Previews/sim"), F, 50, NEW),
+        (&format!("{XCODE}/UserData/Previews/sim"), F, 50, OLD),
         (&format!("{XCODE}/UserData/KeyBindings"), D, 0, 0),
         // Simulators: devices unused for 90 days; the device set file is not one.
         (SIM, D, 0, 0),
@@ -106,7 +108,7 @@ fn volume() -> common::Scan {
         (&format!("{SIM}/Devices/CCCC"), D, 0, 0),
         (&format!("{SIM}/Devices/CCCC/leftover"), F, 9, OLD),
         (&format!("{SIM}/Caches"), D, 0, 0),
-        (&format!("{SIM}/Caches/dyld"), F, 70, NEW),
+        (&format!("{SIM}/Caches/dyld"), F, 70, OLD),
         // Caches: third-party, unused for 90 days. Apple's and Homebrew's are not.
         ("Users/me/Library/Caches", D, 0, 0),
         ("Users/me/Library/Caches/com.spotify.client", D, 0, 0),
@@ -127,7 +129,7 @@ fn volume() -> common::Scan {
             "Users/me/Library/Caches/Homebrew/node.bottle.tar.gz",
             F,
             120,
-            NEW,
+            OLD,
         ),
         ("Users/me/Library/Caches/loose-file", F, 5, OLD),
         // Containers.
@@ -279,7 +281,7 @@ fn volume() -> common::Scan {
         // npm.
         ("Users/me/.npm", D, 0, 0),
         ("Users/me/.npm/_cacache", D, 0, 0),
-        ("Users/me/.npm/_cacache/index", F, 150, NEW),
+        ("Users/me/.npm/_cacache/index", F, 150, OLD),
         ("Users/me/.npm/_logs", D, 0, 0),
         // Outside the home.
         ("Library", D, 0, 0),

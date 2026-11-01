@@ -19,11 +19,21 @@
     "platform": "any",
     "title": "Python bytecode caches",
     "glob": "**/__pycache__",
+    "exclude": [
+      "**/site-packages/**/__pycache__",
+      "**/lib/python3*/**/__pycache__",
+      "**/*.app/**/__pycache__",
+      "**/*.framework/**/__pycache__",
+      "**/AppData/**/__pycache__",
+      "**/Program Files*/**/__pycache__",
+      "~/Library/**/__pycache__"
+    ],
     "match": "dir",
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.99,
-    "explain": "Compiled .pyc files. Python writes them again the next time the code runs.",
+    "stale_days": 90,
+    "explain": "Compiled .pyc files in your projects, untouched for 90 days. Python writes them again the next time the code runs. Copies inside installed Python environments and apps are left alone: those apps use them.",
     "action": "trash"
   },
   {
@@ -90,7 +100,8 @@
     "kind": "regenerable",
     "risk": "safe",
     "confidence": 0.9,
-    "explain": "Downloaded dependencies and build caches. Gradle downloads what it needs again on the next build.",
+    "stale_days": 90,
+    "explain": "Downloaded dependencies and build caches. Gradle downloads what it needs again on the next build. Offered only once nothing in it has changed for 90 days, so nothing is using it.",
     "action": "trash"
   }
 ]
