@@ -12,5 +12,7 @@
 	<string>StorageLens reads removable volumes you choose to scan so it can show what they contain.</string>
 	<key>NSNetworkVolumesUsageDescription</key>
 	<string>StorageLens reads network volumes you choose to scan so it can show what they contain.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>StorageLens asks Finder to move apps it cannot move itself, such as App Store apps, to the Trash. Finder asks for your password and keeps Put Back.</string>
 </dict>
 </plist>
