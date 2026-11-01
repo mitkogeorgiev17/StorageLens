@@ -226,7 +226,7 @@ export const useAppStore = create<AppState>()((set) => ({
       if (state.refresh !== null && state.scan.kind === "done" && summary.status === "cancelled") {
         return {
           refresh: null,
-          staleReason: "The refresh was stopped, so this is the scan from before the cleanup.",
+          staleReason: "The refresh was stopped, so this is the scan from before.",
         };
       }
       const keepView = state.refresh !== null && state.scan.kind === "done";
@@ -243,7 +243,7 @@ export const useAppStore = create<AppState>()((set) => ({
   scanFailed: (message) =>
     set((state) =>
       state.refresh !== null && state.scan.kind === "done"
-        ? { refresh: null, staleReason: `Could not refresh after the cleanup: ${message}` }
+        ? { refresh: null, staleReason: `Could not refresh: ${message}` }
         : {
             scan: {
               kind: "failed",

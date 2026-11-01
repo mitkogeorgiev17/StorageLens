@@ -15,6 +15,11 @@ use crate::schema;
 use crate::util::{now, to_i64, to_u64};
 use crate::writer::{EntryWriter, DEFAULT_BATCH_SIZE};
 
+/// Free space [`Catalog::prune_older`] compacts away: 1 GiB.
+pub const VACUUM_ABOVE: i64 = 1 << 30;
+/// Entries [`Catalog::prune_older`] deletes per transaction.
+pub const PRUNE_CHUNK: i64 = 20_000;
+
 /// The application catalog.
 ///
 /// Holds one read connection. Writes go through [`writer`](Self::writer), which
@@ -171,6 +176,51 @@ impl Catalog {
             )
             .optional()?
             .ok_or(CatalogError::SessionNotFound(scan_id))
+    }
+
+    /// Delete every scan older than `keep`, with its entries, rollups and rule
+    /// hits (#171): nothing reads an older scan, and each one is ~1.5M rows.
+    ///
+    /// Runs on its own connection, so reads on the catalog's carry on (WAL).
+    /// Entries go in chunks of [`PRUNE_CHUNK`], one short transaction each, so
+    /// a writer elsewhere waits a moment at most; the FTS trigger removes their
+    /// names as they go. Then the WAL is truncated, and the file compacted when
+    /// more than [`VACUUM_ABOVE`] bytes are free (smaller gaps are reused by
+    /// the next scan). The first prune of a big catalog takes minutes; later
+    /// ones remove a single scan.
+    pub fn prune_older(path: &Path, keep: i64) -> Result<()> {
+        let conn = Connection::open(path)?;
+        configure(&conn)?;
+        let old: Vec<i64> = conn
+            .prepare("SELECT id FROM scan_session WHERE id < ?1 ORDER BY id")?
+            .query_map(params![keep], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for scan_id in old {
+            while conn.execute(
+                "DELETE FROM entries WHERE id IN \
+                 (SELECT id FROM entries WHERE scan_id = ?1 LIMIT ?2)",
+                params![scan_id, PRUNE_CHUNK],
+            )? > 0
+            {}
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "DELETE FROM dir_rollup WHERE scan_id = ?1",
+                params![scan_id],
+            )?;
+            tx.execute("DELETE FROM rule_hit WHERE scan_id = ?1", params![scan_id])?;
+            tx.execute("DELETE FROM scan_session WHERE id = ?1", params![scan_id])?;
+            tx.commit()?;
+        }
+        let free: i64 = conn.query_row(
+            "SELECT freelist_count * page_size FROM pragma_freelist_count, pragma_page_size",
+            [],
+            |row| row.get(0),
+        )?;
+        if free > VACUUM_ABOVE {
+            conn.execute_batch("VACUUM")?;
+        }
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
     }
 
     /// The most recently started session, if any.

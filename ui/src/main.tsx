@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { api, bridgeScanEvents, toSummary } from "./lib/api";
 import { installHistory } from "./lib/history";
-import { installRescanQueue } from "./lib/rescan";
+import { installRescanQueue, requestRescan } from "./lib/rescan";
 import { useAppStore } from "./store";
 import "./styles.css";
 
@@ -24,11 +24,13 @@ async function connectBackend(): Promise<void> {
   const store = useAppStore.getState();
   await bridgeScanEvents(store);
 
-  // Reopen on the last finished scan, so the app is useful before scanning.
+  // Reopen on the last finished scan, so the app is useful at once, then
+  // rescan it in the background: it may be days old (#171).
   const latest = await api.latestScan();
   const summary = latest === null ? null : toSummary(latest);
   if (summary !== null) {
     store.scanFinished(summary);
+    void requestRescan();
   }
 }
 
