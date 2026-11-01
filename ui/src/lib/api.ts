@@ -633,6 +633,8 @@ export const api = {
   ) => call<DockerRemovalDto>("remove_docker", { targets }),
 
   checkFullDiskAccess: () => call<DiskAccess>("check_full_disk_access"),
+  /** Quit and start the app again (#175). */
+  relaunch: () => call<void>("relaunch"),
   openFullDiskAccessSettings: () =>
     call<void>("open_full_disk_access_settings"),
   /** macOS: one harmless Apple Event to Finder, so the Automation prompt

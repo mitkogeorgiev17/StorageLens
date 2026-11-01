@@ -2,7 +2,8 @@
  * Every macOS permission, asked for at launch (#150, #155), so nothing is
  * asked in the middle of a scan or a removal.
  *
- * Shown while anything is missing, rechecked whenever the window regains
+ * Shown while anything is missing, and it cannot be skipped (#175): nothing
+ * scans until every permission is on. Rechecked whenever the window regains
  * focus (the user comes back from System Settings). Full Disk Access and
  * App Management cannot be requested by an app, only switched on in System
  * Settings; Finder automation is asked for with one harmless Apple Event.
@@ -13,6 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, type DiskAccess } from "../lib/api";
+import { useAppStore } from "../store";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
@@ -29,12 +31,17 @@ export default function Permissions() {
   const [disk, setDisk] = useState<DiskAccess>("unknown");
   const [apps, setApps] = useState<boolean | null>(null);
   const [finder, setFinder] = useState<boolean | null>(null);
-  const [closed, setClosed] = useState(false);
+  const [checked, setChecked] = useState(false);
+  const permitted = useAppStore((state) => state.permitted);
+  const granted = useAppStore((state) => state.permissionsGranted);
 
   const check = useCallback(() => {
-    api.checkFullDiskAccess().then(setDisk).catch(() => undefined);
-    api.checkAppManagement().then(setApps).catch(() => undefined);
-    api.requestFinderAccess().then(setFinder).catch(() => undefined);
+    // A check that fails leaves its state unknown, which does not block.
+    void Promise.all([
+      api.checkFullDiskAccess().then(setDisk).catch(() => undefined),
+      api.checkAppManagement().then(setApps).catch(() => undefined),
+      api.requestFinderAccess().then(setFinder).catch(() => undefined),
+    ]).then(() => setChecked(true));
   }, []);
 
   useEffect(() => {
@@ -67,7 +74,15 @@ export default function Permissions() {
     },
   ];
   const missing = items.some((item) => item.ok === false);
-  if (!IS_MAC || closed || !missing) {
+
+  useEffect(() => {
+    if (IS_MAC && checked && !missing && !permitted) {
+      granted();
+    }
+  }, [checked, missing, permitted, granted]);
+
+  // Shown whenever something is off, even after the launch scan started.
+  if (!IS_MAC || !missing) {
     return null;
   }
   return (
@@ -77,7 +92,7 @@ export default function Permissions() {
         <p className="empty-text">
           Turn these on now so nothing is asked in the middle of a scan or a removal. macOS
           only lets you switch them on in System Settings; StorageLens checks again when you
-          come back. After turning on Full Disk Access, quit and reopen StorageLens.
+          come back. If Full Disk Access stays Off after you turn it on, reopen StorageLens.
         </p>
         <ul className="permissions-list">
           {items.map((item) => (
@@ -108,9 +123,18 @@ export default function Permissions() {
           Store apps: macOS does not allow granting it ahead of time.
         </p>
         <div className="apps-remove-actions">
-          <button type="button" className="button" onClick={() => setClosed(true)}>
-            Continue
-          </button>
+          <span className="screen-status loading">Waiting for every permission to be on…</span>
+          {disk === "denied" ? (
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => {
+                api.relaunch().catch(() => undefined);
+              }}
+            >
+              Reopen StorageLens
+            </button>
+          ) : null}
         </div>
       </section>
     </div>

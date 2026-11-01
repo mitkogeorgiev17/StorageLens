@@ -3364,6 +3364,13 @@ pub mod ipc {
         .map_err(|error| error.to_string())?
     }
 
+    /// Quit and start again (#175): macOS may apply Full Disk Access only to
+    /// a fresh process, and the permissions dialog cannot be skipped.
+    #[tauri::command]
+    pub fn relaunch(app: AppHandle) {
+        app.restart();
+    }
+
     #[tauri::command]
     pub async fn check_full_disk_access() -> CommandResult<DiskAccess> {
         Ok(super::check_full_disk_access())

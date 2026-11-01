@@ -29,6 +29,23 @@ export async function requestRescan(): Promise<void> {
   }
 }
 
+/**
+ * The launch rescan (#171), once every permission is on (#175): a scan
+ * without Full Disk Access would miss whole folders.
+ */
+export function rescanWhenPermitted(): void {
+  if (useAppStore.getState().permitted) {
+    void requestRescan();
+    return;
+  }
+  const stop = useAppStore.subscribe((state) => {
+    if (state.permitted) {
+      stop();
+      void requestRescan();
+    }
+  });
+}
+
 /** Something moved to the Trash: remember it for undo, then rescan. */
 export function afterTrash(result: DeletionResultDto): void {
   useAppStore.getState().trashed(result);

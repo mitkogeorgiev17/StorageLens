@@ -109,6 +109,12 @@ export interface AppState {
   /** Why the last refresh did not replace the data; cleared by the next scan. */
   readonly staleReason: string | null;
   readonly lastTrash: LastTrash | null;
+  /**
+   * Every permission the app needs is on (#175). Nothing scans before: the
+   * permissions dialog sets it, and it starts `true` where none are asked.
+   */
+  readonly permitted: boolean;
+  permissionsGranted(): void;
   navigate(route: RouteId): void;
   /**
    * Go to the Map, showing `entryId` (a folder opened, a file selected) in the
@@ -149,6 +155,7 @@ export const useAppStore = create<AppState>()((set) => ({
   refresh: null,
   staleReason: null,
   lastTrash: null,
+  permitted: !/Mac/i.test(typeof navigator === "undefined" ? "" : navigator.userAgent),
 
   navigate: (route) => set({ route }),
 
@@ -284,6 +291,8 @@ export const useAppStore = create<AppState>()((set) => ({
     set((state) => (state.lastTrash === null ? state : { lastTrash: { ...state.lastTrash, undone } })),
 
   trashDismissed: () => set({ lastTrash: null }),
+
+  permissionsGranted: () => set({ permitted: true }),
 
   reset: () =>
     set({
