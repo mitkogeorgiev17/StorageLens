@@ -249,7 +249,14 @@ function LastTrash() {
   const dismiss = useAppStore((state) => state.trashDismissed);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (last === null) {
+  // A clean move needs no popup: the files are in the Trash, which can put
+  // them back. Only something not moved, or a warning, is worth showing.
+  const clean =
+    last !== null &&
+    last.undone === null &&
+    last.result.warning === null &&
+    last.result.items.every((item) => item.status === "trashed");
+  if (last === null || clean) {
     return null;
   }
   const undo = () => {
