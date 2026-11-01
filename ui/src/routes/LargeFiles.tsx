@@ -109,7 +109,8 @@ function LargeFilesView({ summary }: { readonly summary: ScanSummary }) {
     setTotal(null);
     setSelected(null);
     setError(null);
-    listRef.current?.scrollToRow({ index: 0, align: "start" });
+    // Not scrollToRow: it throws on an empty list (the first render has 0 rows).
+    listRef.current?.element?.scrollTo({ top: 0 });
     fetchPage(0);
   }, [fetchPage, listRef]);
 
