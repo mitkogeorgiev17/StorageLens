@@ -112,6 +112,77 @@ pub fn candidates(names: &[&str], publisher: Option<&str>) -> Vec<RegistryKey> {
     out
 }
 
+const APP_PATHS: [&str; 3] = [
+    r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\App Paths",
+    r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
+    r"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths",
+];
+
+const UNINSTALL: [&str; 3] = [
+    r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+    r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+    r"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+];
+
+/// Separates a key from one of its values: `HKEY_…\Run::Acme`.
+pub const VALUE: &str = "::";
+
+/// Keys and values that point at the app (#159), all strong: its own
+/// `Uninstall\<key>` entry (left when an uninstaller leaves it orphaned),
+/// `Applications\<exe>` and `App Paths\<exe>` for its executables, `Run`
+/// values and the user's file types whose command runs from `install_dir`.
+/// Whether they exist is checked when they are offered.
+pub fn pointing_into(
+    uninstall_key: &str,
+    install_dir: Option<&str>,
+    exes: &[&str],
+    run_values: &[(String, String, String)],
+    class_commands: &[(String, String)],
+) -> Vec<RegistryKey> {
+    let strong = |path: String| RegistryKey { path, strong: true };
+    let mut out: Vec<RegistryKey> = Vec::new();
+    if usable(uninstall_key).is_some() && !uninstall_key.contains(VALUE) {
+        out.extend(
+            UNINSTALL
+                .iter()
+                .map(|root| strong(format!(r"{root}\{uninstall_key}"))),
+        );
+    }
+    for exe in exes.iter().filter(|exe| usable(exe).is_some()) {
+        out.push(strong(format!(
+            r"HKEY_CURRENT_USER\Software\Classes\Applications\{exe}"
+        )));
+        out.extend(
+            APP_PATHS
+                .iter()
+                .map(|root| strong(format!(r"{root}\{exe}"))),
+        );
+    }
+    let Some(dir) = install_dir
+        .map(crate::apps::normalize)
+        .filter(|dir| !dir.is_empty())
+    else {
+        return out;
+    };
+    let runs_from_dir = |command: &str| {
+        crate::apps::exe_from_command(command)
+            .is_some_and(|exe| crate::apps::under(&crate::apps::normalize(&exe), &dir))
+    };
+    out.extend(
+        run_values
+            .iter()
+            .filter(|(_, value, command)| !value.contains(VALUE) && runs_from_dir(command))
+            .map(|(key, value, _)| strong(format!("{key}{VALUE}{value}"))),
+    );
+    out.extend(
+        class_commands
+            .iter()
+            .filter(|(_, command)| runs_from_dir(command))
+            .map(|(key, _)| strong(key.clone())),
+    );
+    out
+}
+
 /// Deleting it needs an elevated process.
 pub fn needs_admin(path: &str) -> bool {
     path.starts_with("HKEY_LOCAL_MACHINE")
@@ -141,7 +212,12 @@ mod sys {
     }
 
     pub fn key_exists(path: &str) -> bool {
-        split(path).is_some_and(|(root, rest)| Key::open(root, rest).is_some())
+        match path.split_once(super::VALUE) {
+            Some((key, value)) => split(key)
+                .and_then(|(root, rest)| Key::open(root, rest))
+                .is_some_and(|key| key.values().iter().any(|(name, _)| name == value)),
+            None => split(path).is_some_and(|(root, rest)| Key::open(root, rest).is_some()),
+        }
     }
 
     fn reg(args: &[&std::ffi::OsStr]) -> Result<(), String> {
@@ -160,9 +236,14 @@ mod sys {
     /// Export `path` to `backup`, then delete it. Nothing is deleted unless
     /// the backup was written.
     pub fn delete_with_backup(path: &str, backup: &Path) -> Result<(), String> {
+        // A value (`key::name`): the whole key is backed up, one value goes.
+        let (key, value) = match path.split_once(super::VALUE) {
+            Some((key, value)) => (key, Some(value)),
+            None => (path, None),
+        };
         reg(&[
             "export".as_ref(),
-            path.as_ref(),
+            key.as_ref(),
             backup.as_os_str(),
             "/y".as_ref(),
         ])
@@ -170,7 +251,16 @@ mod sys {
         if !backup.is_file() {
             return Err("backup failed, nothing deleted".to_owned());
         }
-        reg(&["delete".as_ref(), path.as_ref(), "/f".as_ref()])
+        match value {
+            Some(value) => reg(&[
+                "delete".as_ref(),
+                key.as_ref(),
+                "/v".as_ref(),
+                value.as_ref(),
+                "/f".as_ref(),
+            ]),
+            None => reg(&["delete".as_ref(), key.as_ref(), "/f".as_ref()]),
+        }
     }
 
     /// Put a backed-up key back.
@@ -224,6 +314,55 @@ mod tests {
         assert!(candidates(&["Classes", "Policies"], Some("Microsoft")).is_empty());
         assert!(candidates(&["Teams"], Some("Microsoft Corporation")).is_empty());
         assert!(candidates(&["", "a\\b"], None).is_empty());
+    }
+
+    #[test]
+    fn keys_and_values_pointing_into_the_install_folder() {
+        let runs = vec![
+            (
+                r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run".to_owned(),
+                "AcmeTray".to_owned(),
+                r#""C:\Program Files\Acme\tray.exe" --min"#.to_owned(),
+            ),
+            (
+                r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run".to_owned(),
+                "Other".to_owned(),
+                r"C:\Other\o.exe".to_owned(),
+            ),
+        ];
+        let classes = vec![
+            (
+                r"HKEY_CURRENT_USER\Software\Classes\Acme.Doc".to_owned(),
+                r#""C:\Program Files\Acme\acme.exe" "%1""#.to_owned(),
+            ),
+            (
+                r"HKEY_CURRENT_USER\Software\Classes\txtfile".to_owned(),
+                r"C:\Windows\notepad.exe %1".to_owned(),
+            ),
+        ];
+        let keys = pointing_into(
+            "AcmeApp",
+            Some(r"C:\Program Files\Acme"),
+            &["acme.exe"],
+            &runs,
+            &classes,
+        );
+        let paths: Vec<&str> = keys.iter().map(|key| key.path.as_str()).collect();
+        assert!(keys.iter().all(|key| key.strong));
+        assert!(paths.contains(
+            &r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\AcmeApp"
+        ));
+        assert!(paths.contains(&r"HKEY_CURRENT_USER\Software\Classes\Applications\acme.exe"));
+        assert!(paths.contains(
+            &r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\acme.exe"
+        ));
+        assert!(paths.contains(
+            &r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run::AcmeTray"
+        ));
+        assert!(paths.contains(&r"HKEY_CURRENT_USER\Software\Classes\Acme.Doc"));
+        assert!(!paths
+            .iter()
+            .any(|path| path.ends_with("::Other") || path.ends_with("txtfile")));
     }
 
     #[test]
