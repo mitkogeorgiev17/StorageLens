@@ -23,21 +23,35 @@ not for hypothetical other users.
 
 ### Current state
 
-Planning complete, backlog filed, workspace scaffolded. Implementation is in **M0**.
+**v1 is feature-complete** (2026-11-01): M0–M6 are merged. Both scanners, the
+catalog, the Overview, Map, Large Files, Collections, Apps, Cleanup and Duplicates
+screens, the rules engine, and the safety layer (guards, Trash, undo) exist and pass
+the local suite on macOS. The **History** screen is still a placeholder with no
+issue filed; undo is offered on the result panel right after each move.
 
-**Work is tracked as GitHub issues, not as tasks in this file.** 40 issues across 8
-milestones. Start at M0 (`#1`), and follow the dependency links in each issue.
+**Work is tracked as GitHub issues, not as tasks in this file.** One issue is open:
 
-| Milestone | Issues | Purpose |
+- **#16 — USN/MFT fast path** (Windows, stretch). Parked on purpose: PLAN §7.2 says
+  build it only if the v1 Windows scan feels slow, and that has not been measured.
+
+**Known gap — Windows has only been type-checked.** The Windows scanner, app
+inventory (`scan-windows/src/apps.rs`), and the app's command tests have never run
+on a Windows machine (§4). Before trusting Windows numbers, run the suite there,
+including `scanbench/tests/accuracy_windows.rs`. Do not describe Windows behaviour
+as tested until that happens.
+
+| Milestone | Issues | Delivered |
 |---|---|---|
 | M0 — Foundation | #1–#6 | Workspace, domain model, schema, fixtures, `scanbench` |
 | M1 — macOS scanner | #7–#11 | `getattrlistbulk`, dedupe, FDA, 2% accuracy gate |
-| M2 — Windows scanner | #12–#16 | Bulk directory query, sizes, registry, accuracy gate |
+| M2 — Windows scanner | #12–#15 | Bulk directory query, sizes, registry, accuracy gate (#16 parked) |
 | M3 — Catalog & treemap | #17–#24 | Arena, IPC, React shell, canvas treemap |
 | M3b — Categorization & grouping | #25–#28 | Six groupings, filters, sunburst, collections |
 | M4 — Cleanup & safety | #29–#35 | Guards, trash + undo, rules, catalogs, UI |
 | M5 — App inventory | #36–#38 | Installed apps, usage, footprint, removal |
 | M6 — Duplicates | #39–#40 | Hash pipeline, keep-one UI |
+
+New work starts as a new issue. Follow the dependency links and `Touches` lists (§9).
 
 See §9 for the branch and PR workflow.
 
@@ -64,11 +78,11 @@ See §9 for the branch and PR workflow.
 crates/core/           Entry, Volume, ScanOptions, StorageScanner trait, errors
   categories.rs        ~400-entry shared extension → category table
   tags.rs              u64 tag bitmask
-  grouping.rs          synthetic tree builders (Folder/Type/App/Age/Size/Cleanliness)
 crates/catalog/        SQLite schema, migrations, queries, tree arena, rollups
-crates/scan-macos/     getattrlistbulk FFI, buffer parser, FSEvents
-crates/scan-windows/   bulk dir-query walk, USN journal, registry
-crates/analysis/       duplicate finder, app inventory, rules engine
+crates/scan-macos/     getattrlistbulk FFI, buffer parser, app inventory (apps.rs)
+crates/scan-windows/   bulk dir-query walk, registry, app inventory (apps.rs)
+crates/analysis/       rules engine, duplicate finder (dupes.rs), app classification (apps.rs)
+  grouping.rs          synthetic tree builders (Folder/Type/App/Age/Size/Cleanliness)
 crates/safety/         path guards, trash service, manifests, undo
 crates/scanbench/      CLI binary — no UI, used to validate the scanners
 src-tauri/             Tauri app, #[tauri::command] surface, event emitters
