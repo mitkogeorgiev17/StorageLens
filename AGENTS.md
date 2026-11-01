@@ -98,6 +98,10 @@ directly.
 
 ## 4. Build and test
 
+Both Cargo workspaces (root and `src-tauri`) build into one shared `target/` folder
+(`.cargo/config.toml`, #177), so shared crates compile once; the app bundle lands in
+`target/release/bundle/`. Dev builds keep line tables only. `cargo clean` frees it all.
+
 One-time setup (Node 22+, Rust stable via `rustup`):
 
 ```bash
