@@ -105,7 +105,8 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
         <div className="banner" role="note">
           <p>
             <strong>Full Disk Access is off.</strong> Mail, Messages, Safari data and other
-            protected folders will be skipped, so totals will be low.
+            protected folders will be skipped, so totals will be low. A whole-disk scan needs it
+            most.
           </p>
           <button
             type="button"
@@ -127,13 +128,15 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
               <button
                 type="button"
                 className="target"
+                data-startup={target.startup}
                 disabled={busy}
                 aria-busy={starting === target.path}
                 onClick={() => void start(target.path)}
               >
                 <span className="target-label">
                   {target.label}
-                  {target.kind === "home" ? <span className="target-kind"> · home folder</span> : null}
+                  {target.startup ? <span className="target-kind"> · whole disk, recommended</span> : null}
+                  {target.kind === "home" ? <span className="target-kind"> · home folder only</span> : null}
                   {target.removable ? <span className="target-kind"> · removable</span> : null}
                 </span>
                 <span className="target-path">{target.path}</span>

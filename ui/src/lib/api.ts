@@ -69,6 +69,8 @@ export interface ScanTargetDto {
   readonly total: number | null;
   readonly available: number | null;
   readonly removable: boolean;
+  /** The disk the OS booted from: the recommended full scan. */
+  readonly startup: boolean;
 }
 
 export interface CategoryDto {

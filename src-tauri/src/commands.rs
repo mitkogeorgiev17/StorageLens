@@ -1332,11 +1332,28 @@ fn home_folder() -> Option<PathBuf> {
 /// What the scan picker offers: the home folder first, then every volume,
 /// fixed before removable, largest first.
 pub fn list_scan_targets() -> Vec<ScanTargetDto> {
-    let mut volumes = all_volumes();
+    let startup = startup_mount();
+    let mut volumes: Vec<ScanTargetDto> = all_volumes()
+        .into_iter()
+        .map(|volume| ScanTargetDto {
+            kind: ScanTargetKind::Volume,
+            startup: startup
+                .as_deref()
+                .is_some_and(|startup| same_mount(&volume.mount_point, startup)),
+            label: volume.name,
+            path: volume.mount_point.display().to_string(),
+            total: Some(volume.total.get()),
+            available: Some(volume.available.get()),
+            removable: volume.removable,
+        })
+        .collect();
+    // Startup disk first, then fixed before removable, largest first.
     volumes.sort_by(|left, right| {
-        left.removable
-            .cmp(&right.removable)
-            .then_with(|| right.total.get().cmp(&left.total.get()))
+        right
+            .startup
+            .cmp(&left.startup)
+            .then_with(|| left.removable.cmp(&right.removable))
+            .then_with(|| right.total.cmp(&left.total))
     });
     let home = home_folder().map(|home| ScanTargetDto {
         kind: ScanTargetKind::Home,
@@ -1348,17 +1365,36 @@ pub fn list_scan_targets() -> Vec<ScanTargetDto> {
         total: None,
         available: None,
         removable: false,
+        startup: false,
     });
-    home.into_iter()
-        .chain(volumes.into_iter().map(|volume| ScanTargetDto {
-            kind: ScanTargetKind::Volume,
-            label: volume.name,
-            path: volume.mount_point.display().to_string(),
-            total: Some(volume.total.get()),
-            available: Some(volume.available.get()),
-            removable: volume.removable,
-        }))
-        .collect()
+    let split = usize::from(volumes.first().is_some_and(|volume| volume.startup));
+    let rest = volumes.split_off(split);
+    volumes.into_iter().chain(home).chain(rest).collect()
+}
+
+/// Where the OS booted from: `/`, or `%SystemDrive%` on Windows.
+fn startup_mount() -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("SystemDrive").map(PathBuf::from)
+    } else {
+        Some(PathBuf::from("/"))
+    }
+}
+
+/// Mount points compare case-insensitively and without a trailing separator
+/// on Windows (`C:\` vs `c:`).
+fn same_mount(left: &Path, right: &Path) -> bool {
+    if cfg!(windows) {
+        let clean = |path: &Path| {
+            path.display()
+                .to_string()
+                .trim_end_matches(['\\', '/'])
+                .to_ascii_lowercase()
+        };
+        clean(left) == clean(right)
+    } else {
+        left == right
+    }
 }
 
 fn volume_for(root: Option<&Path>) -> Option<VolumeDto> {
@@ -3714,8 +3750,21 @@ mod tests {
             .filter(|target| target.kind == ScanTargetKind::Home)
             .count();
         assert!(homes <= 1, "at most one home folder");
+        let startups = targets.iter().filter(|target| target.startup).count();
+        assert!(startups <= 1, "at most one startup disk");
+        if startups == 1 {
+            assert!(targets[0].startup, "the startup disk comes first");
+            assert_eq!(targets[0].kind, ScanTargetKind::Volume);
+        }
+        #[cfg(target_os = "macos")]
+        assert_eq!(targets[0].path, "/", "the startup disk is listed on macOS");
         if homes == 1 {
-            assert_eq!(targets[0].kind, ScanTargetKind::Home, "home comes first");
+            let at = usize::from(startups == 1);
+            assert_eq!(
+                targets[at].kind,
+                ScanTargetKind::Home,
+                "home right after it"
+            );
         }
     }
 
