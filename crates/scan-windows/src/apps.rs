@@ -75,6 +75,13 @@ pub struct Roots {
     /// Directories too broad to be an install location (`Program Files`, the
     /// profile, the data roots, …).
     pub too_broad: Vec<String>,
+    /// `%USERPROFILE%`, for `.<name>` folders (#157).
+    pub home: String,
+    /// The user's and the public Desktop and Start Menu `Programs` folders,
+    /// for `<name>.lnk` shortcuts (#157).
+    pub shortcut_dirs: Vec<String>,
+    /// Every file in `%LOCALAPPDATA%\CrashDumps`, lowercased (#157).
+    pub crash_dumps: Vec<String>,
 }
 
 /// Everything read from the machine besides the uninstall entries.
@@ -412,9 +419,25 @@ pub fn assemble(
         .map(|(path, count, last)| (normalize(path), *count, *last))
         .collect();
 
+    // Executable stems only one app has (`code` for Code.exe) are evidence
+    // for its data folders too: `%APPDATA%\Code`.
+    let stems: Vec<Vec<String>> = names
+        .iter()
+        .map(|names| {
+            names
+                .iter()
+                .filter(|name| name_claims.get(name.as_str()) == Some(&1))
+                .filter_map(|name| name.strip_suffix(".exe"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .collect();
     let candidates: Vec<Vec<String>> = apps
         .iter()
-        .map(|(entry, dir)| satellite_candidates(entry, dir.as_deref(), roots, exists))
+        .zip(&stems)
+        .map(|((entry, dir), stems)| {
+            satellite_candidates(entry, dir.as_deref(), stems, roots, exists)
+        })
         .collect();
     let mut satellite_claims: HashMap<&str, usize> = HashMap::new();
     for path in candidates.iter().flatten() {
@@ -502,9 +525,15 @@ pub fn assemble(
 /// directory's name and the display name — never `<data root>\<publisher>`
 /// alone, which a vendor's apps share. Paths overlapping the install
 /// directory are left out so nothing counts twice.
+///
+/// Also (#157): the app's executable stems as names, `%USERPROFILE%\.<name>`,
+/// `<name>.lnk` shortcuts on the Desktop and in the Start Menu, and crash
+/// dumps `<exe>.<pid>.dmp`. The data roots include LocalLow, Temp and
+/// `%LOCALAPPDATA%\Programs`.
 fn satellite_candidates(
     entry: &UninstallEntry,
     dir: Option<&str>,
+    stems: &[String],
     roots: &Roots,
     exists: &dyn Fn(&str) -> bool,
 ) -> Vec<String> {
@@ -518,7 +547,30 @@ fn satellite_candidates(
     let mut names: Vec<String> = Vec::new();
     names.extend(dir.map(file_name).and_then(clean));
     names.extend(clean(&entry.name));
+    names.extend(
+        stems
+            .iter()
+            .filter(|stem| stem.chars().count() >= 3)
+            .cloned(),
+    );
     let publisher = entry.publisher.as_deref().and_then(clean);
+    // `Microsoft VS Code` is also `VS Code` (`.vscode`): names often lead
+    // with the publisher's first word.
+    if let Some(lead) = publisher
+        .as_deref()
+        .and_then(|publisher| publisher.split_whitespace().next())
+        .map(|word| format!("{word} "))
+    {
+        let trimmed: Vec<String> = names
+            .iter()
+            .filter_map(|name| name.strip_prefix(&lead))
+            .filter(|rest| rest.chars().count() >= 3)
+            .map(str::to_owned)
+            .collect();
+        names.extend(trimmed);
+    }
+    let mut unique = HashSet::new();
+    names.retain(|name| unique.insert(name.clone()));
 
     let mut out: Vec<String> = Vec::new();
     for root in &roots.data {
@@ -530,6 +582,24 @@ fn satellite_candidates(
                 }
             }
         }
+    }
+    for name in &names {
+        if !roots.home.is_empty() {
+            out.push(format!("{}\\.{}", roots.home, name.replace(' ', "")));
+        }
+        for shortcuts in &roots.shortcut_dirs {
+            out.push(format!("{shortcuts}\\{name}.lnk"));
+        }
+    }
+    for stem in stems {
+        let prefix = format!("{stem}.exe.");
+        out.extend(
+            roots
+                .crash_dumps
+                .iter()
+                .filter(|dump| file_name(dump).starts_with(&prefix))
+                .cloned(),
+        );
     }
     let mut seen = HashSet::new();
     out.retain(|path| {
@@ -1084,10 +1154,49 @@ pub(crate) mod sys {
         let windows = env("windir")
             .or_else(|| env("SystemRoot"))
             .unwrap_or_default();
-        let data: Vec<String> = ["LOCALAPPDATA", "APPDATA", "ProgramData"]
+        let home = env("USERPROFILE")
+            .map(|dir| normalize(&dir))
+            .unwrap_or_default();
+        let local = env("LOCALAPPDATA");
+        let mut data: Vec<String> = ["LOCALAPPDATA", "APPDATA", "ProgramData"]
             .into_iter()
             .filter_map(env)
             .map(|dir| normalize(&dir))
+            .collect();
+        // LocalLow (games, Java), Temp, and per-user `Programs` (#157).
+        if !home.is_empty() {
+            data.push(format!(r"{home}\appdata\locallow"));
+        }
+        if let Some(local) = &local {
+            data.push(normalize(&format!(r"{local}\Temp")));
+            data.push(normalize(&format!(r"{local}\Programs")));
+        }
+        let start_menu = |root: Option<String>| {
+            root.map(|root| normalize(&format!(r"{root}\Microsoft\Windows\Start Menu\Programs")))
+        };
+        let shortcut_dirs: Vec<String> = [
+            start_menu(env("APPDATA")),
+            start_menu(env("ProgramData")),
+            env("USERPROFILE").map(|dir| normalize(&format!(r"{dir}\Desktop"))),
+            env("PUBLIC").map(|dir| normalize(&format!(r"{dir}\Desktop"))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        // Start Menu folders (`Programs\<name>`) are data roots too.
+        data.extend(
+            shortcut_dirs
+                .iter()
+                .filter(|dir| dir.ends_with("programs"))
+                .cloned(),
+        );
+        let crash_dumps: Vec<String> = local
+            .as_ref()
+            .and_then(|local| fs::read_dir(format!(r"{local}\CrashDumps")).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| normalize(&entry.path().to_string_lossy()))
             .collect();
         let mut too_broad: Vec<String> = [
             "ProgramFiles",
@@ -1111,6 +1220,9 @@ pub(crate) mod sys {
             windows: normalize(&windows),
             data,
             too_broad,
+            home,
+            shortcut_dirs,
+            crash_dumps,
         }
     }
 
@@ -1329,6 +1441,7 @@ mod tests {
                 r"c:\program files".into(),
                 r"c:\users\u\appdata\local".into(),
             ],
+            ..Roots::default()
         }
     }
 
@@ -1493,6 +1606,78 @@ mod tests {
                 PathBuf::from(r"c:\programdata\discord"),
             ]
         );
+    }
+
+    #[test]
+    fn leftovers_in_every_data_folder() {
+        // VS Code: data under its executable's name, a dot folder, a Start
+        // Menu shortcut, a crash dump; LocalLow for a game.
+        let code = UninstallEntry {
+            publisher: Some("Microsoft Corporation".into()),
+            ..entry(
+                "Code",
+                "Microsoft Visual Studio Code",
+                r"C:\Users\u\AppData\Local\Programs\Microsoft VS Code",
+            )
+        };
+        let game = UninstallEntry {
+            publisher: Some("Fingersoft".into()),
+            ..entry("HC", "Hill Climb", r"C:\Games\Hill Climb")
+        };
+        let mut roots = roots();
+        roots.data.push(r"c:\users\u\appdata\locallow".into());
+        roots.home = r"c:\users\u".into();
+        roots.shortcut_dirs =
+            vec![r"c:\users\u\appdata\roaming\microsoft\windows\start menu\programs".into()];
+        roots.crash_dumps = vec![
+            r"c:\users\u\appdata\local\crashdumps\code.exe.4242.dmp".into(),
+            r"c:\users\u\appdata\local\crashdumps\codex.exe.1.dmp".into(),
+        ];
+        let present = [
+            r"c:\users\u\appdata\roaming\code",
+            r"c:\users\u\.vscode",
+            r"c:\users\u\appdata\roaming\microsoft\windows\start menu\programs\microsoft visual studio code.lnk",
+            r"c:\users\u\appdata\local\crashdumps\code.exe.4242.dmp",
+            r"c:\users\u\appdata\locallow\fingersoft\hill climb",
+        ];
+        let exists = |path: &str| present.contains(&path);
+        let exe_names = |dir: &str| {
+            if dir.contains("vs code") {
+                vec!["code.exe".to_owned()]
+            } else {
+                vec!["hillclimb.exe".to_owned()]
+            }
+        };
+        let apps = assemble(
+            &[code, game],
+            &Evidence::default(),
+            &roots,
+            &|_| true,
+            &exe_names,
+            &exists,
+        );
+        let paths = |i: usize| -> Vec<String> {
+            let mut out: Vec<String> = apps[i]
+                .satellites
+                .iter()
+                .map(|s| s.path.display().to_string())
+                .collect();
+            out.sort();
+            out
+        };
+        let code_paths = paths(apps.iter().position(|a| a.name.contains("Code")).unwrap());
+        assert_eq!(
+            code_paths,
+            [
+                r"c:\users\u\.vscode",
+                r"c:\users\u\appdata\local\crashdumps\code.exe.4242.dmp",
+                r"c:\users\u\appdata\roaming\code",
+                r"c:\users\u\appdata\roaming\microsoft\windows\start menu\programs\microsoft visual studio code.lnk",
+            ]
+        );
+        let game = apps.iter().find(|a| a.name == "Hill Climb").unwrap();
+        assert_eq!(game.satellites.len(), 1);
+        assert!(game.satellites[0].strong, "publisher\\name is strong");
     }
 
     #[test]
