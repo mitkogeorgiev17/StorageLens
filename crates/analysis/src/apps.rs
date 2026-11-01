@@ -133,10 +133,12 @@ mod tests {
             Satellite {
                 path: PathBuf::from("/a"),
                 bytes: Bytes::new(20),
+                strong: true,
             },
             Satellite {
                 path: PathBuf::from("/b"),
                 bytes: Bytes::new(300),
+                strong: true,
             },
         ];
         assess(&mut apps, NOW);

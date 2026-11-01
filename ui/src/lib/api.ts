@@ -186,6 +186,15 @@ export interface Filter {
   readonly within?: number;
 }
 
+/** Something an uninstalled app left behind (#120). */
+export interface LeftoverDto {
+  readonly path: string;
+  readonly bytes: number;
+  /** Install folder, bundle id or publisher-and-app match; weak = name only. */
+  readonly strong: boolean;
+  readonly kind: "install" | "data";
+}
+
 /** Something that starts at login (#114). */
 export interface StartupItemDto {
   readonly id: string;
@@ -506,6 +515,19 @@ export const api = {
    * remove apps" runs, on macOS a vendor uninstaller. Resolves once started.
    */
   uninstallApp: (id: string) => call<void>("uninstall_app", { id }),
+  /** The app's own uninstaller has finished (#120): it is gone from the
+   * system's list. Poll after {@link api.uninstallApp}. */
+  uninstallFinished: (id: string) =>
+    call<boolean>("uninstall_finished", { id }),
+  /** What an uninstalled app left behind, strong matches first (#120). */
+  appLeftovers: (id: string) =>
+    call<readonly LeftoverDto[]>("app_leftovers", { id }),
+  /** Receipt for moving chosen leftovers to the Trash (#120). */
+  previewLeftoverRemoval: (
+    scanId: number,
+    id: string,
+    paths: readonly string[],
+  ) => call<DeletionPlanDto>("preview_leftover_removal", { scanId, id, paths }),
   /** Force quit a listed app's processes (#113); unsaved work is lost. */
   forceQuitApp: (path: string) => call<QuitDto>("force_quit_app", { path }),
   /**

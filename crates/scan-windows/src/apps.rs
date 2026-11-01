@@ -38,7 +38,7 @@ use storagelens_core::{AppInfo, AppStatus, Bytes, Satellite, Signature};
 use crate::ffi::filetime_to_unix;
 
 #[cfg(windows)]
-pub use sys::{force_quit, inventory, run_uninstaller};
+pub use sys::{force_quit, inventory, is_registered, run_uninstaller};
 
 /// One `Uninstall\<key>` entry, as read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -481,6 +481,11 @@ pub fn assemble(
                     .map(|path| Satellite {
                         path: PathBuf::from(path),
                         bytes: Bytes::ZERO,
+                        // `<root>\<publisher>\<name>`, not a bare `<root>\<name>`.
+                        strong: roots.data.iter().any(|root| {
+                            path.strip_prefix(root.as_str())
+                                .is_some_and(|rest| rest.trim_start_matches('\\').contains('\\'))
+                        }),
                     })
                     .collect(),
             }
@@ -864,6 +869,14 @@ pub(crate) mod sys {
             .into_iter()
             .map(|(_, exe)| exe)
             .collect()
+    }
+
+    /// The uninstall key `key` still exists in any hive (#120): `false` once
+    /// the app's uninstaller has finished and removed its entry.
+    pub fn is_registered(key: &str) -> bool {
+        UNINSTALL
+            .iter()
+            .any(|(hive, path)| Key::open(*hive, &format!(r"{path}\{key}")).is_some())
     }
 
     /// Start an app's uninstaller (#115) the way "Add or remove apps" does.
@@ -1412,6 +1425,8 @@ mod tests {
                 PathBuf::from(r"c:\users\u\appdata\roaming\acme\foo"),
             ]
         );
+        let strong: Vec<bool> = foo.satellites.iter().map(|s| s.strong).collect();
+        assert_eq!(strong, [false, true], "only publisher\\app is strong");
 
         let bar = &apps[1];
         assert_eq!(bar.last_used, Some(500), "shared update.exe is ignored");

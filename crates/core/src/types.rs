@@ -498,6 +498,11 @@ pub struct Satellite {
     pub path: PathBuf,
     /// Allocated bytes below `path`.
     pub bytes: Bytes,
+    /// Matched on strong evidence (#120): the bundle id on macOS, the
+    /// publisher-and-app folder on Windows. `false` for a bare-name match,
+    /// which another program could share.
+    #[serde(default)]
+    pub strong: bool,
 }
 
 /// Something that starts at login (#114): a launchd job on macOS, a `Run`

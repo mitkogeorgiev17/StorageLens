@@ -15,17 +15,20 @@
  * the command "Add or remove apps" runs (moving the folder would leave its
  * registry entries, services and shortcuts behind), on macOS a vendor
  * uninstaller. Moving a Mac app to the Trash is the standard uninstall
- * otherwise.
+ * otherwise. Once the app is gone from the system's list (#120), what it left
+ * behind is offered for the Trash, strong matches ticked.
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
+import Leftovers from "../components/Leftovers";
 import Receipt from "../components/Receipt";
 import {
   api,
   type AppRowDto,
   type DeletionPlanDto,
   type DeletionResultDto,
+  type LeftoverDto,
 } from "../lib/api";
 import {
   STATUS_LABELS,
@@ -71,6 +74,11 @@ export default function AppsScreen() {
   const [quitting, setQuitting] = useState<AppRowDto | null>(null);
   const [quitNote, setQuitNote] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState<AppRowDto | null>(null);
+  const [waiting, setWaiting] = useState<AppRowDto | null>(null);
+  const [leftovers, setLeftovers] = useState<{
+    readonly row: AppRowDto;
+    readonly items: readonly LeftoverDto[];
+  } | null>(null);
   const [plan, setPlan] = useState<DeletionPlanDto | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -120,9 +128,62 @@ export default function AppsScreen() {
       .finally(() => setBusy(false));
   };
 
+  // Poll until the uninstaller has removed the app from the system's list,
+  // then show what it left behind.
+  useEffect(() => {
+    if (waiting === null) {
+      return;
+    }
+    let live = true;
+    const timer = window.setInterval(() => {
+      api
+        .uninstallFinished(waiting.id)
+        .then((done) => (done ? api.appLeftovers(waiting.id) : null))
+        .then((items) => {
+          if (live && items !== null) {
+            setWaiting(null);
+            setLeftovers({ row: waiting, items });
+          }
+        })
+        .catch((cause: unknown) => {
+          if (live) {
+            setWaiting(null);
+            setError(message(cause));
+          }
+        });
+    }, 2000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [waiting]);
+
+  const reviewLeftovers = (row: AppRowDto, paths: readonly string[]) => {
+    if (scanId === null) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    api
+      .previewLeftoverRemoval(scanId, row.id, paths)
+      .then(setPlan)
+      .catch((cause: unknown) => setError(message(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  const leftoversDone = () => {
+    setLeftovers(null);
+    // The app is gone from the machine: read the inventory again.
+    void load(true);
+  };
+
   const finished = (moved: DeletionResultDto) => {
     setPlan(null);
     afterTrash(moved);
+    if (leftovers !== null) {
+      leftoversDone();
+      return;
+    }
     void load(false);
   };
 
@@ -133,9 +194,8 @@ export default function AppsScreen() {
       .uninstallApp(row.id)
       .then(() => {
         setUninstalling(null);
-        setQuitNote(
-          `${row.name}'s uninstaller started. Follow its steps, then press Refresh.`,
-        );
+        setLeftovers(null);
+        setWaiting(row);
       })
       .catch((cause: unknown) => setError(message(cause)))
       .finally(() => setBusy(false));
@@ -199,6 +259,42 @@ export default function AppsScreen() {
         <p className="screen-status" role="status">
           {quitNote}
         </p>
+      ) : null}
+
+      {waiting !== null ? (
+        <section className="apps-remove" aria-live="polite">
+          <h2>Waiting for {waiting.name}'s uninstaller…</h2>
+          <p>
+            Follow its steps. Once {waiting.name} is gone, what it left behind
+            is listed here.
+          </p>
+          <div className="apps-remove-actions">
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => {
+                setWaiting(null);
+                setQuitNote(
+                  `Stopped waiting for ${waiting.name}. Press Refresh once its uninstaller finishes.`,
+                );
+              }}
+            >
+              Stop waiting
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {leftovers !== null ? (
+        <Leftovers
+          key={leftovers.row.id}
+          row={leftovers.row}
+          items={leftovers.items}
+          busy={busy}
+          canReview={scanId !== null}
+          onReview={(paths) => reviewLeftovers(leftovers.row, paths)}
+          onDone={leftoversDone}
+        />
       ) : null}
 
       {uninstalling !== null ? (

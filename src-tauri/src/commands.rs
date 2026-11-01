@@ -46,9 +46,10 @@ use tauri::{AppHandle, State};
 use crate::dto::{
     AppRowDto, CategoryDto, ChildDto, CleanupDto, CleanupProgressDto, CrumbDto, DeletionPlanDto,
     DeletionResultDto, DupFileDto, DupGroupDto, DupesDto, FileRangeDto, FileRowDto, FileSortDto,
-    FilterDto, Grouping, OverviewDto, Page, PlanItemDto, QuitDto, ResultItemDto, RuleGroupDto,
-    RuleItemDto, SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind, SearchCursorDto,
-    SizeCursorDto, StartupItemDto, TreeNodeDto, UndoItemDto, UndoResultDto, VolumeDto,
+    FilterDto, Grouping, LeftoverDto, OverviewDto, Page, PlanItemDto, QuitDto, ResultItemDto,
+    RuleGroupDto, RuleItemDto, SatelliteDto, ScanStatusDto, ScanTargetDto, ScanTargetKind,
+    SearchCursorDto, SizeCursorDto, StartupItemDto, TreeNodeDto, UndoItemDto, UndoResultDto,
+    VolumeDto,
 };
 use crate::events::{
     self, DupesProgressEvent, Emit, ScanDoneEvent, ScanErrorEvent, ScanProgressEvent, Throttle,
@@ -1976,7 +1977,6 @@ pub fn preview_app_removal(
         ));
     }
 
-    let removed = lock(&state.removed)?.clone();
     let mut targets = vec![(
         app.path.clone(),
         app.bytes.get(),
@@ -1992,6 +1992,19 @@ pub fn preview_app_removal(
         );
     }
 
+    plan_for(state, scan_id, &app.name, targets, stamp)
+}
+
+/// A dry-run receipt for removing `targets` of the app `name`, skipping
+/// anything already moved to the Trash.
+fn plan_for(
+    state: &AppState,
+    scan_id: i64,
+    name: &str,
+    targets: Vec<(PathBuf, u64, &str, String)>,
+    stamp: &dyn Fn(&Path) -> std::io::Result<storagelens_core::FileStamp>,
+) -> CommandResult<DeletionPlanDto> {
+    let removed = lock(&state.removed)?.clone();
     let mut items = Vec::new();
     let mut lines = Vec::new();
     for (target, bytes, rule_id, title) in targets {
@@ -2015,9 +2028,104 @@ pub fn preview_app_removal(
         });
     }
     if items.is_empty() {
-        return Err(format!("{} was already moved to the Trash", app.name));
+        return Err(format!("{} was already moved to the Trash", name));
     }
     store_plan(state, scan_id, items, lines)
+}
+
+// --- Leftovers after an uninstall (#120) ----------------------------------------------
+
+/// The cached, non-system app `id`.
+fn listed_app(state: &AppState, id: &str) -> CommandResult<storagelens_core::AppInfo> {
+    lock(&state.apps)?
+        .as_ref()
+        .and_then(|apps| apps.iter().find(|app| app.id == id && !app.system).cloned())
+        .ok_or_else(|| format!("{id} is not in the app list; reload it"))
+}
+
+/// The app's own uninstaller has finished: its bundle is gone (macOS) or its
+/// uninstall entry is (Windows). Waiting on the process would not do: many
+/// uninstallers hand off to a copy of themselves and exit at once.
+pub fn uninstall_finished(
+    state: &AppState,
+    id: &str,
+    still_installed: &dyn Fn(&storagelens_core::AppInfo) -> bool,
+) -> CommandResult<bool> {
+    Ok(!still_installed(&listed_app(state, id)?))
+}
+
+fn platform_still_installed(app: &storagelens_core::AppInfo) -> bool {
+    #[cfg(windows)]
+    {
+        storagelens_scan_windows::apps::is_registered(&app.id)
+    }
+    #[cfg(not(windows))]
+    {
+        app.path.exists()
+    }
+}
+
+/// What the app `id` left behind: its install folder or bundle if it is still
+/// there, and the data folders found for it that still exist. Strong matches
+/// first.
+pub fn app_leftovers(state: &AppState, id: &str) -> CommandResult<Vec<LeftoverDto>> {
+    let app = listed_app(state, id)?;
+    let removed = lock(&state.removed)?.clone();
+    let exists = |path: &Path| std::fs::symlink_metadata(path).is_ok();
+    let mut out = Vec::new();
+    if !app.path.as_os_str().is_empty() && exists(&app.path) {
+        out.push(LeftoverDto {
+            path: app.path.display().to_string(),
+            bytes: app.bytes.get(),
+            strong: true,
+            kind: "install".to_owned(),
+        });
+    }
+    out.extend(
+        app.satellites
+            .iter()
+            .filter(|satellite| exists(&satellite.path))
+            .map(|satellite| LeftoverDto {
+                path: satellite.path.display().to_string(),
+                bytes: satellite.bytes.get(),
+                strong: satellite.strong,
+                kind: "data".to_owned(),
+            }),
+    );
+    out.retain(|leftover| !removed.contains(&leftover.path));
+    out.sort_by_key(|leftover| !leftover.strong);
+    Ok(out)
+}
+
+/// Dry-run receipt for removing the chosen leftovers of app `id`. Only paths
+/// [`app_leftovers`] lists, so the UI cannot name anything else; executed by
+/// `execute_deletion` like any cleanup plan (guard, re-stat, Trash, undo).
+pub fn preview_leftover_removal(
+    state: &AppState,
+    scan_id: i64,
+    id: &str,
+    paths: &[String],
+    stamp: &dyn Fn(&Path) -> std::io::Result<storagelens_core::FileStamp>,
+) -> CommandResult<DeletionPlanDto> {
+    let app = listed_app(state, id)?;
+    let leftovers = app_leftovers(state, id)?;
+    let title = format!("{} — left after uninstalling", app.name);
+    let targets = paths
+        .iter()
+        .map(|path| {
+            let leftover = leftovers
+                .iter()
+                .find(|leftover| &leftover.path == path)
+                .ok_or_else(|| format!("{path} is not a leftover of {}", app.name))?;
+            let rule = if leftover.kind == "install" {
+                "app.bundle"
+            } else {
+                "app.data"
+            };
+            Ok((PathBuf::from(path), leftover.bytes, rule, title.clone()))
+        })
+        .collect::<CommandResult<Vec<_>>>()?;
+    plan_for(state, scan_id, &app.name, targets, stamp)
 }
 
 /// Byte-identical files in a scan (PLAN §12). Reuses the last search of the
@@ -2727,6 +2835,29 @@ pub mod ipc {
     }
 
     #[tauri::command]
+    pub async fn uninstall_finished(state: AppStateRef<'_>, id: String) -> CommandResult<bool> {
+        super::uninstall_finished(state.inner(), &id, &super::platform_still_installed)
+    }
+
+    #[tauri::command]
+    pub async fn app_leftovers(
+        state: AppStateRef<'_>,
+        id: String,
+    ) -> CommandResult<Vec<LeftoverDto>> {
+        super::app_leftovers(state.inner(), &id)
+    }
+
+    #[tauri::command]
+    pub async fn preview_leftover_removal(
+        state: AppStateRef<'_>,
+        scan_id: i64,
+        id: String,
+        paths: Vec<String>,
+    ) -> CommandResult<DeletionPlanDto> {
+        super::preview_leftover_removal(state.inner(), scan_id, &id, &paths, &super::platform_stamp)
+    }
+
+    #[tauri::command]
     pub async fn list_startup() -> CommandResult<Vec<StartupItemDto>> {
         // Runs launchctl / plutil per job: off the main thread.
         tauri::async_runtime::spawn_blocking(super::list_startup)
@@ -3187,6 +3318,7 @@ mod tests {
             foo.satellites = vec![Satellite {
                 path: data.clone(),
                 bytes: Bytes::new(12_288),
+                strong: true,
             }];
             foo.uninstaller = Some("/Applications/Foo/Uninstall Foo.app".into());
             let mut busy = app("Busy", root.join("Busy.app"));
@@ -3233,6 +3365,32 @@ mod tests {
         .expect("uninstall");
         assert_eq!(*ran.borrow(), "/Applications/Foo/Uninstall Foo.app");
         assert!(uninstall_app(&state, "com.example.Busy", &|_| Ok(())).is_err());
+
+        // Leftovers (#120): finished once the app is gone from the system's list;
+        // then the bundle (if still there) and its data, only those paths.
+        assert!(!uninstall_finished(&state, "com.example.Foo", &|_| true).expect("waiting"));
+        assert!(uninstall_finished(&state, "com.example.Foo", &|_| false).expect("done"));
+        let leftovers = app_leftovers(&state, "com.example.Foo").expect("leftovers");
+        let kinds: Vec<(&str, bool)> = leftovers
+            .iter()
+            .map(|leftover| (leftover.kind.as_str(), leftover.strong))
+            .collect();
+        assert_eq!(kinds, [("install", true), ("data", true)]);
+        let chosen = vec![data.display().to_string()];
+        let plan =
+            preview_leftover_removal(&state, scan_id, "com.example.Foo", &chosen, &platform_stamp)
+                .expect("plan");
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].rule_id, "app.data");
+        let foreign = vec![root.display().to_string()];
+        assert!(preview_leftover_removal(
+            &state,
+            scan_id,
+            "com.example.Foo",
+            &foreign,
+            &platform_stamp
+        )
+        .is_err());
 
         let quit = force_quit_app(&state, &busy, &|_| (2, 0)).expect("quit");
         assert_eq!((quit.stopped, quit.failed), (2, 0));
