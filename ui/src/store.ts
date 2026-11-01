@@ -29,7 +29,6 @@ export const ROUTE_IDS = [
   "large-files",
   "apps",
   "cleanup",
-  "duplicates",
   "history",
 ] as const;
 

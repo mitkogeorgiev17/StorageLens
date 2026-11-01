@@ -1,5 +1,6 @@
 /**
- * Duplicates (#40): resolve duplicates without losing the only copy.
+ * Duplicates (#40), a section of Cleanup (#112): resolve duplicates without
+ * losing the only copy.
  *
  * A search runs only when asked (it hashes in the background and can take
  * minutes). Each group shows every copy with its size and date, plus a
@@ -42,7 +43,7 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export default function DuplicatesScreen() {
+export default function DuplicatesSection() {
   const scan = useAppStore((state) => state.scan);
   const scanId = scan.kind === "done" ? scan.summary.scanId : null;
   const [found, setFound] = useState<DupesDto | null>(null);
@@ -113,15 +114,7 @@ export default function DuplicatesScreen() {
   const shown = groups.slice(page * PAGE, page * PAGE + PAGE);
 
   if (scanId === null) {
-    return (
-      <section className="empty" aria-labelledby="dupes-empty">
-        <h2 id="dupes-empty">Nothing scanned yet</h2>
-        <p className="empty-text">
-          Duplicates are searched within a finished scan. Start one from the
-          Overview.
-        </p>
-      </section>
-    );
+    return null;
   }
 
   const review = () => {
@@ -141,7 +134,10 @@ export default function DuplicatesScreen() {
   };
 
   return (
-    <div className="dupes-screen">
+    <section className="dupes-screen" aria-labelledby="dupes-title">
+      <h2 id="dupes-title" className="cleanup-kind-title">
+        Duplicate files
+      </h2>
       <div className="apps-toolbar">
         <span className="screen-status" aria-live="polite">
           {searching
@@ -195,7 +191,7 @@ export default function DuplicatesScreen() {
 
       {found !== null && groups.length === 0 && !searching ? (
         <section className="empty" aria-labelledby="dupes-none">
-          <h2 id="dupes-none">No duplicates</h2>
+          <h3 id="dupes-none">No duplicates</h3>
           <p className="empty-text">
             No two files of 1 MB or more have the same contents.
           </p>
@@ -258,7 +254,7 @@ export default function DuplicatesScreen() {
       {plan !== null ? (
         <Receipt plan={plan} onCancel={() => setPlan(null)} onDone={finished} />
       ) : null}
-    </div>
+    </section>
   );
 }
 
@@ -277,10 +273,10 @@ function GroupCard({
   return (
     <section className="dupes-group" aria-labelledby={title}>
       <header className="dupes-group-head">
-        <h2 id={title} className="dupes-group-title">
+        <h3 id={title} className="dupes-group-title">
           {formatCount(group.files.length)} copies ·{" "}
           {formatBytes(group.sizeLogical)} each
-        </h2>
+        </h3>
         <span className="dupes-reclaim">
           {formatBytes(group.reclaimable)} reclaimable
         </span>

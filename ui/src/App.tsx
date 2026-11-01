@@ -22,7 +22,6 @@ import NavIcon from "./components/NavIcon";
 import SearchBar from "./components/SearchBar";
 import AppsScreen from "./routes/Apps";
 import CleanupScreen from "./routes/Cleanup";
-import DuplicatesScreen from "./routes/Duplicates";
 import LargeFilesScreen from "./routes/LargeFiles";
 import MapScreen from "./routes/Map";
 import OverviewScreen from "./routes/Overview";
@@ -69,14 +68,8 @@ const SCREENS: Readonly<Record<RouteId, ScreenInfo>> = {
   cleanup: {
     label: "Cleanup",
     title: "Cleanup",
-    purpose: "Caches and leftovers that are safe to remove, with Trash and undo.",
+    purpose: "Caches, leftovers and duplicate files to remove, with Trash and undo.",
     empty: "Cleanup suggestions appear after a scan.",
-  },
-  duplicates: {
-    label: "Duplicates",
-    title: "Duplicates",
-    purpose: "Identical files, grouped, with a keep-one choice per group.",
-    empty: "Duplicate files are listed here after a search."
   },
   history: {
     label: "History",
@@ -168,7 +161,6 @@ const COMPONENTS: Partial<Record<RouteId, ComponentType>> = {
   "large-files": LargeFilesScreen,
   apps: AppsScreen,
   cleanup: CleanupScreen,
-  duplicates: DuplicatesScreen,
 };
 
 function Screen({ id }: { readonly id: RouteId }) {
