@@ -13,11 +13,11 @@ and cleanup suggestions that go to the Trash, with undo.
 
 <a href="https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens.dmg"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS-111111?style=for-the-badge&logo=apple&logoColor=white" height="40" /></a>
 &nbsp;
-<a href="https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens-setup.exe"><img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" height="40" /></a>
+<img alt="Windows: coming soon" src="https://img.shields.io/badge/Windows-coming_soon-9a9a9a?style=for-the-badge&logo=windows&logoColor=white" height="40" />
 &nbsp;
 <img alt="Linux: not yet" src="https://img.shields.io/badge/Linux-not_yet-9a9a9a?style=for-the-badge&logo=linux&logoColor=white" height="40" />
 
-<sub>macOS 14+ (Apple silicon and Intel) · Windows 10/11 ·
+<sub>macOS 14+ (Apple silicon and Intel) ·
 <a href="https://github.com/mitkogeorgiev17/StorageLens/releases/latest">All files and release notes</a></sub>
 
 </div>
@@ -62,15 +62,7 @@ On first launch StorageLens asks for three permissions and waits until they are 
 
 ### Windows
 
-Download **[StorageLens-setup.exe](https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens-setup.exe)**
-and run it. Prefer no installer? Use
-**[StorageLens-portable.exe](https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens-portable.exe)**,
-a single file that runs from anywhere.
-
-The app is not code-signed, so SmartScreen may warn: choose **More info → Run anyway**.
-
-> [!NOTE]
-> The Windows build has not yet been tested on a real Windows machine.
+Coming soon: the Windows version is written but not yet tested on a real Windows machine.
 
 ### Linux
 
@@ -106,8 +98,8 @@ Bump `version` in `src-tauri/tauri.conf.json`, merge, then tag:
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-[`release.yml`](.github/workflows/release.yml) builds the macOS `.dmg` and the Windows
-installer and portable `.exe` (about 30 minutes), and publishes them as a GitHub Release.
+[`release.yml`](.github/workflows/release.yml) builds the macOS `.dmg` (about 15 minutes)
+and publishes it as a GitHub Release. The Windows job is held until Windows is tested.
 It runs only on version tags, never on ordinary pushes.
 
 ## Under the hood
