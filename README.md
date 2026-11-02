@@ -82,9 +82,13 @@ Needs Node 22+ and Rust stable ([rustup](https://rustup.rs)).
 
 ```bash
 npm install
-npm run tauri build -- --bundles app    # macOS: target/release/bundle/macos/StorageLens.app
+npm run build:test                      # macOS: target/release/bundle/macos/StorageLens TEST.app
 npm run tauri dev                       # run with live reload
 ```
+
+Local builds are named **StorageLens TEST** (`src-tauri/tauri.test.conf.json`), with
+their own identifier, data folder and macOS permissions, so they never mix with the
+installed release. Only `release.yml` builds the plain **StorageLens**.
 
 Tests and lint, as gated before every merge:
 

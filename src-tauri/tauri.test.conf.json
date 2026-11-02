@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "StorageLens TEST",
+  "identifier": "com.mitko.storagelens.test",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "StorageLens TEST",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ]
+  }
+}
