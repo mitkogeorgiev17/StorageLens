@@ -1,7 +1,7 @@
 {
   "name": "storagelens",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Personal storage mapper for macOS and Windows",
   "workspaces": [
@@ -13,7 +13,7 @@
     "typecheck": "npm run typecheck --workspace storagelens-ui",
     "tauri": "tauri",
     "test": "npm run test --workspace storagelens-ui",
-    "build:test": "tauri build --config src-tauri/tauri.test.conf.json --bundles app"
+    "build:test": "tauri build --config src-tauri/tauri.test.conf.json --bundles app && scripts/sign-macos.sh \"target/release/bundle/macos/StorageLens TEST.app\""
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.4"
