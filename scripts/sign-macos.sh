@@ -16,7 +16,14 @@ app=${1:?usage: sign-macos.sh <app>}
 identity="StorageLens Self-Signed"
 local_dir="$HOME/.storagelens-signing"
 work=$(mktemp -d)
-trap 'security delete-keychain "$work/sign.keychain-db" 2>/dev/null || true; rm -rf "$work"' EXIT
+search_list=$(security list-keychains -d user | tr -d '"')
+cleanup() {
+  # shellcheck disable=SC2086 # one keychain path per word
+  security list-keychains -d user -s $search_list 2>/dev/null || true
+  security delete-keychain "$work/sign.keychain-db" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
 
 if [[ -n "${SIGNING_P12_BASE64:-}" ]]; then
   printf '%s' "$SIGNING_P12_BASE64" | base64 --decode > "$work/cert.p12"
@@ -37,6 +44,18 @@ security unlock-keychain -p "$keychain_password" "$keychain"
 security import "$work/cert.p12" -k "$keychain" -P "$password" -T /usr/bin/codesign >/dev/null
 security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
 
-codesign --force --deep --sign "$identity" --keychain "$keychain" "$app"
+# Some macOS versions only find a keychain's identities while it is on the
+# search list, and do not look up an untrusted certificate by name: put it on
+# the list for the signing, and sign by the certificate's SHA-1 hash (#192).
+# shellcheck disable=SC2086
+security list-keychains -d user -s "$keychain" $search_list
+hash=$(security find-certificate -c "$identity" -Z "$keychain" | awk '/SHA-1 hash:/ { print $3; exit }')
+if [[ -z "$hash" ]]; then
+  echo "sign-macos: the certificate \"$identity\" did not import" >&2
+  security find-identity -p codesigning "$keychain" >&2
+  exit 1
+fi
+
+codesign --force --deep --sign "$hash" --keychain "$keychain" "$app"
 codesign --verify --deep --strict "$app"
-echo "sign-macos: signed $app as \"$identity\""
+echo "sign-macos: signed $app as \"$identity\" ($hash)"
