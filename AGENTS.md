@@ -143,8 +143,10 @@ they never collide with the standard `core` crate. The binary is plain `scanbenc
 
 ### There is no CI — run the full suite locally before every merge
 
-GitHub Actions was removed on purpose (#64). Nothing checks a PR for you, so the
-author runs every gate below and states the result in the PR description:
+GitHub Actions CI was removed on purpose (#64). Nothing checks a PR for you, so the
+author runs every gate below and states the result in the PR description. The only
+workflow is `release.yml` (#179): it builds the downloads when a `vX.Y.Z` tag is
+pushed, never on pushes or PRs. Do not add per-push workflows (Actions quota).
 
 ```bash
 cargo fmt --all --check
