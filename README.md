@@ -1,96 +1,147 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128@2x.png" width="112" alt="" />
+<img src="src-tauri/icons/128x128@2x.png" width="120" alt="" />
 
 # StorageLens
 
-**See what fills your disk. Free it safely.**
+### See what fills your Mac. Free up space safely.
 
-A storage map for macOS and Windows: every file indexed in seconds, a zoomable treemap,
-and cleanup suggestions that go to the Trash, with undo.
+StorageLens maps every file on your disk in seconds, shows you what is taking up
+space, and helps you clear out what you don't need. Everything it removes goes to
+the Trash first, so you can always undo.
 
 <br />
 
-<a href="https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens.dmg"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS-111111?style=for-the-badge&logo=apple&logoColor=white" height="40" /></a>
+<a href="#install"><img alt="Install on macOS" src="https://img.shields.io/badge/Install_on-macOS-111111?style=for-the-badge&logo=apple&logoColor=white" height="42" /></a>
 &nbsp;
-<img alt="Windows: coming soon" src="https://img.shields.io/badge/Windows-coming_soon-9a9a9a?style=for-the-badge&logo=windows&logoColor=white" height="40" />
-&nbsp;
-<img alt="Linux: not yet" src="https://img.shields.io/badge/Linux-not_yet-9a9a9a?style=for-the-badge&logo=linux&logoColor=white" height="40" />
+<img alt="Windows: coming soon" src="https://img.shields.io/badge/Windows-coming_soon-9a9a9a?style=for-the-badge&logo=windows&logoColor=white" height="42" />
 
-<sub>macOS 14+ (Apple silicon and Intel) ·
-<a href="https://github.com/mitkogeorgiev17/StorageLens/releases/latest">All files and release notes</a></sub>
+<sub>Free · Works offline · For macOS 14 and later, on Apple silicon and Intel Macs</sub>
 
 </div>
 
----
-
-## What it does
-
-| | |
-|---|---|
-| 🗺️ **Map** | Treemap and sunburst of the whole disk, grouped by folder, type, app, age or size. |
-| 📊 **Overview** | How full the disk is, what kind of files fill it, and the biggest wins. |
-| 🧹 **Cleanup** | Caches, build leftovers, old downloads and more, each explained, with risk levels. |
-| 🐳 **Docker** | What fills Docker's disk image (images, containers, volumes, build cache), and removing what is unused. |
-| 🧬 **Duplicates** | Identical files, keeping one copy of each. |
-| 📦 **Apps** | Installed apps with their real footprint; uninstall with their leftovers. |
-| 🚀 **Startup** | What launches at login, and switching it off. |
-| 🔎 **Search** | Find any file by name across the scan. |
-
-**Safe by design.** Everything StorageLens removes goes to the Trash first, with a receipt
-before and undo after. System folders are guarded and never offered.
-
-**Private.** Fully offline: no accounts, no telemetry, no network access, no auto-update.
+<br />
 
 ## Install
 
-### macOS
+Open **Terminal** (press <kbd>⌘</kbd> <kbd>Space</kbd>, type *Terminal*, press
+<kbd>Return</kbd>), paste this line, and press <kbd>Return</kbd>:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mitkogeorgiev17/StorageLens/main/install.sh | bash
+```
+
+That's it. StorageLens is installed in your Applications folder and opens by itself.
+**To update later, run the same line again.**
+
+<details>
+<summary><b>Prefer a normal download?</b></summary>
+
+<br />
 
 1. Download **[StorageLens.dmg](https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens.dmg)**.
-2. Open it and drag **StorageLens** into **Applications**.
-3. The first time, **right-click the app → Open → Open**. StorageLens is not signed with an
-   Apple developer certificate, so a plain double-click is refused once. If macOS says it
-   is damaged, run `xattr -dr com.apple.quarantine /Applications/StorageLens.app`.
+2. Open it and drag **StorageLens** onto **Applications**.
+3. Open StorageLens. macOS says it can't verify the developer: click **Done**.
+4. Open **System Settings → Privacy & Security**, scroll down, and click
+   **Open Anyway** next to StorageLens. You only do this once.
 
-On first launch StorageLens asks for three permissions and waits until they are on:
+Why the extra step? Apple charges developers a yearly fee to remove it. StorageLens
+is free, so it skips that. The install command above avoids the step entirely.
 
-| Permission | Why |
+</details>
+
+## First launch
+
+StorageLens asks for three permissions before it starts, and waits until they are on.
+Click **Open settings** next to each one and switch StorageLens on:
+
+| Permission | What it's for |
 |---|---|
-| Full Disk Access | Scan every folder, including Mail, Messages and app containers. |
-| App Management | Move apps in Applications to the Trash. |
-| Automation: Finder | Move App Store apps, which only Finder may move. |
+| **Full Disk Access** | Seeing every folder, including Mail, Messages and app data. Without it, the map has holes. |
+| **App Management** | Moving apps you choose to uninstall to the Trash. |
+| **Automation: Finder** | Removing App Store apps, which only Finder is allowed to move. |
 
-### Windows
+You grant them once; updates keep them.
 
-Coming soon: the Windows version is written but not yet tested on a real Windows machine.
+## What you can do
 
-### Linux
+| | |
+|---|---|
+| 🗺️ **See your disk as a map** | Every folder is a box sized by how much space it takes. Click to zoom in. Group by file type, by app, by age or by size. |
+| 📊 **Get the big picture** | How full your disk is, what kinds of files fill it, and where the biggest wins are. |
+| 🧹 **Clean up safely** | Caches, leftovers from old downloads, developer clutter and more, each with a plain explanation and a risk level. Safe items are picked for you. |
+| 🐳 **Tame Docker** | If you use Docker, see what's inside it and remove old images and build cache. |
+| 🧬 **Find duplicates** | Identical files in different places. One copy of each always stays. |
+| 📦 **Uninstall apps properly** | Every app with its real size, removed together with the files it leaves behind. |
+| 🚀 **Control startup** | See what launches when you log in, and switch it off. |
+| 🔎 **Find any file** | Search by name across your whole disk. |
 
-Not yet: StorageLens has no Linux scanner so far.
+## Your files stay safe
 
-## Build from source
+- **Cleanups go to the Trash first.** Nothing is deleted outright, and you can undo
+  with one click. (Docker data is the one exception: Docker deletes it for good, so
+  StorageLens asks twice.)
+- **You see a list before anything moves.** No surprises.
+- **System files are off-limits.** macOS folders and apps' own files are never
+  suggested; your personal data is shown but never picked for you.
+- **Nothing leaves your Mac.** StorageLens has no account, no tracking, no ads and no
+  internet connection at all.
+
+## How it works
+
+1. **Scan.** StorageLens reads your disk's file list directly, much faster than
+   opening every folder one by one. A full Mac usually takes 10–30 seconds.
+2. **Understand.** It sorts what it found by type, app and age, and checks it against
+   a list of things known to be safe to remove, like caches that apps rebuild on
+   their own.
+3. **Clean.** You choose what goes. It moves those items to the Trash, then rescans so
+   the numbers stay true.
+
+It rescans on its own when you open it and after every cleanup, so what you see is
+always current.
+
+## Questions
+
+**Is it really free?** Yes. No trial, no subscription, no ads.
+
+**Will it delete something I need?** It only suggests things from a list of known
+safe categories, shows you everything before acting, and uses the Trash so you can
+put things back.
+
+**Why does my disk not get emptier right after a cleanup?** The files are in the
+Trash, which is what makes undo possible. Empty the Trash when you're sure.
+
+**How do I uninstall StorageLens?** Drag it from Applications to the Trash. To also
+remove its data, delete `~/Library/Application Support/com.mitko.storagelens`.
+
+<br />
+
+---
+
+## For developers
+
+<details>
+<summary><b>Build from source</b></summary>
+
+<br />
 
 Needs Node 22+ and Rust stable ([rustup](https://rustup.rs)).
 
 ```bash
 npm install
-npm run build:test                      # macOS: target/release/bundle/macos/StorageLens TEST.app
-npm run tauri dev                       # run with live reload
+npm run build:test    # target/release/bundle/macos/StorageLens TEST.app
+npm run tauri dev     # run with live reload
 ```
 
-Local builds are named **StorageLens TEST** (`src-tauri/tauri.test.conf.json`), with
-their own identifier, data folder and macOS permissions, so they never mix with the
-installed release. Only `release.yml` builds the plain **StorageLens**.
+Local builds are named **StorageLens TEST**, with their own identifier, data folder and
+permissions, so they never mix with the installed app.
 
-Tests and lint, as gated before every merge:
+</details>
 
-```bash
-cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
-(cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test)
-npm test && npm run typecheck
-```
+<details>
+<summary><b>Releasing</b></summary>
 
-## Releasing
+<br />
 
 Bump `version` in `src-tauri/tauri.conf.json`, merge, then tag:
 
@@ -98,18 +149,25 @@ Bump `version` in `src-tauri/tauri.conf.json`, merge, then tag:
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-[`release.yml`](.github/workflows/release.yml) builds the macOS `.dmg` (about 15 minutes)
-and publishes it as a GitHub Release. The Windows job is held until Windows is tested.
-It runs only on version tags, never on ordinary pushes.
+[`release.yml`](.github/workflows/release.yml) builds a universal `.dmg`, signs it with
+the project's self-signed certificate (so macOS keeps the app's permissions across
+updates), and publishes a GitHub Release. It runs only on version tags.
 
-## Under the hood
+</details>
+
+<details>
+<summary><b>Under the hood</b></summary>
+
+<br />
 
 | Layer | Choice |
 |---|---|
-| Shell | Tauri 2 |
-| Core | Rust: native scanners (`getattrlistbulk` on macOS, bulk directory queries on Windows), rules engine, safety layer |
-| UI | React 19 + TypeScript + Vite, canvas treemap |
-| Storage | SQLite (bundled), latest scan only |
+| App shell | Tauri 2 |
+| Core | Rust: a native `getattrlistbulk` scanner, rules engine, and safety layer (path guards, Trash, undo) |
+| Interface | React 19 + TypeScript + Vite, canvas treemap |
+| Storage | SQLite, latest scan only |
 
-[`PLAN.md`](./PLAN.md) has the full design; [`AGENTS.md`](./AGENTS.md) has how to work in
-this repo.
+[`PLAN.md`](./PLAN.md) has the full design; [`AGENTS.md`](./AGENTS.md) has how to work
+in this repository.
+
+</details>
