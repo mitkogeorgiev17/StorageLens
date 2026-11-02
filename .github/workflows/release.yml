@@ -66,12 +66,27 @@ jobs:
 
       - run: npm ci
 
+      # Signed with the project's self-signed certificate (#188): free, and
+      # macOS keeps the app's permissions across updates. Tauri only signs
+      # with trusted identities, so the app is signed after the build and the
+      # .dmg is made here.
       - name: Build (macOS, universal .dmg)
         if: matrix.name == 'macos'
+        env:
+          SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
         run: |
-          npx tauri build --target universal-apple-darwin --bundles dmg
-          mkdir dist-release
-          cp target/universal-apple-darwin/release/bundle/dmg/*.dmg dist-release/StorageLens.dmg
+          if [ -z "$SIGNING_P12_BASE64" ] && [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            echo "::error::MACOS_SIGNING_P12_BASE64 is not set; a release must be signed"
+            exit 1
+          fi
+          npx tauri build --target universal-apple-darwin --bundles app
+          app=target/universal-apple-darwin/release/bundle/macos/StorageLens.app
+          scripts/sign-macos.sh "$app"
+          mkdir -p dmg-root dist-release
+          ditto "$app" dmg-root/StorageLens.app
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname StorageLens -srcfolder dmg-root -ov -format UDZO dist-release/StorageLens.dmg
 
       - name: Build (Windows, installer + portable .exe)
         if: matrix.name == 'windows'
