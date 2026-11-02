@@ -102,6 +102,10 @@ Both Cargo workspaces (root and `src-tauri`) build into one shared `target/` fol
 (`.cargo/config.toml`, #177), so shared crates compile once; the app bundle lands in
 `target/release/bundle/`. Dev builds keep line tables only. `cargo clean` frees it all.
 
+Build the local app with `npm run build:test`: it is **StorageLens TEST**
+(`com.mitko.storagelens.test`, #181), with its own data folder and permissions. The
+plain **StorageLens** comes only from `release.yml`.
+
 One-time setup (Node 22+, Rust stable via `rustup`):
 
 ```bash
