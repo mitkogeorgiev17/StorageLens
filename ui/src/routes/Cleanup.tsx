@@ -15,21 +15,22 @@ import DockerSection from "../components/DockerSection";
 import DuplicatesSection from "../components/DuplicatesSection";
 import Receipt from "../components/Receipt";
 import Skeleton from "../components/Skeleton";
+import InfoTip from "../components/InfoTip";
 import RuleCard from "../components/RuleCard";
 import {
   api,
   type CleanupDto,
   type DeletionPlanDto,
   type DeletionResultDto,
+  type RuleGroupDto,
   type ItemStatus,
   type UndoOutcome,
   type UndoResultDto,
 } from "../lib/api";
 import {
-  KIND_LABELS,
-  KIND_ORDER,
   STATUS_LABELS,
   UNDO_LABELS,
+  cleanupSections,
   countBy,
   initialSelection,
   refusedForPermission,
@@ -128,12 +129,59 @@ export default function CleanupScreen() {
   };
 
   const groups = cleanup?.groups ?? [];
+  const { removable, manual, leftAlone } = cleanupSections(groups);
+  const removableBytes = removable.reduce((sum, group) => sum + group.bytes, 0);
+  const row = (group: RuleGroupDto) => (
+    <RuleCard
+      key={group.ruleId}
+      group={group}
+      selection={selection}
+      onToggleItem={(path) => setSelection((current) => toggleItem(current, path))}
+      onToggleGroup={(card) => setSelection((current) => toggleGroup(current, card))}
+    />
+  );
+  const notes =
+    cleanup !== null && (cleanup.refused > 0 || cleanup.problems.length > 0) ? (
+      <InfoTip label="what was held back">
+        {cleanup.refused > 0
+          ? `${formatCount(cleanup.refused)} ${
+              cleanup.refused === 1 ? "match was" : "matches were"
+            } held back by the safety checks (system folders, app bundles, protected folders). `
+          : null}
+        {cleanup.problems.map((problem) => `Skipped rule: ${problem}. `)}
+      </InfoTip>
+    ) : null;
+
   return (
     <div className="cleanup-screen">
       {error !== null ? (
         <p className="map-notice" role="alert">
           {error}
         </p>
+      ) : null}
+
+      {cleanup !== null && removable.length > 0 ? (
+        <header className="cleanup-summary">
+          <div className="cleanup-summary-figure">
+            <span className="cleanup-summary-label">
+              Can free {notes}
+            </span>
+            <span className="cleanup-summary-value">{formatBytes(removableBytes)}</span>
+          </div>
+          <span className="cleanup-total" aria-live="polite">
+            {total.items === 0
+              ? "Nothing selected"
+              : `${formatCount(total.items)} selected · ${formatBytes(total.bytes)}`}
+          </span>
+          <button
+            type="button"
+            className="button"
+            disabled={total.items === 0 || busy}
+            onClick={review}
+          >
+            Review and move to Trash…
+          </button>
+        </header>
       ) : null}
 
       <div className="cleanup-rules">
@@ -143,81 +191,51 @@ export default function CleanupScreen() {
             <Skeleton rows={5} />
           </>
         ) : null}
-        {cleanup !== null && groups.length === 0 ? (
+        {cleanup !== null && removable.length === 0 && manual.length === 0 ? (
           <section className="empty" aria-labelledby="cleanup-none">
             <h2 id="cleanup-none">Nothing to clean up</h2>
-            <p className="empty-text">
-              No cleanup rule matched anything in this scan.
-            </p>
+            <p className="empty-text">No cleanup rule found anything to free in this scan.</p>
           </section>
         ) : null}
 
-        {KIND_ORDER.map((kind) => {
-          const cards = groups.filter((group) => group.kind === kind);
-          if (cards.length === 0) {
-            return null;
-          }
-          return (
-            <section
-              key={kind}
-              className="cleanup-kind"
-              aria-labelledby={`kind-${kind}`}
-            >
-              <h2 id={`kind-${kind}`} className="cleanup-kind-title">
-                {KIND_LABELS[kind].title}
-              </h2>
-              <p className="cleanup-kind-hint">{KIND_LABELS[kind].hint}</p>
-              {cards.map((group) => (
-                <RuleCard
-                  key={group.ruleId}
-                  group={group}
-                  selection={selection}
-                  onToggleItem={(path) =>
-                    setSelection((current) => toggleItem(current, path))
-                  }
-                  onToggleGroup={(card) =>
-                    setSelection((current) => toggleGroup(current, card))
-                  }
-                />
-              ))}
-            </section>
-          );
-        })}
-
-        {cleanup !== null &&
-        (cleanup.refused > 0 || cleanup.problems.length > 0) ? (
-          <details className="cleanup-notes">
-            <summary>About these suggestions</summary>
-            {cleanup.refused > 0 ? (
-              <p>
-                {formatCount(cleanup.refused)}{" "}
-                {cleanup.refused === 1 ? "match was" : "matches were"} held back
-                by the safety checks (system folders, app bundles, protected
-                folders) and are not offered.
-              </p>
-            ) : null}
-            {cleanup.problems.map((problem) => (
-              <p key={problem}>Skipped rule: {problem}</p>
-            ))}
-          </details>
+        {removable.length > 0 ? (
+          <section className="cleanup-section" aria-labelledby="cleanup-removable">
+            <h2 id="cleanup-removable" className="cleanup-section-title">
+              Can remove
+              <InfoTip label="Can remove">
+                These go to the Trash, with undo. Safe items start selected; anything
+                marked Review is yours to check first.
+              </InfoTip>
+            </h2>
+            <div className="rule-list">{removable.map(row)}</div>
+          </section>
         ) : null}
 
-        {groups.some((group) => group.deletable) ? (
-          <footer className="cleanup-footer">
-            <span className="cleanup-total" aria-live="polite">
-              {total.items === 0
-                ? "Nothing selected"
-                : `${formatCount(total.items)} selected · ${formatBytes(total.bytes)}`}
-            </span>
-            <button
-              type="button"
-              className="button"
-              disabled={total.items === 0 || busy}
-              onClick={review}
-            >
-              Review and move to Trash…
-            </button>
-          </footer>
+        {manual.length > 0 ? (
+          <section className="cleanup-section" aria-labelledby="cleanup-manual">
+            <h2 id="cleanup-manual" className="cleanup-section-title">
+              Free it yourself
+              <InfoTip label="Free it yourself">
+                StorageLens shows these but never removes them itself, such as the Trash
+                (that is what makes its own moves undoable). Open a row for how.
+              </InfoTip>
+            </h2>
+            <div className="rule-list">{manual.map(row)}</div>
+          </section>
+        ) : null}
+
+        {leftAlone.length > 0 ? (
+          <details className="cleanup-left-alone">
+            <summary>
+              Left alone · {formatCount(leftAlone.length)}{" "}
+              {leftAlone.length === 1 ? "group" : "groups"}
+            </summary>
+            <p className="cleanup-section-hint">
+              Your own data or the system's. Shown for the space it takes; StorageLens does
+              not offer to remove it.
+            </p>
+            <div className="rule-list">{leftAlone.map(row)}</div>
+          </details>
         ) : null}
       </div>
 

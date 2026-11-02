@@ -126,3 +126,21 @@ export function formatDate(unixSeconds: number | null): string {
   }
   return DATE_FORMAT.format(new Date(unixSeconds * 1000));
 }
+
+/**
+ * A path short enough to read in a row (#172): the home folder as `~`, and
+ * long paths cut to their first three and last two parts around `…`. The
+ * full path belongs in a tooltip.
+ */
+export function shortPath(path: string): string {
+  const windows = /^[A-Za-z]:\\/.test(path);
+  const separator = windows ? "\\" : "/";
+  const home = windows
+    ? path.replace(/^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/i, "~")
+    : path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+  const parts = home.split(separator);
+  if (parts.length <= 6) {
+    return home;
+  }
+  return [...parts.slice(0, 3), "…", ...parts.slice(-2)].join(separator);
+}

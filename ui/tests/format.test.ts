@@ -12,6 +12,7 @@ import {
   formatDate,
   formatDuration,
   formatPercent,
+  shortPath,
 } from "../src/lib/format.ts";
 
 test("bytes: the acceptance cases", () => {
@@ -77,4 +78,20 @@ test("dates: unknown times render as the unknown mark, known ones as a date", ()
   const text = formatDate(1_700_000_000);
   assert.notEqual(text, UNKNOWN);
   assert.match(text, /2023/);
+});
+
+test("short paths: home as ~, long ones cut in the middle", () => {
+  assert.equal(shortPath("/Users/mitko/.Trash"), "~/.Trash");
+  assert.equal(shortPath("/private/var/vm"), "/private/var/vm");
+  assert.equal(
+    shortPath(
+      "/Users/mitko/Library/Mail/V10/DE6F/[Gmail].mbox/All Mail.mbox/E882/Data/3/Attachments",
+    ),
+    "~/Library/Mail/…/3/Attachments",
+  );
+  assert.equal(shortPath("/Users/mitkoX/a"), "/Users/mitkoX/a".replace("/Users/mitkoX", "~"));
+  assert.equal(
+    shortPath("C:\\Users\\me\\AppData\\Local\\Temp\\a\\b\\c"),
+    "~\\AppData\\Local\\…\\b\\c",
+  );
 });

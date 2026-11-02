@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { RuleGroupDto } from "../src/lib/api.ts";
 import {
   CONFIRM_ABOVE,
+  cleanupSections,
   countBy,
   groupState,
   initialSelection,
@@ -13,6 +14,7 @@ import {
   toggleGroup,
   toggleItem,
   topLevel,
+  visibleItems,
 } from "../src/lib/cleanup.ts";
 
 function group(
@@ -134,4 +136,30 @@ test("a permission refusal asks for Full Disk Access; other failures do not", ()
   );
   assert.equal(refusedForPermission(["Operation not permitted (os error 1)"]), true);
   assert.equal(refusedForPermission(["changed since the scan", null]), false);
+});
+
+test("sections: removable, freed by hand, and left alone, biggest first", () => {
+  const trash = { ...group("trash", false, [["/u/.Trash", 2000, false]]), risk: "review" as const };
+  const snapshots = { ...group("snapshots", false, [["2026-11-01-1200", 0, false]]), risk: "safe" as const };
+  const swap = group("swap", false, [["/private/var/vm", 9000, false]]);
+  const mail = { ...group("mail", false, [["/u/Mail/a", 400, false]]), risk: "keep" as const };
+  const empty = group("logs", true, [["/u/Library/Logs/x", 0, false]]);
+  const none = group("nothing", true, []);
+  const small = group("small", true, [["/u/a", 10, true]]);
+  const big = group("big", true, [["/u/b", 500, true]]);
+  const sections = cleanupSections([small, trash, swap, mail, empty, none, big, snapshots]);
+  const ids = (list: readonly RuleGroupDto[]) => list.map((entry) => entry.ruleId);
+  assert.deepEqual(ids(sections.removable), ["big", "small"]);
+  assert.deepEqual(ids(sections.manual), ["trash", "snapshots"]);
+  assert.deepEqual(ids(sections.leftAlone), ["swap", "mail", "logs"]);
+});
+
+test("0 B rows are hidden unless every row is 0 B", () => {
+  const mixed = group("mail", true, [
+    ["/u/a", 400, false],
+    ["/u/b", 0, false],
+  ]);
+  assert.deepEqual(visibleItems(mixed).map((item) => item.path), ["/u/a"]);
+  const sizeless = group("snapshots", false, [["2026-11-01", 0, false]]);
+  assert.equal(visibleItems(sizeless).length, 1);
 });

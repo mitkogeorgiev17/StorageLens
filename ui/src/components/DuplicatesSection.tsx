@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import InfoTip from "../components/InfoTip";
 import Receipt from "../components/Receipt";
 import {
   api,
@@ -135,8 +136,12 @@ export default function DuplicatesSection() {
 
   return (
     <section className="dupes-screen" aria-labelledby="dupes-title">
-      <h2 id="dupes-title" className="cleanup-kind-title">
+      <h2 id="dupes-title" className="cleanup-section-title">
         Duplicate files
+        <InfoTip label="Duplicate files">
+          Files of 1 MB or more with identical contents. The search reads them
+          in the background; one copy of each always stays.
+        </InfoTip>
       </h2>
       <div className="apps-toolbar">
         <span className={searching ? "screen-status loading" : "screen-status"} aria-live="polite">
@@ -150,7 +155,7 @@ export default function DuplicatesSection() {
               ? `${formatCount(groups.length)} ${groups.length === 1 ? "group" : "groups"} · ${formatBytes(
                   reclaimable,
                 )} reclaimable`
-              : "Files of 1 MB or more with identical contents. Searching reads them in the background."}
+              : "Not searched yet"}
         </span>
         {searching ? (
           <button
