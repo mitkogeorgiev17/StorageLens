@@ -54,17 +54,19 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
     };
   }, []);
 
-  const start = async (root: string) => {
-    const trimmed = root.trim();
-    if (trimmed === "") {
+  const start = async (roots: readonly string[]) => {
+    const paths = roots.map((root) => root.trim());
+    if (paths.length === 0 || paths.some((root) => root === "")) {
       setError("Type the full path of a folder to scan.");
       return;
     }
-    setStarting(trimmed);
+    const key = paths.join(", ");
+    setStarting(key);
     setError(null);
     try {
-      const scanId = await api.startScan(trimmed);
-      scanStarted(scanId, trimmed);
+      // One target may cover several drives (#195).
+      const scanId = await api.startScan(paths);
+      scanStarted(scanId, key);
       navigate("overview");
       onStarted?.();
     } catch (cause: unknown) {
@@ -85,7 +87,7 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
       // `null` when the picker was cancelled: leave everything as it was.
       if (typeof picked === "string") {
         setPath(picked);
-        await start(picked);
+        await start([picked]);
       }
     } catch (cause: unknown) {
       setError(message(cause));
@@ -94,7 +96,7 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    void start(path);
+    void start([path]);
   };
 
   const busy = starting !== null;
@@ -123,33 +125,38 @@ export default function ScanPicker({ onStarted }: ScanPickerProps) {
       {targets === null ? <p className="loading">Looking for volumes…</p> : null}
       {targets !== null && targets.length > 0 ? (
         <ul className="targets" aria-label="Scan targets">
-          {targets.map((target) => (
-            <li key={`${target.kind}:${target.path}`}>
-              <button
-                type="button"
-                className="target"
-                data-startup={target.startup}
-                disabled={busy}
-                aria-busy={starting === target.path}
-                onClick={() => void start(target.path)}
-              >
-                <span className="target-label">
-                  {target.label}
-                  {target.startup ? <span className="target-kind"> · whole disk, recommended</span> : null}
-                  {target.kind === "home" ? <span className="target-kind"> · home folder only</span> : null}
-                  {target.removable ? <span className="target-kind"> · removable</span> : null}
-                </span>
-                <span className="target-path">{target.path}</span>
-                {target.total !== null && target.available !== null ? (
-                  <span className="target-meta">
-                    {formatBytes(target.total - target.available)} used of{" "}
-                    {formatBytes(target.total)}
+          {targets.map((target) => {
+            const key = target.roots.join(", ");
+            return (
+              <li key={`${target.kind}:${key}`}>
+                <button
+                  type="button"
+                  className="target"
+                  data-startup={target.startup}
+                  disabled={busy}
+                  aria-busy={starting === key}
+                  onClick={() => void start(target.roots)}
+                >
+                  <span className="target-label">
+                    {target.label}
+                    {target.kind === "everything" ? (
+                      <span className="target-kind"> · all fixed drives, recommended</span>
+                    ) : null}
+                    {target.kind === "home" ? <span className="target-kind"> · home folder only</span> : null}
+                    {target.removable ? <span className="target-kind"> · removable</span> : null}
                   </span>
-                ) : null}
-                <span className="target-action">{starting === target.path ? "Starting…" : "Scan"}</span>
-              </button>
-            </li>
-          ))}
+                  <span className="target-path">{key}</span>
+                  {target.total !== null && target.available !== null ? (
+                    <span className="target-meta">
+                      {formatBytes(target.total - target.available)} used of{" "}
+                      {formatBytes(target.total)}
+                    </span>
+                  ) : null}
+                  <span className="target-action">{starting === key ? "Starting…" : "Scan"}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
 

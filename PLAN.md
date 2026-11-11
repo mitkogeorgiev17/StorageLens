@@ -238,8 +238,21 @@ The sink is passed to `scan` as `&mut dyn EntrySink`, not stored on the scanner,
 values from its workers to the calling thread, which is the only writer. Sibling subtrees
 may interleave, but the writer accepts a directory's own entry before dispatching the
 enumeration of that directory, so parents are always persisted before their children and
-the arena indices stay parent-first. Only the first root is the arena's node 0; M1 scans
-exactly one root per call.
+the arena indices stay parent-first. Only the first root is the arena's node 0; **a scanner
+pass still scans exactly one root per call** (the trait's `roots` stays a one-element slice).
+
+**Multi-root scans (#195).** On Windows there is no common parent of `C:\` and `D:\` the way
+`/` covers everything on macOS, so "Everything" spans several drives. That is an
+**app-layer** contract, not a scanner one: `start_scan` takes several roots, and the app
+writes a synthetic root ("Everything", arena node 0) itself, then runs one scanner pass per
+root through a `Stitch` sink. `Stitch` remaps each pass's pass-local `parent` into the shared
+arena (pass root → child of node 0, every other parent shifted by the pass root's global
+index) and renames each pass root to its absolute path. Paths then rebuild from the arena
+alone, because `PathBuf::push`/`join` resets on an absolute component. The session records all
+roots (JSON in the existing `root` column, no schema change); the rules engine walks the
+arena with an empty root prefix and steps an absolute root name component by component; the
+deletion `Guard` accepts a path inside any of the roots. Removable drives stay separate
+targets. A single-root scan is unchanged.
 
 ---
 
@@ -262,7 +275,8 @@ CREATE TABLE scan_session (
   bytes_seen   INTEGER NOT NULL DEFAULT 0,
   dirs_skipped INTEGER NOT NULL DEFAULT 0,
   elevated     INTEGER NOT NULL DEFAULT 0,
-  root         TEXT                   -- absolute scanned path; NULL before schema v2
+  root         TEXT                   -- absolute scanned path; NULL before schema v2.
+                                      -- A multi-root scan (#195) stores a JSON array of paths.
 );
 
 CREATE TABLE entries (
@@ -1267,8 +1281,13 @@ SQLite FTS5 over `entries.name`, with the tree path reconstructed on demand.
 ## 14. Tauri command surface
 
 ```rust
-#[tauri::command] async fn list_scan_targets() -> Result<Vec<ScanTarget>, String>; // home + volumes
+#[tauri::command] async fn list_scan_targets() -> Result<Vec<ScanTarget>, String>;
+    // "Everything" (every fixed drive, #195) first, then home, then each volume.
+    // ScanTarget { kind: everything | volume | home, label, roots: Vec<String>, … }
 #[tauri::command] async fn start_scan(roots: Vec<String>) -> Result<u32, String>;
+    // one root = an ordinary scan; several = a multi-root scan (#195)
+#[tauri::command] async fn rescan(scan_id: u32) -> Result<u32, String>;
+    // rescan the same roots as scan_id, so a refresh needs no paths from the UI
 #[tauri::command] async fn cancel_scan(scan_id: u32) -> Result<(), String>;
 #[tauri::command] async fn scan_status(scan_id: u32) -> Result<ScanStatus, String>;
 

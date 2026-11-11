@@ -66,14 +66,14 @@ export interface VolumeDto {
 }
 
 export interface ScanTargetDto {
-  readonly kind: "volume" | "home";
+  readonly kind: "everything" | "volume" | "home";
   readonly label: string;
-  /** Absolute path for {@link api.startScan}. */
-  readonly path: string;
+  /** Absolute paths for {@link api.startScan}: every fixed drive for `everything`. */
+  readonly roots: readonly string[];
   readonly total: number | null;
   readonly available: number | null;
   readonly removable: boolean;
-  /** The disk the OS booted from: the recommended full scan. */
+  /** The recommended scan: `everything`, listed first (#195). */
   readonly startup: boolean;
 }
 
@@ -465,7 +465,9 @@ async function call<T>(
 
 export const api = {
   listScanTargets: () => call<readonly ScanTargetDto[]>("list_scan_targets"),
-  startScan: (root: string) => call<number>("start_scan", { roots: [root] }),
+  startScan: (roots: readonly string[]) => call<number>("start_scan", { roots: [...roots] }),
+  /** Rescan the roots `scanId` already scanned, without the UI carrying them. */
+  rescan: (scanId: number) => call<number>("rescan", { scanId }),
   cancelScan: (scanId: number) => call<void>("cancel_scan", { scanId }),
   scanStatus: (scanId: number) =>
     call<ScanStatusDto>("scan_status", { scanId }),

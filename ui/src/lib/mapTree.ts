@@ -148,18 +148,30 @@ export function canZoomInto(node: TreeNodeDto): boolean {
   return node.kind === "Dir" && node.hasChildren;
 }
 
+/** A name that is itself an absolute path: a drive, a UNC share, or a Unix root. */
+const ABSOLUTE = /^([A-Za-z]:[\\/]|\\\\|\/)/;
+
 /**
- * `base` joined with `names`, using `base`'s own separator (`\` for a Windows
- * root, `/` otherwise). With no recorded root (scans before schema v2), the
- * names alone.
+ * `base` joined with `names`, using the accumulated path's own separator (`\`
+ * for a Windows root, `/` otherwise). With no recorded root (scans before
+ * schema v2), the names alone.
+ *
+ * An absolute `name` replaces everything before it, exactly like
+ * `PathBuf::push`: a multi-root scan (#195) names each root by its absolute
+ * path, so the synthetic root's placeholder is dropped as soon as a real drive
+ * appears.
  */
 export function joinPath(base: string, names: readonly string[]): string {
-  if (base === "") {
-    return names.join("/");
+  let path = base;
+  for (const name of names) {
+    if (path === "" || ABSOLUTE.test(name)) {
+      path = name;
+      continue;
+    }
+    const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+    path = path.endsWith(separator) ? path + name : path + separator + name;
   }
-  const separator = base.includes("\\") && !base.includes("/") ? "\\" : "/";
-  const trimmed = base.endsWith(separator) ? base.slice(0, -1) : base;
-  return [trimmed, ...names].join(separator);
+  return path;
 }
 
 /** Display path of `id`: the breadcrumb's folders, then the loaded chain. */

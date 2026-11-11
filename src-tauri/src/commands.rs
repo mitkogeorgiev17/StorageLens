@@ -39,7 +39,8 @@ use storagelens_catalog::{
     Platform, ScanSession, SearchCursor, SizeCursor, DEFAULT_BATCH_SIZE, UNKNOWN_TIME,
 };
 use storagelens_core::{
-    CancelToken, EntryKind, Locations, Progress, ScanOptions, ScanResult, ScanStatus,
+    CancelToken, Entry, EntryKind, EntrySink, Locations, Progress, ScanOptions, ScanResult,
+    ScanStatus,
 };
 use tauri::{AppHandle, State};
 
@@ -137,7 +138,7 @@ struct StoredPlan {
 /// The scan currently running.
 struct RunningScan {
     scan_id: i64,
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     cancel: CancelToken,
     progress: Arc<Mutex<Progress>>,
 }
@@ -246,6 +247,14 @@ impl AppState {
         self.session(scan_id).ok()?.root
     }
 
+    /// Every root a scan covered, in scan order. Empty only for sessions
+    /// recorded before schema v2 (#61); one entry for an ordinary scan.
+    fn roots_of(&self, scan_id: i64) -> Vec<PathBuf> {
+        self.session(scan_id)
+            .map(|session| session.roots)
+            .unwrap_or_default()
+    }
+
     /// User and developer rule catalogs, read beside the catalog database;
     /// edited files are picked up on the next evaluation.
     fn rules_dir(&self) -> PathBuf {
@@ -296,7 +305,7 @@ fn elevated_now() -> bool {
 
 fn run_platform_scanner(
     root: &Path,
-    sink: &mut EntryWriter,
+    sink: &mut dyn EntrySink,
     cancel: CancelToken,
     progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> storagelens_core::Result<ScanResult> {
@@ -325,19 +334,25 @@ pub fn start_scan(
     emitter: Arc<dyn Emit>,
     roots: Vec<String>,
 ) -> CommandResult<i64> {
-    let root = match roots.as_slice() {
-        [root] => PathBuf::from(root),
-        [] => return Err("choose a folder or volume to scan".to_owned()),
-        _ => return Err("scan one folder or volume at a time".to_owned()),
-    };
-    if root.as_os_str().is_empty() || !root.is_absolute() {
-        return Err(format!("not an absolute path: {}", root.display()));
+    if roots.is_empty() {
+        return Err("choose a folder or volume to scan".to_owned());
     }
-    // One check that the root exists, so the error names it. The scan itself
-    // enumerates through the scanner (AGENTS.md invariant 4).
-    if !root.exists() {
-        return Err(format!("does not exist: {}", root.display()));
+    let mut paths = Vec::with_capacity(roots.len());
+    for root in &roots {
+        let path = PathBuf::from(root);
+        if path.as_os_str().is_empty() || !path.is_absolute() {
+            return Err(format!("not an absolute path: {}", path.display()));
+        }
+        // One check that the root exists, so the error names it. The scan itself
+        // enumerates through the scanner (AGENTS.md invariant 4).
+        if !path.exists() {
+            return Err(format!("does not exist: {}", path.display()));
+        }
+        paths.push(path);
     }
+    // A root inside another is already covered; scanning both would count it
+    // twice (AGENTS.md invariant 11).
+    let roots = dedupe_roots(paths);
     let platform = platform().ok_or_else(|| "scanning is not supported here".to_owned())?;
 
     let mut running = lock(&state.running)?;
@@ -345,18 +360,18 @@ pub fn start_scan(
         return Err(format!(
             "scan {} of {} is still running",
             current.scan_id,
-            current.root.display()
+            roots_label(&current.roots)
         ));
     }
 
     let scan_id = lock(&state.catalog)?
-        .begin_session(platform, elevated_now(), &root)
+        .begin_session_roots(platform, elevated_now(), &roots)
         .map_err(|error| error.to_string())?;
     let cancel = CancelToken::new();
     let progress = Arc::new(Mutex::new(Progress::default()));
     *running = Some(RunningScan {
         scan_id,
-        root: root.clone(),
+        roots: roots.clone(),
         cancel: cancel.clone(),
         progress: Arc::clone(&progress),
     });
@@ -370,7 +385,7 @@ pub fn start_scan(
                 &thread_state,
                 emitter.as_ref(),
                 scan_id,
-                &root,
+                &roots,
                 cancel,
                 &progress,
             );
@@ -382,17 +397,71 @@ pub fn start_scan(
     Ok(scan_id)
 }
 
+/// Rescan the same roots as `scan_id`, so a background refresh works without
+/// the UI carrying a multi-root scan's paths (#195).
+pub fn rescan(state: &Arc<AppState>, emitter: Arc<dyn Emit>, scan_id: i64) -> CommandResult<i64> {
+    let session = state.session(scan_id)?;
+    if session.roots.is_empty() {
+        return Err(
+            "this scan predates path recording; choose a folder or volume to scan".to_owned(),
+        );
+    }
+    let roots = session
+        .roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
+    start_scan(state, emitter, roots)
+}
+
+/// Drop a root that another already contains, keeping the first occurrence's
+/// order, so a scan never counts the same tree twice.
+fn dedupe_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(roots.len());
+    for root in roots {
+        if kept
+            .iter()
+            .any(|kept| kept == &root || root.starts_with(kept))
+        {
+            continue;
+        }
+        kept.retain(|kept| !kept.starts_with(&root));
+        kept.push(root);
+    }
+    kept
+}
+
+/// How a scan's roots are named in messages and progress: the path for one,
+/// `C:\, D:\` for several.
+fn roots_label(roots: &[PathBuf]) -> String {
+    roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// [`roots_label`] for a recorded session: `None` when it has no root at all
+/// (sessions from before schema v2, #61).
+fn session_root_label(session: &ScanSession) -> Option<String> {
+    match session.roots.as_slice() {
+        [] => None,
+        [_] => session.root.as_ref().map(|root| root.display().to_string()),
+        roots => Some(roots_label(roots)),
+    }
+}
+
 /// The scan thread: scan, record, load the arena, write rollups, announce.
 fn run_scan(
     state: &AppState,
     emitter: &dyn Emit,
     scan_id: i64,
-    root: &Path,
+    roots: &[PathBuf],
     cancel: CancelToken,
     progress: &Arc<Mutex<Progress>>,
 ) {
     let started = Instant::now();
-    let outcome = scan_and_record(state, emitter, scan_id, root, cancel, progress);
+    let outcome = scan_and_record(state, emitter, scan_id, roots, cancel, progress);
 
     // Clear `running` before announcing, so a UI reacting to the event can start
     // the next scan immediately.
@@ -440,7 +509,7 @@ fn scan_and_record(
     state: &AppState,
     emitter: &dyn Emit,
     scan_id: i64,
-    root: &Path,
+    roots: &[PathBuf],
     cancel: CancelToken,
     progress: &Arc<Mutex<Progress>>,
 ) -> CommandResult<ScanStatus> {
@@ -449,38 +518,77 @@ fn scan_and_record(
     let mut writer = EntryWriter::open(&state.catalog_path, scan_id, DEFAULT_BATCH_SIZE)
         .map_err(|error| error.to_string())?;
     if let Some(locations) = &state.locations {
-        writer = writer.with_locations(root, locations.clone());
+        // A multi-root scan names each root by its absolute path, which resets
+        // this base when paths are rebuilt (see `Stitch`).
+        writer = writer.with_locations(&roots[0], locations.clone());
     }
 
     let throttle = Throttle::new(PROGRESS_INTERVAL);
     let shared = Arc::clone(progress);
+    // Files, dirs and bytes from the passes already finished, so progress keeps
+    // climbing across a multi-root scan (#195).
+    let base = Arc::new(Mutex::new(Progress::default()));
+    let base_for_progress = Arc::clone(&base);
     let on_progress = move |snapshot: Progress| {
+        let offset = base_for_progress
+            .lock()
+            .map(|base| base.clone())
+            .unwrap_or_default();
+        let combined = add_progress(&offset, &snapshot);
         if let Ok(mut cell) = shared.lock() {
-            *cell = snapshot.clone();
+            *cell = combined.clone();
         }
         if throttle.ready() {
-            let seconds = (snapshot.elapsed_ms as f64 / 1000.0).max(0.001);
+            let seconds = (combined.elapsed_ms as f64 / 1000.0).max(0.001);
             events::emit(
                 emitter,
                 events::SCAN_PROGRESS,
                 &ScanProgressEvent {
                     scan_id,
-                    files: snapshot.files,
-                    dirs: snapshot.dirs,
-                    bytes_alloc: snapshot.bytes_alloc.get(),
-                    elapsed_ms: snapshot.elapsed_ms,
-                    current_path: snapshot
+                    files: combined.files,
+                    dirs: combined.dirs,
+                    bytes_alloc: combined.bytes_alloc.get(),
+                    elapsed_ms: combined.elapsed_ms,
+                    current_path: combined
                         .current_path
                         .as_ref()
                         .map(|path| path.display().to_string()),
-                    rate: snapshot.files as f64 / seconds,
+                    rate: combined.files as f64 / seconds,
                 },
             );
         }
     };
 
-    let result = run_platform_scanner(root, &mut writer, cancel, &on_progress)
-        .map_err(|error| error.to_string())?;
+    let result = if roots.len() == 1 {
+        run_platform_scanner(&roots[0], &mut writer, cancel, &on_progress)
+            .map_err(|error| error.to_string())?
+    } else {
+        let mut stitch = Stitch::new(&mut writer).map_err(|error| error.to_string())?;
+        let mut results = Vec::with_capacity(roots.len());
+        for root in roots {
+            stitch.begin_pass(root);
+            let pass = run_platform_scanner(root, &mut stitch, cancel.clone(), &on_progress)
+                .map_err(|error| error.to_string())?;
+            let cancelled = pass.status == ScanStatus::Cancelled;
+            if let Ok(mut offset) = base.lock() {
+                let extra = Progress {
+                    files: pass.files,
+                    dirs: pass.dirs,
+                    bytes_alloc: pass.bytes_alloc,
+                    elapsed_ms: pass.elapsed_ms,
+                    current_path: None,
+                };
+                let combined = add_progress(&offset, &extra);
+                *offset = combined;
+            }
+            results.push(pass);
+            if cancelled {
+                break;
+            }
+        }
+        drop(stitch);
+        merge_results(results)
+    };
     drop(writer);
 
     {
@@ -512,6 +620,141 @@ fn scan_and_record(
     Ok(status)
 }
 
+/// The synthetic arena root of a multi-root scan (#195).
+const EVERYTHING_LABEL: &str = "Everything";
+
+/// `base` plus one more pass's `extra`, for multi-root progress (#195).
+fn add_progress(base: &Progress, extra: &Progress) -> Progress {
+    Progress {
+        files: base.files.saturating_add(extra.files),
+        dirs: base.dirs.saturating_add(extra.dirs),
+        bytes_alloc: base.bytes_alloc.saturating_add(extra.bytes_alloc),
+        elapsed_ms: base.elapsed_ms.saturating_add(extra.elapsed_ms),
+        current_path: extra.current_path.clone(),
+    }
+}
+
+/// Fold one scanner pass per root into the one result a multi-root scan
+/// reports (#195): counters and skips add up, and the status is the worst pass
+/// (a cancelled or partial pass makes the whole scan that).
+fn merge_results(results: Vec<ScanResult>) -> ScanResult {
+    let mut status = ScanStatus::Complete;
+    let mut files = 0u64;
+    let mut dirs = 0u64;
+    let mut bytes_alloc = storagelens_core::Bytes::ZERO;
+    let mut bytes_logical = storagelens_core::Bytes::ZERO;
+    let mut elapsed_ms = 0u64;
+    let mut skipped = Vec::new();
+    let mut elevated = None;
+    for result in results {
+        match result.status {
+            ScanStatus::Cancelled => status = ScanStatus::Cancelled,
+            ScanStatus::Partial if status != ScanStatus::Cancelled => status = ScanStatus::Partial,
+            _ => {}
+        }
+        files = files.saturating_add(result.files);
+        dirs = dirs.saturating_add(result.dirs);
+        bytes_alloc += result.bytes_alloc;
+        bytes_logical += result.bytes_logical;
+        elapsed_ms = elapsed_ms.saturating_add(result.elapsed_ms);
+        skipped.extend(result.skipped);
+        elevated = elevated.or(result.elevated);
+    }
+    ScanResult {
+        status,
+        files,
+        dirs,
+        bytes_alloc,
+        bytes_logical,
+        elapsed_ms,
+        skipped,
+        elevated,
+    }
+}
+
+/// The synthetic root entry: an empty directory, arena index 0.
+fn synthetic_root(name: &str) -> Entry {
+    Entry {
+        parent: 0,
+        name: name.to_owned(),
+        kind: EntryKind::Dir,
+        size_alloc: 0,
+        size_logical: 0,
+        dev: 0,
+        file_id: 0,
+        nlink: 1,
+        attrs: 0,
+        created: 0,
+        modified: 0,
+        accessed: 0,
+        hardlink_dup: false,
+    }
+}
+
+/// Stitches one scanner pass per root under a synthetic arena root (#195).
+///
+/// Each scanner pass streams one root with pass-local arena indices: index 0 is
+/// that pass's root and every `parent` is relative to it. This sink sits between
+/// the scanner and the catalog writer and folds the passes into one arena:
+/// index 0 is the synthetic root, each pass root becomes its child and is
+/// renamed to its absolute path, and every other `parent` shifts by the pass
+/// root's global index. Paths then rebuild from the arena alone, because
+/// `PathBuf::join` resets on an absolute component.
+struct Stitch<'a> {
+    sink: &'a mut EntryWriter,
+    /// Global index the next accepted entry takes.
+    next: u32,
+    /// Global index of the pass root being accepted.
+    base: u32,
+    /// The absolute path the current pass root is renamed to.
+    root_name: String,
+    /// Whether the current pass's root has been accepted.
+    started: bool,
+}
+
+impl<'a> Stitch<'a> {
+    /// A sink for a multi-root scan, with the synthetic root accepted first.
+    fn new(sink: &'a mut EntryWriter) -> storagelens_core::Result<Self> {
+        let mut stitch = Self {
+            sink,
+            next: 0,
+            base: 0,
+            root_name: String::new(),
+            started: false,
+        };
+        stitch.sink.accept(synthetic_root(EVERYTHING_LABEL))?;
+        stitch.next = 1;
+        Ok(stitch)
+    }
+
+    /// The next `accept` is the root of a pass over `root`.
+    fn begin_pass(&mut self, root: &Path) {
+        self.base = self.next;
+        self.root_name = root.display().to_string();
+        self.started = false;
+    }
+}
+
+impl EntrySink for Stitch<'_> {
+    fn accept(&mut self, mut entry: Entry) -> storagelens_core::Result<()> {
+        if self.started {
+            entry.parent = self.base.saturating_add(entry.parent);
+        } else {
+            // The pass root: hangs under the synthetic root (index 0) and is
+            // named by its absolute path so paths rebuild from the arena.
+            self.started = true;
+            entry.parent = 0;
+            entry.name.clone_from(&self.root_name);
+        }
+        self.next = self.next.saturating_add(1);
+        self.sink.accept(entry)
+    }
+
+    fn flush(&mut self) -> storagelens_core::Result<()> {
+        self.sink.flush()
+    }
+}
+
 pub fn cancel_scan(state: &AppState, scan_id: i64) -> CommandResult<()> {
     match lock(&state.running)?.as_ref() {
         Some(running) if running.scan_id == scan_id => {
@@ -533,7 +776,7 @@ pub fn scan_status(state: &AppState, scan_id: i64) -> CommandResult<ScanStatusDt
             return Ok(ScanStatusDto {
                 scan_id,
                 status: ScanStatus::Running,
-                root: Some(running.root.display().to_string()),
+                root: Some(roots_label(&running.roots)),
                 files: progress.files,
                 dirs: progress.dirs,
                 bytes_alloc: progress.bytes_alloc.get(),
@@ -554,7 +797,7 @@ pub fn scan_status(state: &AppState, scan_id: i64) -> CommandResult<ScanStatusDt
     Ok(ScanStatusDto {
         scan_id,
         status: session.status,
-        root: session.root.as_ref().map(|root| root.display().to_string()),
+        root: session_root_label(&session),
         files: session.files_seen,
         dirs: result.as_ref().map_or(0, |result| result.dirs),
         bytes_alloc: session.bytes_seen,
@@ -773,9 +1016,14 @@ fn grouping_tree(
     filter: &FilterDto,
 ) -> CommandResult<Arc<SyntheticTree>> {
     let times = cached_times(state, arena, scan_id)?;
-    let root = state.root_of(scan_id);
+    let roots = state.roots_of(scan_id);
+    // A multi-root scan (#195) has no single root to describe an app by.
+    let root_path = match roots.as_slice() {
+        [root] => Some(root.as_path()),
+        _ => None,
+    };
     let rules = match by {
-        Grouping::Cleanliness => rule_evaluation(state, arena, scan_id, root.as_deref(), &times)?,
+        Grouping::Cleanliness => rule_evaluation(state, arena, scan_id, &roots, &times)?,
         _ => None,
     };
     let rules_key = rules.as_ref().map(|rules| rules.key);
@@ -815,7 +1063,7 @@ fn grouping_tree(
         .map(|rules| |index: NodeIndex| rules.evaluation.risk_of(index));
     let input = storagelens_analysis::GroupingInput {
         arena,
-        root_path: root.as_deref(),
+        root_path,
         modified: Some(&times),
         now,
         risk: risk
@@ -877,11 +1125,21 @@ fn rule_evaluation(
     state: &AppState,
     arena: &Arena,
     scan_id: i64,
-    root: Option<&Path>,
+    roots: &[PathBuf],
     times: &[i64],
 ) -> CommandResult<Option<Arc<Rules>>> {
-    let Some(root) = root.and_then(Path::to_str) else {
+    if roots.is_empty() {
         return Ok(None);
+    }
+    // A single-root scan prefixes every path with its root. A multi-root scan
+    // (#195) names each root by its absolute path in the arena, so the prefix is
+    // empty and the engine steps those names component by component.
+    let root_path = match roots {
+        [root] => match root.to_str() {
+            Some(root) => root.to_owned(),
+            None => return Ok(None),
+        },
+        _ => String::new(),
     };
     let dir = state.rules_dir();
     let print = fingerprint(&dir);
@@ -895,10 +1153,14 @@ fn rule_evaluation(
     for problem in &set.problems {
         eprintln!("cleanup rule skipped: {problem}");
     }
-    let guard =
-        storagelens_safety::Guard::from_resolved(context.platform, root, context.home.as_deref())
-            .map_err(|refusal| format!("the scanned folder {root} cannot be cleaned: {refusal}"))?;
-    let evaluation = evaluate(&set, arena, root, Some(times), now_unix(), &guard);
+    let guard = storagelens_safety::Guard::new_roots(roots, context.home.as_deref().map(Path::new))
+        .map_err(|refusal| {
+            format!(
+                "the scanned folder {} cannot be cleaned: {refusal}",
+                roots_label(roots)
+            )
+        })?;
+    let evaluation = evaluate(&set, arena, &root_path, Some(times), now_unix(), &guard);
     lock(&state.catalog)?
         .replace_rule_hits(scan_id, &evaluation.rows(arena))
         .map_err(|error| error.to_string())?;
@@ -919,8 +1181,8 @@ fn rule_evaluation(
 fn rules_for(state: &AppState, scan_id: i64) -> CommandResult<Arc<Rules>> {
     let arena = state.arena(scan_id)?;
     let times = cached_times(state, &arena, scan_id)?;
-    let root = state.root_of(scan_id);
-    rule_evaluation(state, &arena, scan_id, root.as_deref(), &times)?.ok_or_else(|| {
+    let roots = state.roots_of(scan_id);
+    rule_evaluation(state, &arena, scan_id, &roots, &times)?.ok_or_else(|| {
         "this scan predates path recording; rescan to see cleanup suggestions".to_owned()
     })
 }
@@ -1190,8 +1452,9 @@ fn home_folder() -> Option<PathBuf> {
     (home.is_absolute() && home.is_dir()).then_some(home)
 }
 
-/// What the scan picker offers: the home folder first, then every volume,
-/// fixed before removable, largest first.
+/// What the scan picker offers: "Everything" (every fixed drive in one scan,
+/// #195) first, then the home folder, then every volume — fixed before
+/// removable, largest first.
 pub fn list_scan_targets() -> Vec<ScanTargetDto> {
     let startup = startup_mount();
     let mut volumes: Vec<ScanTargetDto> = all_volumes()
@@ -1202,7 +1465,7 @@ pub fn list_scan_targets() -> Vec<ScanTargetDto> {
                 .as_deref()
                 .is_some_and(|startup| same_mount(&volume.mount_point, startup)),
             label: volume.name,
-            path: volume.mount_point.display().to_string(),
+            roots: vec![volume.mount_point.display().to_string()],
             total: Some(volume.total.get()),
             available: Some(volume.available.get()),
             removable: volume.removable,
@@ -1216,21 +1479,38 @@ pub fn list_scan_targets() -> Vec<ScanTargetDto> {
             .then_with(|| left.removable.cmp(&right.removable))
             .then_with(|| right.total.cmp(&left.total))
     });
+
+    // The recommended scan: every fixed drive in one pass (#195). A removable
+    // drive stays a separate target, so a USB stick is never counted along with
+    // the machine itself.
+    let fixed: Vec<&ScanTargetDto> = volumes.iter().filter(|volume| !volume.removable).collect();
+    let everything = (!fixed.is_empty()).then(|| ScanTargetDto {
+        kind: ScanTargetKind::Everything,
+        label: "Everything".to_owned(),
+        roots: fixed.iter().map(|volume| volume.roots[0].clone()).collect(),
+        total: Some(fixed.iter().filter_map(|volume| volume.total).sum()),
+        available: Some(fixed.iter().filter_map(|volume| volume.available).sum()),
+        removable: false,
+        startup: true,
+    });
+    // The individual volumes are alternatives now, not the recommended scan.
+    for volume in &mut volumes {
+        volume.startup = false;
+    }
+
     let home = home_folder().map(|home| ScanTargetDto {
         kind: ScanTargetKind::Home,
         label: home.file_name().map_or_else(
             || "Home".to_owned(),
             |name| name.to_string_lossy().into_owned(),
         ),
-        path: home.display().to_string(),
+        roots: vec![home.display().to_string()],
         total: None,
         available: None,
         removable: false,
         startup: false,
     });
-    let split = usize::from(volumes.first().is_some_and(|volume| volume.startup));
-    let rest = volumes.split_off(split);
-    volumes.into_iter().chain(home).chain(rest).collect()
+    everything.into_iter().chain(home).chain(volumes).collect()
 }
 
 /// Where the OS booted from: `/`, or `%SystemDrive%` on Windows.
@@ -1311,10 +1591,16 @@ pub fn get_overview(state: &AppState, scan_id: i64) -> CommandResult<OverviewDto
     let mut biggest = sorted_children(&arena, root);
     biggest.truncate(OVERVIEW_BIGGEST);
 
+    // A multi-root scan spans several volumes, so no single one describes it.
+    let volume = match state.roots_of(scan_id).as_slice() {
+        [root] => volume_for(Some(root.as_path())),
+        _ => None,
+    };
+
     Ok(OverviewDto {
         root_id: arena.entry_id(root).ok_or("the scan has no root")?,
         root_name: arena.name(root).unwrap_or_default().to_owned(),
-        volume: volume_for(state.root_of(scan_id).as_deref()),
+        volume,
         categories: get_categories(state, scan_id)?,
         biggest,
         scan,
@@ -2487,14 +2773,15 @@ pub fn find_duplicates(
         Some(cache) => cache,
         None => {
             let arena = state.arena(scan_id)?;
-            let root = state
-                .root_of(scan_id)
+            let roots = state.roots_of(scan_id);
+            let root = roots
+                .first()
                 .ok_or("this scan predates path recording; rescan first")?;
             let home = home_dir();
             let home = home.as_deref().map(Path::new);
-            let guard = storagelens_safety::Guard::new(&root, home)
-                .map_err(|refusal| format!("cannot search {}: {refusal}", root.display()))?;
-            let candidates = dupes::candidates(&arena, &root, &guard, home, options.min_size);
+            let guard = storagelens_safety::Guard::new_roots(&roots, home)
+                .map_err(|refusal| format!("cannot search {}: {refusal}", roots_label(&roots)))?;
+            let candidates = dupes::candidates(&arena, root, &guard, home, options.min_size);
 
             let cancel = CancelToken::new();
             *lock(&state.cancel_dupes)? = cancel.clone();
@@ -2748,12 +3035,13 @@ pub fn execute_deletion(
         }
         plan
     };
-    let root = state
-        .root_of(plan.dto.scan_id)
-        .ok_or("this scan predates path recording; rescan first")?;
+    let roots = state.roots_of(plan.dto.scan_id);
+    if roots.is_empty() {
+        return Err("this scan predates path recording; rescan first".to_owned());
+    }
     let home = home_dir();
-    let guard = storagelens_safety::Guard::new(&root, home.as_deref().map(Path::new))
-        .map_err(|refusal| format!("cannot clean {}: {refusal}", root.display()))?;
+    let guard = storagelens_safety::Guard::new_roots(&roots, home.as_deref().map(Path::new))
+        .map_err(|refusal| format!("cannot clean {}: {refusal}", roots_label(&roots)))?;
     let dir = state.manifests_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
@@ -2947,6 +3235,15 @@ pub mod ipc {
         roots: Vec<String>,
     ) -> CommandResult<i64> {
         super::start_scan(state.inner(), Arc::new(app), roots)
+    }
+
+    #[tauri::command]
+    pub async fn rescan(
+        app: AppHandle,
+        state: AppStateRef<'_>,
+        scan_id: i64,
+    ) -> CommandResult<i64> {
+        super::rescan(state.inner(), Arc::new(app), scan_id)
     }
 
     #[tauri::command]
@@ -3607,6 +3904,106 @@ mod tests {
             "an id outside the scan"
         );
         assert!(get_children(&state, scan_id, i64::MAX, Some(0)).is_err());
+    }
+
+    /// Two roots in one scan (#195): a synthetic root, both roots under it, and
+    /// paths that still point at the real files.
+    #[test]
+    fn a_multi_root_scan_stitches_the_roots_into_one_arena() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state(&dir);
+        let first = tree(&dir);
+        let second = {
+            let path = fs::canonicalize(dir.path())
+                .expect("canonical")
+                .join("second");
+            fs::create_dir_all(path.join("games")).expect("dirs");
+            fs::write(path.join("games/save.dat"), vec![9u8; 60_000]).expect("file");
+            fs::write(path.join("notes.txt"), b"hello").expect("file");
+            // As `tree` does: drop the Windows verbatim prefix.
+            let text = path.display().to_string();
+            PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+        };
+
+        let recorder = Arc::new(Recorder::default());
+        let scan_id = start_scan(
+            &state,
+            Arc::clone(&recorder) as Arc<dyn Emit>,
+            vec![first.display().to_string(), second.display().to_string()],
+        )
+        .expect("start");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while recorder.named(events::SCAN_DONE).is_empty()
+            && recorder.named(events::SCAN_ERROR).is_empty()
+        {
+            assert!(Instant::now() < deadline, "the scan never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            recorder.named(events::SCAN_ERROR).is_empty(),
+            "scan failed: {:?}",
+            recorder.named(events::SCAN_ERROR)
+        );
+
+        assert_eq!(state.roots_of(scan_id), vec![first.clone(), second.clone()]);
+
+        let status = scan_status(&state, scan_id).expect("status");
+        assert_eq!(status.status, ScanStatus::Complete);
+        assert_eq!(status.files, 6, "four plus two");
+        assert_eq!(status.dirs, 4, "three plus one");
+        assert!(status
+            .root
+            .as_deref()
+            .is_some_and(|root| root.contains(", ")));
+
+        let overview = get_overview(&state, scan_id).expect("overview");
+        assert_eq!(overview.root_name, EVERYTHING_LABEL);
+        assert!(overview.volume.is_none(), "several volumes: no single one");
+        let children = get_children(&state, scan_id, overview.root_id, None).expect("children");
+        assert_eq!(children.items.len(), 2, "one child per root");
+        let names: Vec<&str> = children
+            .items
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&first.display().to_string().as_str()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&second.display().to_string().as_str()),
+            "{names:?}"
+        );
+
+        // Paths rebuild to the real, absolute file locations.
+        let page = get_largest(&state, scan_id, 0, None).expect("largest");
+        let save = page
+            .items
+            .iter()
+            .find(|row| row.name == "save.dat")
+            .expect("save.dat");
+        assert_eq!(
+            save.path,
+            second.join("games").join("save.dat").display().to_string()
+        );
+        let jpg = page
+            .items
+            .iter()
+            .find(|row| row.name == "a.jpg")
+            .expect("a.jpg");
+        assert_eq!(
+            jpg.path,
+            first
+                .join("photos")
+                .join("2024")
+                .join("a.jpg")
+                .display()
+                .to_string()
+        );
+
+        // Rescanning reuses both roots, without the UI carrying them.
+        let rescan_id = rescan(&state, Arc::new(Recorder::default()), scan_id).expect("rescan");
+        assert_eq!(state.roots_of(rescan_id), vec![first, second]);
     }
 
     /// A Trash that is a folder in the test's temp dir: never the real one.
@@ -4384,7 +4781,7 @@ mod tests {
         // Pretend a scan is running.
         *state.running.lock().expect("lock") = Some(RunningScan {
             scan_id: 41,
-            root: root.clone(),
+            roots: vec![root.clone()],
             cancel: CancelToken::new(),
             progress: Arc::new(Mutex::new(Progress::default())),
         });
@@ -4502,14 +4899,14 @@ mod tests {
     #[test]
     fn scan_targets_are_absolute_and_scannable_paths() {
         let targets = list_scan_targets();
+        assert!(!targets.is_empty(), "there is always something to scan");
         for target in &targets {
-            assert!(
-                Path::new(&target.path).is_absolute(),
-                "{} is not absolute",
-                target.path
-            );
+            assert!(!target.roots.is_empty(), "{} has no roots", target.label);
+            for root in &target.roots {
+                assert!(Path::new(root).is_absolute(), "{root} is not absolute");
+            }
             assert!(!target.label.is_empty());
-            if target.kind == ScanTargetKind::Volume {
+            if target.kind != ScanTargetKind::Home {
                 assert!(target.total.is_some() && target.available.is_some());
             }
         }
@@ -4518,20 +4915,31 @@ mod tests {
             .filter(|target| target.kind == ScanTargetKind::Home)
             .count();
         assert!(homes <= 1, "at most one home folder");
-        let startups = targets.iter().filter(|target| target.startup).count();
-        assert!(startups <= 1, "at most one startup disk");
-        if startups == 1 {
-            assert!(targets[0].startup, "the startup disk comes first");
-            assert_eq!(targets[0].kind, ScanTargetKind::Volume);
-        }
+        let recommended = targets.iter().filter(|target| target.startup).count();
+        assert_eq!(recommended, 1, "exactly one recommended scan (#195)");
+
+        // "Everything" comes first and covers every fixed drive, no removable
+        // one. The home folder is offered right after it.
+        let everything = &targets[0];
+        assert_eq!(everything.kind, ScanTargetKind::Everything);
+        assert!(everything.startup, "the recommended scan");
+        assert_eq!(everything.label, "Everything");
+        let fixed = targets
+            .iter()
+            .filter(|target| target.kind == ScanTargetKind::Volume && !target.removable)
+            .count();
+        assert_eq!(
+            everything.roots.len(),
+            fixed,
+            "every fixed drive, and no removable one"
+        );
         #[cfg(target_os = "macos")]
-        assert_eq!(targets[0].path, "/", "the startup disk is listed on macOS");
+        assert_eq!(everything.roots[0], "/", "the Mac's whole disk");
         if homes == 1 {
-            let at = usize::from(startups == 1);
             assert_eq!(
-                targets[at].kind,
+                targets[1].kind,
                 ScanTargetKind::Home,
-                "home right after it"
+                "home right after the recommended scan"
             );
         }
     }

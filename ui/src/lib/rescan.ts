@@ -23,7 +23,9 @@ export async function requestRescan(): Promise<void> {
     return;
   }
   try {
-    store.refreshStarted(await api.startScan(store.scan.summary.root));
+    // The backend reuses the scan's own roots, so a multi-root scan (#195)
+    // refreshes every drive it covered.
+    store.refreshStarted(await api.rescan(store.scan.summary.scanId));
   } catch (error) {
     useAppStore.getState().refreshAborted(`Could not refresh: ${message(error)}`);
   }

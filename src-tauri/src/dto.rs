@@ -49,24 +49,28 @@ pub struct VolumeDto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScanTargetKind {
+    /// Every fixed drive in one scan (#195): the recommended whole-machine scan.
+    Everything,
     Volume,
     Home,
 }
 
-/// One entry of the scan picker: a mounted volume or the home folder.
+/// One entry of the scan picker: every fixed drive, a mounted volume, or the
+/// home folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanTargetDto {
     pub kind: ScanTargetKind,
     pub label: String,
-    /// Absolute path to pass to `start_scan`.
-    pub path: String,
+    /// Absolute paths to pass to `start_scan`. One for an ordinary target,
+    /// every fixed drive for `Everything` (#195).
+    pub roots: Vec<String>,
     /// Capacity, for volumes.
     pub total: Option<u64>,
     pub available: Option<u64>,
     pub removable: bool,
-    /// The volume the OS booted from (`/`, or `%SystemDrive%`): the
-    /// recommended full-disk scan, listed first (#98).
+    /// The recommended scan, listed first: `Everything` (#195), or the volume
+    /// the OS booted from on a single-disk target.
     pub startup: bool,
 }
 
