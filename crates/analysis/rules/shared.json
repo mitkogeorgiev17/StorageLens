@@ -22,6 +22,7 @@
     "exclude": [
       "**/site-packages/**/__pycache__",
       "**/lib/python3*/**/__pycache__",
+      "**/Python3*/Lib/**/__pycache__",
       "**/*.app/**/__pycache__",
       "**/*.framework/**/__pycache__",
       "**/AppData/**/__pycache__",
