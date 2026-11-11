@@ -119,7 +119,16 @@ fn finds_every_planted_duplicate_and_nothing_else() {
             group
                 .files
                 .iter()
-                .map(|f| f.path.strip_prefix(&root).unwrap().display().to_string())
+                .map(|f| {
+                    f.path
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .display()
+                        .to_string()
+                        // Paths carry the platform separator; the expectations
+                        // below are written with `/`.
+                        .replace(std::path::MAIN_SEPARATOR, "/")
+                })
                 .collect()
         })
         .collect();

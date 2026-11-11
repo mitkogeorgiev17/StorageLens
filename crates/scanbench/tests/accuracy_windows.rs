@@ -104,7 +104,11 @@ fn pwsh(root: &Path, script: &str) -> String {
         .env("SL_ROOT", root)
         .stdin(Stdio::null())
         .output()
-        .expect("run pwsh (PowerShell 7 is preinstalled on GitHub runners)");
+        .expect(
+            "run pwsh: the Get-ChildItem oracle needs PowerShell 7. \
+             Install it (winget install Microsoft.PowerShell) — Windows \
+             PowerShell 5.1 follows junctions and cannot stand in.",
+        );
     assert!(
         output.status.success(),
         "pwsh failed: {}",

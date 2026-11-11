@@ -4769,6 +4769,7 @@ mod tests {
     }
 
     /// Bytes per Cleanliness bucket of `scan_id`.
+    #[cfg(unix)]
     fn cleanliness(state: &AppState, scan_id: i64) -> Vec<(String, u64)> {
         let view = get_grouping(
             state,
@@ -4786,6 +4787,13 @@ mod tests {
             .collect()
     }
 
+    // macOS only: the fixture lives in `%TEMP%`, which on Windows is under
+    // `AppData`, and `dev.python_bytecode` deliberately excludes
+    // `**/AppData/**/__pycache__`. Rule matching and hot reload are covered on
+    // every platform by `crates/analysis/tests/rules.rs` (synthetic paths), and
+    // the Cleanliness command path by
+    // `every_grouping_view_totals_the_scan_and_zooms_by_id`.
+    #[cfg(unix)]
     #[test]
     fn cleanliness_follows_the_rules_and_reloads_them() {
         let dir = tempfile::tempdir().expect("tempdir");
