@@ -582,6 +582,50 @@ fn windows_rules_expand_environment_variables() {
     );
 }
 
+/// A python.org install for all users puts the standard library in
+/// `C:\Python3XX\Lib`, which `BUILTIN\Users` may only read: trashing its
+/// `__pycache__` folders fails with access denied. The rule must leave them
+/// alone, as it does on Unix, while still offering a project's own bytecode.
+#[test]
+fn windows_python_install_bytecode_is_left_alone() {
+    let home = r"C:\Users\me";
+    let context = Context::new(Platform::Windows, Some(home))
+        .with_var("TEMP", r"C:\Users\me\AppData\Local\Temp")
+        .with_var("LocalAppData", r"C:\Users\me\AppData\Local")
+        .with_var("SystemRoot", r"C:\Windows")
+        .with_var("SystemDrive", "C:");
+    let rules = RuleSet::builtin(&context);
+    assert!(rules.problems.is_empty(), "{:?}", rules.problems);
+
+    let root = r"C:\";
+    let scan = scan(
+        root,
+        &[
+            // An installed interpreter: read-only to this user.
+            ("Python314", D, 0, 0),
+            ("Python314/Lib", D, 0, 0),
+            ("Python314/Lib/json", D, 0, 0),
+            ("Python314/Lib/json/__pycache__", D, 0, 0),
+            ("Python314/Lib/json/__pycache__/decoder.pyc", F, 4096, OLD),
+            ("Python314/Lib/importlib", D, 0, 0),
+            ("Python314/Lib/importlib/__pycache__", D, 0, 0),
+            ("Python314/Lib/importlib/__pycache__/core.pyc", F, 8192, OLD),
+            // A project of the user's own: still offered.
+            ("Users", D, 0, 0),
+            ("Users/me", D, 0, 0),
+            ("Users/me/proj", D, 0, 0),
+            ("Users/me/proj/__pycache__", D, 0, 0),
+            ("Users/me/proj/__pycache__/m.pyc", F, 2048, OLD),
+        ],
+    );
+    let guard = Guard::from_resolved(Platform::Windows, root, Some(home)).expect("guard");
+    let evaluation = evaluate(&rules, &scan.arena, root, Some(&scan.times), NOW, &guard);
+    assert_eq!(
+        hit_set(&evaluation),
+        set(&[("dev.python_bytecode", r"C:\Users\me\proj\__pycache__")])
+    );
+}
+
 #[test]
 fn invalid_rules_are_skipped_with_a_reason() {
     let context = Context::new(Platform::MacOs, None);
