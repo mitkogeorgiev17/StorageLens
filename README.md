@@ -16,7 +16,7 @@ the Trash first, so you can always undo.
 
 <br />
 
-<a href="https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens-setup.exe"><img alt="Download for Windows" src="https://img.shields.io/badge/Download_for-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" height="44" /></a>
+<a href="https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens-setup.exe"><img alt="Download for Windows" src="https://img.shields.io/badge/Download_for-Windows-0078D4?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDMuNDQ5TDkuNzUgMi4xdjkuNDVIMG0xMC45NS05LjZMMjQgMHYxMS40SDEwLjk1TTAgMTIuNmg5Ljc1djkuNDVMMCAyMC42OTlNMTAuOTUgMTIuNkgyNFYyNGwtMTMtMS44Ii8+PC9zdmc+&logoColor=white" height="44" /></a>
 
 
 <sub>Free &middot; Works offline &middot; macOS 14+ (Apple Silicon &amp; Intel) &middot; Windows 10+</sub>
