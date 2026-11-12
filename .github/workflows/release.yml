@@ -29,9 +29,8 @@ jobs:
         include:
           - os: macos-latest
             name: macos
-          # Windows is held until it is tested on a real machine (#183):
-          # - os: windows-latest
-          #   name: windows
+          - os: windows-latest
+            name: windows
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

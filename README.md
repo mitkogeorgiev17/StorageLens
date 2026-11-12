@@ -12,11 +12,14 @@ the Trash first, so you can always undo.
 
 <br />
 
-<a href="#install"><img alt="Install on macOS" src="https://img.shields.io/badge/Install_on-macOS-111111?style=for-the-badge&logo=apple&logoColor=white" height="42" /></a>
-&nbsp;
-<img alt="Windows: coming soon" src="https://img.shields.io/badge/Windows-coming_soon-9a9a9a?style=for-the-badge&logo=windows&logoColor=white" height="42" />
+<a href="#install-macos"><img alt="Download for macOS" src="https://img.shields.io/badge/Download_for-macOS-000000?style=for-the-badge&logo=apple&logoColor=white" height="44" /></a>
 
-<sub>Free · Works offline · For macOS 14 and later, on Apple silicon and Intel Macs</sub>
+<br />
+
+<a href="#install-windows"><img alt="Download for Windows" src="https://img.shields.io/badge/Download_for-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" height="44" /></a>
+
+
+<sub>Free &middot; Works offline &middot; macOS 14+ (Apple Silicon &amp; Intel) &middot; Windows 10+</sub>
 
 </div>
 
@@ -24,8 +27,10 @@ the Trash first, so you can always undo.
 
 ## Install
 
-Open **Terminal** (press <kbd>⌘</kbd> <kbd>Space</kbd>, type *Terminal*, press
-<kbd>Return</kbd>), paste this line, and press <kbd>Return</kbd>:
+### macOS
+
+Open **Terminal** (press `Cmd+Space`, type *Terminal*, press `Return`), paste this
+line, and press `Return`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mitkogeorgiev17/StorageLens/main/install.sh | bash
@@ -42,13 +47,23 @@ That's it. StorageLens is installed in your Applications folder and opens by its
 1. Download **[StorageLens.dmg](https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens.dmg)**.
 2. Open it and drag **StorageLens** onto **Applications**.
 3. Open StorageLens. macOS says it can't verify the developer: click **Done**.
-4. Open **System Settings → Privacy & Security**, scroll down, and click
+4. Open **System Settings -> Privacy & Security**, scroll down, and click
    **Open Anyway** next to StorageLens. You only do this once.
 
 Why the extra step? Apple charges developers a yearly fee to remove it. StorageLens
 is free, so it skips that. The install command above avoids the step entirely.
 
 </details>
+
+### Windows
+
+1. Download **[StorageLens-setup.exe](https://github.com/mitkogeorgiev17/StorageLens/releases/latest/download/StorageLens-setup.exe)**.
+2. Run the installer. Windows SmartScreen may warn that the publisher is unknown --
+   click **More info -> Run anyway**. (StorageLens is not code-signed yet.)
+3. StorageLens installs and opens. Grant it permission to scan your disks when asked.
+
+To update later, download the new installer and run it again -- your settings and
+scan data are kept.
 
 ## First launch
 
