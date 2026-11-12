@@ -65,6 +65,10 @@ test("paths join with the root's own separator", () => {
   assert.equal(joinPath("C:\\", ["Users", "me"]), "C:\\Users\\me");
   assert.equal(joinPath("D:\\data", ["x"]), "D:\\data\\x");
   assert.equal(joinPath("", ["root", "x"]), "root/x");
+  // A multi-root scan names each root by its absolute path (#195): it resets.
+  assert.equal(joinPath("C:\\, D:\\", ["D:\\Games", "save.dat"]), "D:\\Games\\save.dat");
+  assert.equal(joinPath("C:\\, D:\\", ["C:\\Users\\me", "Desktop"]), "C:\\Users\\me\\Desktop");
+  assert.equal(joinPath("C:\\, D:\\", []), "C:\\, D:\\", "the synthetic root keeps its label");
   const index = indexTree(node(3, "2024", 400, [node(4, "a.jpg", 400)]));
   const crumbs = [
     { id: 1, name: "root" },

@@ -63,7 +63,13 @@ pub struct ScanSession {
     /// Whether the scan ran elevated.
     pub elevated: bool,
     /// The scanned path. `None` for sessions recorded before schema v2.
+    ///
+    /// For a multi-root scan (the Windows "Everything" target, #195) this is the
+    /// first root; [`roots`](Self::roots) holds them all.
     pub root: Option<std::path::PathBuf>,
+    /// Every scanned root, in scan order. One entry for an ordinary scan, and
+    /// empty only for sessions recorded before schema v2.
+    pub roots: Vec<std::path::PathBuf>,
 }
 
 /// An entry read back from `entries`.

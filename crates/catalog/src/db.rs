@@ -120,6 +120,33 @@ impl Catalog {
     /// and for building child paths, never for deletion, which re-resolves every
     /// path through the safety layer.
     pub fn begin_session(&self, platform: Platform, elevated: bool, root: &Path) -> Result<i64> {
+        self.begin_session_roots(platform, elevated, &[root.to_path_buf()])
+    }
+
+    /// Start a session for a scan of several roots (the Windows "Everything"
+    /// target, #195).
+    ///
+    /// One root is stored as its own path, as before; several are stored as a
+    /// JSON array in the same column, so no schema change is needed and older
+    /// rows keep parsing ([`parse_roots`]).
+    pub fn begin_session_roots(
+        &self,
+        platform: Platform,
+        elevated: bool,
+        roots: &[PathBuf],
+    ) -> Result<i64> {
+        let stored = if roots.len() > 1 {
+            let roots: Vec<String> = roots
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned())
+                .collect();
+            serde_json::to_string(&roots).map_err(|error| CatalogError::Other(error.to_string()))?
+        } else {
+            roots
+                .first()
+                .map(|root| root.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
         self.conn.execute(
             "INSERT INTO scan_session (platform, started_at, status, elevated, root) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -128,7 +155,7 @@ impl Catalog {
                 now(),
                 ScanStatus::Running.as_str(),
                 i64::from(elevated),
-                root.to_string_lossy(),
+                stored,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -342,6 +369,7 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<ScanSession> {
         )
     })?;
 
+    let roots = parse_roots(row.get::<_, Option<String>>(9)?);
     Ok(ScanSession {
         id: row.get(0)?,
         platform,
@@ -352,8 +380,26 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<ScanSession> {
         bytes_seen: to_u64(row.get(6)?),
         dirs_skipped: to_u64(row.get(7)?),
         elevated: row.get::<_, i64>(8)? != 0,
-        root: row.get::<_, Option<String>>(9)?.map(PathBuf::from),
+        root: roots.first().cloned(),
+        roots,
     })
+}
+
+/// The roots a session recorded.
+///
+/// A single scan stores one path; a multi-root scan (#195) stores a JSON array
+/// of them. A JSON-looking value that does not parse is treated as one path, so
+/// a damaged row never hides the scan.
+fn parse_roots(text: Option<String>) -> Vec<PathBuf> {
+    let Some(text) = text else {
+        return Vec::new();
+    };
+    if text.starts_with('[') {
+        if let Ok(roots) = serde_json::from_str::<Vec<String>>(&text) {
+            return roots.into_iter().map(PathBuf::from).collect();
+        }
+    }
+    vec![PathBuf::from(text)]
 }
 
 #[cfg(test)]
@@ -456,6 +502,32 @@ mod tests {
                 .root
                 .as_deref(),
             Some(root)
+        );
+    }
+
+    #[test]
+    fn sessions_round_trip_several_roots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catalog = Catalog::open(dir.path().join("catalog.db")).expect("open");
+        let roots = [PathBuf::from(r"C:\"), PathBuf::from(r"D:\")];
+        let scan_id = catalog
+            .begin_session_roots(Platform::Windows, false, &roots)
+            .expect("begin");
+
+        let session = catalog.session(scan_id).expect("session");
+        assert_eq!(session.roots, roots);
+        assert_eq!(
+            session.root.as_deref(),
+            Some(Path::new(r"C:\")),
+            "the first root is the session's primary path"
+        );
+        assert_eq!(
+            catalog
+                .latest_session()
+                .expect("latest")
+                .expect("a session")
+                .roots,
+            roots
         );
     }
 

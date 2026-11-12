@@ -171,7 +171,11 @@ impl Walk<'_> {
     fn path_of(&self, index: NodeIndex) -> String {
         let mut path = self.root_path.to_owned();
         for name in self.arena.path_names(index) {
-            if !path.ends_with(['/', '\\']) {
+            // A multi-root scan (#195) has an empty `root_path` and names its
+            // roots by absolute path, so the first name already carries the
+            // separator. An ordinary scan's root does not end in one either, so
+            // the empty check only matters for the multi-root case.
+            if !path.is_empty() && !path.ends_with(['/', '\\']) {
                 path.push(self.separator);
             }
             path.push_str(name);
@@ -389,7 +393,21 @@ pub fn evaluate(
                 let Some(name) = arena.name(child) else {
                     continue;
                 };
-                let next = step_all(&automata, &live, name, &mut scratch);
+                // A multi-root scan (#195) hangs each root under a synthetic
+                // root and names it by its absolute path, so its components are
+                // stepped one by one. An ordinary name is a single component.
+                let next = if name.contains(['/', '\\']) {
+                    let mut next = live.clone();
+                    for part in components(name) {
+                        next = step_all(&automata, &next, part, &mut scratch);
+                        if next.is_empty() {
+                            break;
+                        }
+                    }
+                    next
+                } else {
+                    step_all(&automata, &live, name, &mut scratch)
+                };
                 if !next.is_empty() {
                     stack.push((child, next));
                 }

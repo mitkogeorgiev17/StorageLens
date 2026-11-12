@@ -282,8 +282,8 @@ function LastTrash() {
 }
 
 /**
- * "Scan" in the header, once there is a scan to replace: rescans the
- * whole startup disk straight away, no picker. Other targets stay on the
+ * "Scan" in the header, once there is a scan to replace: scans everything
+ * (every fixed drive, #195) straight away, no picker. Other targets stay on the
  * empty-state picker.
  */
 function NewScan() {
@@ -304,11 +304,14 @@ function NewScan() {
     setError(null);
     try {
       const targets = await api.listScanTargets();
-      const disk = targets.find((target) => target.startup) ?? targets.find((target) => target.kind === "volume");
+      const disk =
+        targets.find((target) => target.kind === "everything") ??
+        targets.find((target) => target.startup) ??
+        targets.find((target) => target.kind === "volume");
       if (disk === undefined) {
         throw new Error("No disk found to scan.");
       }
-      scanStarted(await api.startScan(disk.path), disk.path);
+      scanStarted(await api.startScan(disk.roots), disk.roots.join(", "));
       navigate("overview");
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -326,7 +329,7 @@ function NewScan() {
       <button
         type="button"
         className="button button-secondary button-icon"
-        title="Scan the whole disk again"
+        title="Scan every fixed drive again"
         disabled={busy}
         aria-busy={busy}
         onClick={() => void start()}

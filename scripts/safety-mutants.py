@@ -29,11 +29,11 @@ MUTATIONS = [
      "    if components(platform, path).any(|part| part == \".\" || part == \"..\") {\n        return Err(Refusal::Traversal);",
      "    if components(platform, path).any(|part| part == \".\" || part == \"..\") {\n        // mutated"),
     ("guard: outside the root", "guard.rs",
-     "Relation::Ancestor | Relation::Unrelated => return Err(Refusal::OutsideRoot),",
-     "Relation::Ancestor | Relation::Unrelated => {}"),
+     "        if !inside {\n            return Err(Refusal::OutsideRoot);\n        }",
+     "        if !inside {\n            // mutated\n        }"),
     ("guard: the root itself", "guard.rs",
-     "Relation::Equal => return Err(Refusal::IsRoot),",
-     "Relation::Equal => {}"),
+     "        if is_root {\n            return Err(Refusal::IsRoot);\n        }",
+     "        if is_root {\n            // mutated\n        }"),
     ("guard: system locations", "guard.rs",
      "return Err(Refusal::System(location.shown));",
      "let _ = location.shown;"),
@@ -94,6 +94,8 @@ def run_tests() -> str:
         ["cargo", "test", "-q", "-p", "storagelens-safety"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     output = result.stdout + result.stderr
     if result.returncode == 0:
@@ -113,16 +115,16 @@ def main() -> int:
     survivors = []
     for name, file, original, mutated in chosen:
         path = SRC / file
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if text.count(original) != 1:
             print(f"?  {name}: the code to mutate was not found exactly once in {file}")
             survivors.append(name)
             continue
         try:
-            path.write_text(text.replace(original, mutated))
+            path.write_text(text.replace(original, mutated), encoding="utf-8")
             outcome = run_tests()
         finally:
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
         mark = "ok" if outcome == "failed" else "!!"
         print(f"{mark} {name}: tests {outcome}")
         if outcome != "failed":

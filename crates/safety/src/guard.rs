@@ -36,7 +36,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::Platform;
 
@@ -225,16 +225,18 @@ struct Protected {
     inside: bool,
 }
 
-/// The checks for one cleanup: what root it may act in, and what is protected.
+/// The checks for one cleanup: what roots it may act in, and what is protected.
 pub struct Guard {
     platform: Platform,
-    root: String,
+    /// The roots a scan covered, in scan order. One for an ordinary scan, and
+    /// several for a multi-root scan (#195). The first is the primary.
+    roots: Vec<String>,
     protected: Vec<Protected>,
 }
 
 impl fmt::Debug for Guard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Guard").field("root", &self.root).finish()
+        f.debug_struct("Guard").field("roots", &self.roots).finish()
     }
 }
 
@@ -260,6 +262,17 @@ impl Guard {
         Self::from_resolved(Platform::CURRENT, &root, home.as_deref())
     }
 
+    /// [`new`](Self::new) for a scan of several roots (#195), each resolved
+    /// here.
+    pub fn new_roots(allowed_roots: &[PathBuf], home: Option<&Path>) -> Result<Self, Refusal> {
+        let roots: Result<Vec<String>, Refusal> =
+            allowed_roots.iter().map(|root| resolve(root)).collect();
+        let roots = roots?;
+        let home = home.map(resolve).transpose()?;
+        let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+        Self::from_roots(Platform::CURRENT, &roots, home.as_deref())
+    }
+
     /// A guard from paths that are already resolved, for `platform`. Touches
     /// no filesystem, so either platform's rules can be checked anywhere.
     pub fn from_resolved(
@@ -267,7 +280,21 @@ impl Guard {
         allowed_root: &str,
         home: Option<&str>,
     ) -> Result<Self, Refusal> {
-        well_formed(platform, allowed_root)?;
+        Self::from_roots(platform, std::slice::from_ref(&allowed_root), home)
+    }
+
+    /// [`from_resolved`](Self::from_resolved) for a scan of several roots
+    /// (#195). A path is allowed when it lies strictly inside any one of them.
+    pub fn from_roots(
+        platform: Platform,
+        allowed_roots: &[&str],
+        home: Option<&str>,
+    ) -> Result<Self, Refusal> {
+        let mut roots = Vec::with_capacity(allowed_roots.len());
+        for root in allowed_roots {
+            well_formed(platform, root)?;
+            roots.push((*root).to_owned());
+        }
         let mut protected = Vec::new();
         if let Some(home) = home {
             well_formed(platform, home)?;
@@ -284,14 +311,14 @@ impl Guard {
         }
         Ok(Self {
             platform,
-            root: allowed_root.to_owned(),
+            roots,
             protected,
         })
     }
 
-    /// The resolved root this guard acts in.
+    /// The primary (first) root this guard acts in.
     pub fn root(&self) -> &str {
-        &self.root
+        self.roots.first().map_or("", String::as_str)
     }
 
     /// Resolve `path` and check it. Run immediately before any mutation.
@@ -336,10 +363,24 @@ impl Guard {
         let exact = |a: &str, b: &str| {
             (platform == Platform::Windows && a.eq_ignore_ascii_case(b)) || a == b
         };
-        match relation(target(), components(platform, &self.root), exact) {
-            Relation::Inside => {}
-            Relation::Equal => return Err(Refusal::IsRoot),
-            Relation::Ancestor | Relation::Unrelated => return Err(Refusal::OutsideRoot),
+        // Inside any root passes; a target equal to one is the root itself.
+        let mut inside = false;
+        let mut is_root = false;
+        for root in &self.roots {
+            match relation(target(), components(platform, root), exact) {
+                Relation::Inside => {
+                    inside = true;
+                    break;
+                }
+                Relation::Equal => is_root = true,
+                Relation::Ancestor | Relation::Unrelated => {}
+            }
+        }
+        if is_root {
+            return Err(Refusal::IsRoot);
+        }
+        if !inside {
+            return Err(Refusal::OutsideRoot);
         }
 
         let system = match platform {
@@ -530,6 +571,26 @@ mod tests {
             win(r"C:\Data").check_resolved(r"C:\Other\x"),
             Err(Refusal::OutsideRoot)
         );
+    }
+
+    #[test]
+    fn a_multi_root_guard_allows_each_root() {
+        let guard = Guard::from_roots(Platform::Windows, &[r"C:\", r"D:\"], Some(r"C:\Users\me"))
+            .expect("guard");
+        assert_eq!(guard.root(), r"C:\");
+        assert_eq!(guard.check_resolved(r"c:\Users\me\Downloads\a.zip"), Ok(()));
+        assert_eq!(guard.check_resolved(r"D:\Games\save.dat"), Ok(()));
+        assert_eq!(guard.check_resolved(r"C:\"), Err(Refusal::IsRoot));
+        assert_eq!(guard.check_resolved(r"D:\"), Err(Refusal::IsRoot));
+        assert_eq!(guard.check_resolved(r"E:\other"), Err(Refusal::OutsideRoot));
+        assert!(matches!(
+            guard.check_resolved(r"C:\Windows\System32\drivers\etc\hosts"),
+            Err(Refusal::System(_))
+        ));
+        assert!(matches!(
+            guard.check_resolved(r"D:\Users\me\.ssh\id_rsa"),
+            Err(Refusal::NeverTouch(_))
+        ));
     }
 
     #[test]

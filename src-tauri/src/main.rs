@@ -29,6 +29,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ipc::list_scan_targets,
             ipc::start_scan,
+            ipc::rescan,
             ipc::cancel_scan,
             ipc::scan_status,
             ipc::latest_scan,
